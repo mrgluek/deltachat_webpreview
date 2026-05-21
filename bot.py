@@ -747,13 +747,14 @@ def on_new_message(bot, accid, event):
         is_private = _is_private_chat(bot, accid, msg.chat_id)
         if is_private:
             # 1. Greet user if not greeted yet
-            if not bot.rpc.get_contact_config(accid, msg.from_id, "greeted"):
+            greeted_key = f"greeted_{msg.from_id}"
+            if not database.get_config(greeted_key):
                 help_text = (
                     f"👋 Welcome to WebPreview Bot!\n\n"
                     f"Send a link directly to this chat, or use `/preview <url>` to save it as a self-contained HTML page."
                 )
                 _send(bot, accid, msg.chat_id, help_text)
-                bot.rpc.set_contact_config(accid, msg.from_id, "greeted", "1")
+                database.set_config(greeted_key, "1")
 
             # 2. Automatically parse URLs sent in private chat (if not starting with a slash command)
             if not text.startswith("/"):

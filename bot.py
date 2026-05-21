@@ -378,7 +378,7 @@ def _handle_preview_command(bot, accid, event, with_js: bool):
 
     # Check Rate Limit
     if _is_rate_limited(bot, accid, msg.from_id):
-        _send(bot, accid, msg.chat_id, f"⏱ Rate limit active. Please wait {RATE_LIMIT_SECONDS}s.")
+        _react(bot, accid, msg.id, "⏱")
         return
 
     # Extract target URL
@@ -790,7 +790,7 @@ def on_new_message(bot, accid, event):
                     
                     # Rate limiting check
                     if _is_rate_limited(bot, accid, msg.from_id):
-                        _send(bot, accid, msg.chat_id, f"⏱ Rate limit active. Please wait {RATE_LIMIT_SECONDS}s.")
+                        _react(bot, accid, msg.id, "⏱")
                         return
 
                     # Run monolith in background thread (JS disabled by default)

@@ -10,6 +10,9 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 - Implemented a 1-hour SQLite-based caching system for page previews. If the exact same URL (with matching JavaScript settings) is requested within 1 hour, the bot returns the cached file directly, dramatically speeding up response time and reducing bandwidth and disk usage.
 - Integrated automatic background DB pruning in the hourly cache cleaner loop to purge expired SQLite cache entries alongside deleting local files older than 1 hour.
 
+### Changed
+- Converted rate-limiting notifications from an intrusive and spammy text message to an elegant `⏱` emoji reaction attached directly to the triggering message.
+
 ## [1.0.3] - 2026-05-22
 
 ### Changed

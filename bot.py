@@ -37,7 +37,7 @@ RATE_LIMIT_SECONDS = 15
 # Cache settings
 CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_MAX_AGE = 24 * 3600  # 24 hours
+CACHE_MAX_AGE = 3600  # 1 hour
 
 _processed_msg_ids = set()
 _processed_msg_lock = threading.Lock()
@@ -279,6 +279,28 @@ async def _run_monolith_process(cmd: list) -> tuple[int, str]:
 
 def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: bool):
     """Run monolith compilation in background thread."""
+    import hashlib
+    url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
+    cache_key = f"{url_hash}_{1 if with_js else 0}"
+
+    # 0. Check cache
+    cached = database.get_cached_preview(cache_key)
+    if cached:
+        created_at = cached.get("created_at", 0)
+        filepath = cached.get("filepath", "")
+        title = cached.get("title", "")
+        filesize = cached.get("filesize", 0)
+        
+        if time.time() - created_at < CACHE_MAX_AGE and os.path.exists(filepath):
+            logger.info(f"Cache hit for URL: {url} (JS={with_js}). Sending cached preview: {filepath}")
+            _react(bot, accid, req_msg_id, "⏳")
+            
+            caption = f"{title}\n\n🔗 {url}"
+            _send(bot, accid, chat_id, caption, file=filepath)
+            _react(bot, accid, req_msg_id, "☑️")
+            database.add_preview_log(chat_id, from_id, url, title, filesize, with_js)
+            return
+
     logger.info(f"Starting monolith download for URL: {url} (JS={with_js}) in chat {chat_id}")
     
     # 1. React with loading icon
@@ -324,6 +346,9 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         # 5. Move to persistent cache for transfer
         shutil.move(output_path, cache_path)
         filesize = os.path.getsize(cache_path)
+        
+        # Cache preview in database
+        database.add_cached_preview(cache_key, cache_path, title, filesize)
         
         # 6. Format simple, clean caption like YouTube bot
         caption = f"{title}\n\n🔗 {url}"
@@ -863,10 +888,13 @@ def on_start(bot, args):
 # ── Cache Cleanup background task ──
 
 def _cache_cleaner_loop():
-    """Background task to remove cache files older than 24h."""
+    """Background task to remove cache files and DB entries older than 1h."""
     logger.info("Cache cleaner thread started.")
     while True:
         try:
+            # Clear expired cache entries from the database
+            database.clear_expired_cache(CACHE_MAX_AGE)
+
             if not os.path.exists(CACHE_DIR):
                 time.sleep(3600)
                 continue

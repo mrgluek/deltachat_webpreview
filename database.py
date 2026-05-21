@@ -42,6 +42,17 @@ def init_db():
                 last_received_at INTEGER
             )
         ''')
+
+        # URL Cache table for cached page previews
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS url_cache (
+                url_key TEXT PRIMARY KEY,
+                filepath TEXT,
+                title TEXT,
+                filesize INTEGER,
+                created_at INTEGER
+            )
+        ''')
         
         conn.commit()
         conn.close()
@@ -148,5 +159,37 @@ def get_all_transport_stats() -> list[dict]:
         rows = cursor.fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+def get_cached_preview(url_key: str) -> dict:
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM url_cache WHERE url_key = ?", (url_key,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+def add_cached_preview(url_key: str, filepath: str, title: str, filesize: int):
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO url_cache (url_key, filepath, title, filesize, created_at)
+            VALUES (?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
+        ''', (url_key, filepath, title, filesize))
+        conn.commit()
+        conn.close()
+
+def clear_expired_cache(max_age_seconds: int):
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM url_cache WHERE created_at < CAST(strftime('%s','now') AS INTEGER) - ?",
+            (max_age_seconds,)
+        )
+        conn.commit()
+        conn.close()
 
 init_db()

@@ -1,0 +1,6 @@
+data/
+__pycache__/
+*.db
+*.pyc
+.env.local
+webpreview/

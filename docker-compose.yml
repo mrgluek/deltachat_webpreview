@@ -1,0 +1,12 @@
+services:
+  webpreview_bot:
+    container_name: deltachat_webpreview_bot
+    build: .
+    restart: always
+    volumes:
+      - ./data:/app/data
+      - ./webpreview:/root/.config/webpreview
+    environment:
+      - DC_DB_DIR=/app/data
+      - DB_PATH=/app/data/webpreview.db
+      - TZ=UTC

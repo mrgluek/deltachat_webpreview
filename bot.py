@@ -137,6 +137,11 @@ def _is_dc_admin(bot, accid, contact_id) -> bool:
         # 2. Fallback to email
         admin_email = database.get_config("admin_dc_email")
         if admin_email and sender_email and admin_email.lower().strip() == sender_email.lower().strip():
+            # Auto-upgrade: if fingerprint became available after initial /initadmin, save it now!
+            if not admin_fp and c_fp:
+                first_fp = c_fp.split(',')[0]
+                database.set_admin_fingerprint(first_fp)
+                logger.info(f"Automatically upgraded admin {admin_email} with fingerprint {first_fp[-8:]}")
             return True
             
     except Exception as e:

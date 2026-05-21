@@ -326,7 +326,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         filesize = os.path.getsize(cache_path)
         
         # 6. Format simple, clean caption like YouTube bot
-        caption = f"{title}\n🔗 {url}"
+        caption = f"{title}\n\n🔗 {url}"
         
         # 7. Send attachment
         _send(bot, accid, chat_id, caption, file=cache_path)
@@ -760,7 +760,7 @@ def on_init(bot, args):
     if accounts:
         dc_accid = accounts[0]
         bot.rpc.set_config(dc_accid, "displayname", "WebPreview Bot")
-        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url>")
+        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups. Try with /preview <url> or send /help for more commands.")
         
         # Set icon if exists
         try:

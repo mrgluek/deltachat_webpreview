@@ -693,7 +693,7 @@ def on_new_message(bot, accid, event):
     if not text:
         return
 
-    # Automatic welcoming of new users in 1-on-1 private chats
+    # Automatic welcoming & auto-parsing of links in 1-on-1 private chats
     try:
         chat_info = bot.rpc.get_basic_chat_info(accid, msg.chat_id)
         is_private = False
@@ -703,15 +703,35 @@ def on_new_message(bot, accid, event):
             is_private = (getattr(chat_info, "type", 1) == 1)
 
         if is_private:
+            # 1. Greet user if not greeted yet
             if not bot.rpc.get_contact_config(accid, msg.from_id, "greeted"):
                 help_text = (
                     f"👋 Welcome to WebPreview Bot!\n\n"
-                    f"Send `/preview <url>` or reply `/preview` to any message containing a link to save it as a self-contained HTML page."
+                    f"Send a link directly to this chat, or use `/preview <url>` to save it as a self-contained HTML page."
                 )
                 _send(bot, accid, msg.chat_id, help_text)
                 bot.rpc.set_contact_config(accid, msg.from_id, "greeted", "1")
+
+            # 2. Automatically parse URLs sent in private chat (if not starting with a slash command)
+            if not text.startswith("/"):
+                url_match = re.search(r'(https?://[^\s<>"]+)', text)
+                if url_match:
+                    url = url_match.group(1).rstrip('.,;:)!?')
+                    
+                    # Rate limiting check
+                    if _is_rate_limited(bot, accid, msg.from_id):
+                        _send(bot, accid, msg.chat_id, f"⏱ Rate limit active. Please wait {RATE_LIMIT_SECONDS}s.")
+                        return
+
+                    # Run monolith in background thread (JS disabled by default)
+                    t = threading.Thread(
+                        target=_do_preview, 
+                        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, False), 
+                        daemon=True
+                    )
+                    t.start()
     except Exception as e:
-        logger.error(f"Greeting check error: {e}")
+        logger.error(f"Private chat processing error: {e}")
 
 # ── CLI Setup Hooks ──
 
@@ -725,7 +745,7 @@ def on_init(bot, args):
     if accounts:
         dc_accid = accounts[0]
         bot.rpc.set_config(dc_accid, "displayname", "WebPreview Bot")
-        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews. Send /preview <url>!")
+        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url>")
         
         # Set icon if exists
         try:

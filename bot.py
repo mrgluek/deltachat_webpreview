@@ -670,6 +670,50 @@ def initadmin_command(bot, accid, event):
         _send(bot, accid, msg.chat_id,
               f"✅ You are now the admin!\n\nEmail: `{email}`\n⚠️ Fingerprint not available yet (will be used after key exchange).")
 
+def _parse_chat_info_is_private(chat_info) -> bool:
+    if isinstance(chat_info, dict):
+        chat_type = chat_info.get("chatType") or chat_info.get("chat_type")
+        if isinstance(chat_type, str) and chat_type.lower() == "single":
+            return True
+        type_val = chat_info.get("type")
+        if type_val in (1, "1"):
+            return True
+    else:
+        chat_type = getattr(chat_info, "chat_type", None) or getattr(chat_info, "chatType", None)
+        if isinstance(chat_type, str) and chat_type.lower() == "single":
+            return True
+        type_val = getattr(chat_info, "type", None)
+        if type_val in (1, "1"):
+            return True
+    return False
+
+def _is_private_chat(bot, accid, chat_id) -> bool:
+    # 1. Try get_basic_chat_info
+    try:
+        chat_info = bot.rpc.get_basic_chat_info(accid, chat_id)
+        if chat_info:
+            return _parse_chat_info_is_private(chat_info)
+    except Exception as e:
+        logger.debug(f"get_basic_chat_info failed: {e}")
+
+    # 2. Fallback to get_full_chat_by_id
+    try:
+        chat_info = bot.rpc.get_full_chat_by_id(accid, chat_id)
+        if chat_info:
+            return _parse_chat_info_is_private(chat_info)
+    except Exception as e:
+        logger.debug(f"get_full_chat_by_id failed: {e}")
+
+    # 3. Ultimate fallback: get_chat_contacts length check
+    try:
+        contacts = bot.rpc.get_chat_contacts(accid, chat_id)
+        if isinstance(contacts, list) and len(contacts) == 1:
+            return True
+    except Exception as e:
+        logger.error(f"get_chat_contacts failed: {e}")
+
+    return False
+
 # ── General Event Listener ──
 
 @dc_cli.on(events.NewMessage)
@@ -700,23 +744,7 @@ def on_new_message(bot, accid, event):
 
     # Automatic welcoming & auto-parsing of links in 1-on-1 private chats
     try:
-        chat_info = bot.rpc.get_basic_chat_info(accid, msg.chat_id)
-        is_private = False
-        if chat_info:
-            if isinstance(chat_info, dict):
-                # Try camelCase, snake_case, and integer types
-                chat_type = chat_info.get("chatType") or chat_info.get("chat_type")
-                if isinstance(chat_type, str) and chat_type.lower() == "single":
-                    is_private = True
-                elif chat_info.get("type") == 1 or chat_info.get("type") == "1":
-                    is_private = True
-            else:
-                chat_type = getattr(chat_info, "chat_type", None) or getattr(chat_info, "chatType", None)
-                if isinstance(chat_type, str) and chat_type.lower() == "single":
-                    is_private = True
-                elif getattr(chat_info, "type", None) == 1 or getattr(chat_info, "type", None) == "1":
-                    is_private = True
-
+        is_private = _is_private_chat(bot, accid, msg.chat_id)
         if is_private:
             # 1. Greet user if not greeted yet
             if not bot.rpc.get_contact_config(accid, msg.from_id, "greeted"):

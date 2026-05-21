@@ -750,8 +750,8 @@ def on_new_message(bot, accid, event):
             greeted_key = f"greeted_{msg.from_id}"
             if not database.get_config(greeted_key):
                 help_text = (
-                    f"👋 Welcome to WebPreview Bot!\n\n"
-                    f"Send a link directly to this chat, or use `/preview <url>` to save it as a self-contained HTML page."
+                    "👋 Welcome to WebPreview Bot!\n\n"
+                    "Send a link directly to this chat or use /preview `<url>` to save it as a self-contained HTML page. Send /help for more commands."
                 )
                 _send(bot, accid, msg.chat_id, help_text)
                 database.set_config(greeted_key, "1")
@@ -789,7 +789,7 @@ def on_init(bot, args):
     if accounts:
         dc_accid = accounts[0]
         bot.rpc.set_config(dc_accid, "displayname", "WebPreview Bot")
-        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups. Try with /preview <url> or send /help for more commands.")
+        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url>")
         
         # Set icon if exists
         try:

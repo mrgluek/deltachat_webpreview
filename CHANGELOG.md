@@ -8,6 +8,8 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ### Fixed
 - Resolved `Method not found` error (`-32601`) during private chat greeting checks by migrating contact `greeted` status tracking to the local SQLite database, completely bypassing missing JSON-RPC `get_contact_config` and `set_contact_config` core methods.
+- Updated the 1-on-1 private chat welcome message to include a prompt to send `/help` for more commands.
+- Restored the multiline `selfstatus` description to correctly separate the general info block and the command trigger line (`Send: /preview <url>`).
 
 
 ## [1.0.1] - 2026-05-22

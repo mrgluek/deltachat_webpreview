@@ -4,6 +4,11 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-05-22
+
+### Changed
+- Standardized the welcome greeting to return the exact same detailed output as the `/help` command instead of a short introductory prefix message.
+
 ## [1.0.2] - 2026-05-22
 
 ### Fixed

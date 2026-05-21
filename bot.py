@@ -412,10 +412,8 @@ def previewjs_command(bot, accid, event):
         return
     _handle_preview_command(bot, accid, event, with_js=True)
 
-@dc_cli.on(events.NewMessage(command="/help"))
-def help_command(bot, accid, event):
-    msg = event.msg
-    contact = bot.rpc.get_contact(accid, msg.from_id)
+def get_help_text(bot, accid, from_id):
+    contact = bot.rpc.get_contact(accid, from_id)
     sender_email = contact.address
 
     help_text = (
@@ -433,7 +431,7 @@ def help_command(bot, accid, event):
 
     admin_email = database.get_config("admin_dc_email")
     admin_fp = database.get_admin_fingerprint()
-    is_actually_admin = _is_dc_admin(bot, accid, msg.from_id)
+    is_actually_admin = _is_dc_admin(bot, accid, from_id)
     
     if not admin_email:
         help_text += "\n/initadmin — Claim bot ownership\n"
@@ -446,6 +444,12 @@ def help_command(bot, accid, event):
         help_text += "/rmtransport <addr> — Remove a mail relay\n"
         help_text += "/setprimary <addr> — Switch the primary mail relay\n"
 
+    return help_text
+
+@dc_cli.on(events.NewMessage(command="/help"))
+def help_command(bot, accid, event):
+    msg = event.msg
+    help_text = get_help_text(bot, accid, msg.from_id)
     _send(bot, accid, msg.chat_id, help_text)
 
 @dc_cli.on(events.NewMessage(command="/source"))
@@ -749,10 +753,7 @@ def on_new_message(bot, accid, event):
             # 1. Greet user if not greeted yet
             greeted_key = f"greeted_{msg.from_id}"
             if not database.get_config(greeted_key):
-                help_text = (
-                    "👋 Welcome to WebPreview Bot!\n\n"
-                    "Send a link directly to this chat or use /preview `<url>` to save it as a self-contained HTML page. Send /help for more commands."
-                )
+                help_text = get_help_text(bot, accid, msg.from_id)
                 _send(bot, accid, msg.chat_id, help_text)
                 database.set_config(greeted_key, "1")
 

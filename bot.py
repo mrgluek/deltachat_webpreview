@@ -702,10 +702,20 @@ def on_new_message(bot, accid, event):
     try:
         chat_info = bot.rpc.get_basic_chat_info(accid, msg.chat_id)
         is_private = False
-        if isinstance(chat_info, dict):
-            is_private = (chat_info.get("type") == 1)
-        else:
-            is_private = (getattr(chat_info, "type", 1) == 1)
+        if chat_info:
+            if isinstance(chat_info, dict):
+                # Try camelCase, snake_case, and integer types
+                chat_type = chat_info.get("chatType") or chat_info.get("chat_type")
+                if isinstance(chat_type, str) and chat_type.lower() == "single":
+                    is_private = True
+                elif chat_info.get("type") == 1 or chat_info.get("type") == "1":
+                    is_private = True
+            else:
+                chat_type = getattr(chat_info, "chat_type", None) or getattr(chat_info, "chatType", None)
+                if isinstance(chat_type, str) and chat_type.lower() == "single":
+                    is_private = True
+                elif getattr(chat_info, "type", None) == 1 or getattr(chat_info, "type", None) == "1":
+                    is_private = True
 
         if is_private:
             # 1. Greet user if not greeted yet

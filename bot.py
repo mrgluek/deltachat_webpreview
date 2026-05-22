@@ -39,7 +39,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -1396,7 +1396,7 @@ def on_init(bot, args):
     if accounts:
         dc_accid = accounts[0]
         bot.rpc.set_config(dc_accid, "displayname", "WebPreview Bot")
-        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url>")
+        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url> or send /help for commands.")
         
         # Set icon if exists
         try:

@@ -4,6 +4,11 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-05-22
+
+### Fixed
+- **Profile Status Description:** Restored the missing `/help` command tip in the bot's multiline profile status (`selfstatus`) description.
+
 ## [1.2.1] - 2026-05-22
 
 ### Fixed

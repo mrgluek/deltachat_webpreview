@@ -4,6 +4,13 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-22
+
+### Added
+- **Content-Length Size Pre-Check:** Integrated a lightweight response header check before starting the heavy `monolith` page compilation. If the remote resource's declared size exceeds **10 MB**, the process is aborted immediately, preventing large downloads.
+- **Content-Type Binary/Media Filters:** Added proactive detection for binary and media asset headers (e.g. `application/zip`, `video/mp4`, `audio/mp3`, `application/pdf`, etc.). The bot fast-rejects requests pointing to these media or non-HTML resources.
+- **Compiled Output Size Limit:** Enforced a post-compilation safety limit checking the size of the compiled HTML. If it exceeds **50 MB**, the file is discarded to ensure reliability and prevent email delivery transport failures under the server's message limit.
+
 ## [1.1.0] - 2026-05-22
 
 ### Added

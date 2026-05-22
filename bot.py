@@ -39,7 +39,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -446,6 +446,71 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
 
     return urllib.parse.urlparse(url).netloc or "Webpage", None
 
+def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | None]:
+    """
+    Checks Content-Length and Content-Type using a lightweight GET request.
+    Does standard + fallback User-Agent attempts if needed.
+    Returns (error_type, size_or_code, content_type).
+    Where error_type can be:
+      - "SIZE_LIMIT": Content-Length exceeds 10 MB limit
+      - "BINARY_TYPE": Content-Type is a binary/media format
+      - "HTTP_ERROR": Hard HTTP failure (e.g. 401, 403, 404)
+      - None: check passed
+    """
+    def check_response(response) -> tuple[str | None, int | None, str | None]:
+        content_type = response.headers.get('Content-Type', '').lower()
+        
+        # 1. Content-Length check (10 MB limit)
+        content_length_str = response.headers.get('Content-Length')
+        content_length = None
+        if content_length_str:
+            try:
+                content_length = int(content_length_str)
+            except ValueError:
+                pass
+                
+        if content_length is not None and content_length > 10 * 1024 * 1024:
+            return "SIZE_LIMIT", content_length, content_type
+            
+        # 2. Content-Type check
+        # Non-webpage/binary files (ZIP, MP4, PDFs, Octet-stream, audio, video, zip, rar, tar, exe, dmg, etc.)
+        binary_types = [
+            "application/zip", "application/x-zip-compressed", "application/octet-stream",
+            "video/", "audio/", "application/pdf", "application/x-rar-compressed",
+            "application/x-tar", "application/x-executable", "application/x-msdownload",
+            "application/x-apple-diskimage"
+        ]
+        if any(bt in content_type for bt in binary_types) and 'text/html' not in content_type:
+            return "BINARY_TYPE", content_length, content_type
+            
+        return None, content_length, content_type
+
+    import urllib.error
+    
+    # Standard attempt
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': STANDARD_USER_AGENT})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return check_response(response)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 404):
+            # Record hard block temporarily, will try fallback
+            pass
+        else:
+            return "HTTP_ERROR", e.code, None
+    except Exception:
+        pass
+
+    # Fallback attempt
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': NON_MOZILLA_USER_AGENT})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return check_response(response)
+    except urllib.error.HTTPError as e:
+        return "HTTP_ERROR", e.code, None
+    except Exception as e:
+        return "HTTP_ERROR", -1, str(e)
+
 def _download_cached_image(image_url: str, urlhash: str) -> str | None:
     """
     Downloads an image URL and saves it in the persistent cache directory.
@@ -634,6 +699,25 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
             database.add_preview_log(chat_id, from_id, url, title, filesize, with_js)
             return
 
+    # 0.5 Pre-check URL Content-Length and Content-Type to avoid downloading heavy/binary payloads
+    err_type, val, ctype = _check_url_headers(url)
+    if err_type == "SIZE_LIMIT":
+        size_str = _format_size(val) if isinstance(val, int) else "unknown size"
+        logger.warning(f"Rejecting manual preview for {url} because declared Content-Length {size_str} exceeds 10 MB limit.")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The remote file size ({size_str}) exceeds the limit of 10 MB.")
+        return
+    elif err_type == "BINARY_TYPE":
+        logger.warning(f"Rejecting manual preview for {url} because Content-Type is a binary/media format: {ctype}.")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The target URL points to a binary or media file ({ctype or 'unknown type'}), not a webpage.")
+        return
+    elif err_type == "HTTP_ERROR" and isinstance(val, int) and val in (401, 403, 404):
+        logger.warning(f"Rejecting manual preview for {url} due to HTTP {val} returned during headers check.")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests (HTTP {val}).")
+        return
+
     logger.info(f"Starting monolith download for URL: {url} (JS={with_js}) in chat {chat_id}")
     
     # 1. React with loading icon
@@ -688,6 +772,16 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         logger.error(f"Monolith failed with code {code} for URL {url}. Error: {err}")
         _react(bot, accid, req_msg_id, "❌")
         _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: {err or 'Empty or missing output file.'}")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return
+
+    # Check compiled size limit (50 MB)
+    compiled_size = os.path.getsize(output_path)
+    if compiled_size > 50 * 1024 * 1024:
+        size_str = _format_size(compiled_size)
+        logger.warning(f"Rejecting compiled preview for {url} because size {size_str} exceeds 50 MB limit.")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The compiled page size ({size_str}) exceeds the maximum delivery limit of 50 MB.")
         shutil.rmtree(tmpdir, ignore_errors=True)
         return
 

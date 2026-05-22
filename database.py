@@ -53,6 +53,21 @@ def init_db():
                 created_at INTEGER
             )
         ''')
+
+        # URL short hash map table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS url_hashes (
+                url_key TEXT PRIMARY KEY,
+                url TEXT UNIQUE
+            )
+        ''')
+
+        # URL exclusions blacklist table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS url_exclusions (
+                pattern TEXT PRIMARY KEY
+            )
+        ''')
         
         conn.commit()
         conn.close()
@@ -191,5 +206,86 @@ def clear_expired_cache(max_age_seconds: int):
         )
         conn.commit()
         conn.close()
+
+def get_or_create_url_hash(url: str) -> str:
+    import hashlib
+    clean_url = url.strip()
+    url_hash = hashlib.md5(clean_url.encode("utf-8")).hexdigest()[:8]
+    
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Check if already exists
+        cursor.execute("SELECT url_key FROM url_hashes WHERE url = ?", (clean_url,))
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            return row[0]
+        
+        candidate_key = url_hash
+        attempts = 0
+        while True:
+            cursor.execute("SELECT url FROM url_hashes WHERE url_key = ?", (candidate_key,))
+            existing_row = cursor.fetchone()
+            if not existing_row:
+                break
+            if existing_row[0] == clean_url:
+                break
+            attempts += 1
+            candidate_key = f"{url_hash[:-1]}{attempts}"[:8]
+            
+        cursor.execute("INSERT OR REPLACE INTO url_hashes (url_key, url) VALUES (?, ?)", (candidate_key, clean_url))
+        conn.commit()
+        conn.close()
+        return candidate_key
+
+def get_url_by_hash(urlhash: str) -> str | None:
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT url FROM url_hashes WHERE url_key = ?", (urlhash,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+def add_exclusion(pattern: str):
+    clean_pat = pattern.strip()
+    if not clean_pat:
+        return
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO url_exclusions (pattern) VALUES (?)", (clean_pat,))
+        conn.commit()
+        conn.close()
+
+def remove_exclusion(pattern: str):
+    clean_pat = pattern.strip()
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM url_exclusions WHERE pattern = ?", (clean_pat,))
+        conn.commit()
+        conn.close()
+
+def list_exclusions() -> list[str]:
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT pattern FROM url_exclusions ORDER BY pattern ASC")
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+def is_excluded(url: str) -> bool:
+    clean_url = url.strip()
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT EXISTS(SELECT 1 FROM url_exclusions WHERE lower(?) LIKE '%' || lower(pattern) || '%')", (clean_url,))
+        result = cursor.fetchone()[0]
+        conn.close()
+        return bool(result)
 
 init_db()

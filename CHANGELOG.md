@@ -4,6 +4,13 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-05-22
+
+### Added
+- Implemented lightweight, automated Open Graph (OG) banner image and title previews inside group chats. Spawns dynamic `/preview_[hash]` and `/previewjs_[hash]` command links for on-demand high-fidelity monolith offline page compilations.
+- Implemented a case-insensitive URL exclusions blacklist system (`/preview_exclude <pattern>`, `/preview_unexclude <pattern>`, `/preview_exclusions`) matching by part of the URL (e.g. `/telegram/` or `https://ya.ru`).
+- Integrated exclusion checks in both auto-previews and explicit monolith compilations, blocking blacklisted URLs and sending a warning to the requester.
+
 ## [1.0.4] - 2026-05-22
 
 ### Added

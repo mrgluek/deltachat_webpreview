@@ -277,8 +277,138 @@ async def _run_monolith_process(cmd: list) -> tuple[int, str]:
     except Exception as e:
         return -99, str(e)
 
+def _get_og_preview_data(url: str) -> tuple[str, str | None]:
+    """
+    Fetches the URL and extracts og:title (or fallback title) and og:image URL.
+    Returns (title, og_image_url).
+    """
+    try:
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            content_type = response.headers.get('Content-Type', '')
+            if 'text/html' not in content_type.lower():
+                return urllib.parse.urlparse(url).netloc, None
+            
+            # Read first 512KB
+            html_bytes = response.read(512 * 1024)
+            head = html_bytes.decode('utf-8', errors='ignore')
+            
+            # 1. Extract title
+            title = None
+            title_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:title["\'][^>]*content=["\'](.*?)["\']', head, re.IGNORECASE)
+            if not title_m:
+                title_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:title["\']', head, re.IGNORECASE)
+            if title_m:
+                import html
+                title = html.unescape(title_m.group(1).strip())
+            
+            if not title:
+                # Fallback to <title>
+                title_m = re.search(r'<title[^>]*>(.*?)</title>', head, re.IGNORECASE | re.DOTALL)
+                if title_m:
+                    import html
+                    title = html.unescape(title_m.group(1).strip())
+            
+            if not title:
+                title = urllib.parse.urlparse(url).netloc or "Webpage"
+                
+            # 2. Extract og:image
+            image_url = None
+            img_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:image["\'][^>]*content=["\'](.*?)["\']', head, re.IGNORECASE)
+            if not img_m:
+                img_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:image["\']', head, re.IGNORECASE)
+            if not img_m:
+                img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=["\'](.*?)["\']', head, re.IGNORECASE)
+            
+            if img_m:
+                image_url = img_m.group(1).strip()
+                image_url = urllib.parse.urljoin(url, image_url)
+                
+            return title, image_url
+    except Exception as e:
+        logger.warning(f"Error fetching OG tags for {url}: {e}")
+        return urllib.parse.urlparse(url).netloc or "Webpage", None
+
+def _download_temp_image(image_url: str) -> str | None:
+    """
+    Downloads an image URL to a temporary file.
+    Returns absolute path of the temporary file, or None if failed.
+    """
+    try:
+        req = urllib.request.Request(
+            image_url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            content_type = response.headers.get('Content-Type', '')
+            if 'image' not in content_type.lower():
+                return None
+            
+            ext = ".jpg"
+            if "png" in content_type.lower():
+                ext = ".png"
+            elif "webp" in content_type.lower():
+                ext = ".webp"
+            elif "gif" in content_type.lower():
+                ext = ".gif"
+                
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(response.read())
+                return tmp.name
+    except Exception as e:
+        logger.warning(f"Failed to download OG image {image_url}: {e}")
+        return None
+
+def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
+    """Fetches OG data, downloads banner image, and sends preview options to group."""
+    try:
+        # 1. Skip if the URL matches exclusion pattern
+        if database.is_excluded(url):
+            logger.info(f"URL excluded from preview: {url}")
+            return
+
+        # 2. Get or create short hash in SQLite database
+        urlhash = database.get_or_create_url_hash(url)
+        
+        # 3. Get OG tags
+        title, image_url = _get_og_preview_data(url)
+        
+        # 4. Format caption
+        caption = (
+            f"🌐 {title}\n\n"
+            f"Preview page: /preview_{urlhash}\n"
+            f"Preview with js: /previewjs_{urlhash}"
+        )
+        
+        img_path = None
+        if image_url:
+            img_path = _download_temp_image(image_url)
+            
+        try:
+            if img_path:
+                _send(bot, accid, chat_id, caption, file=img_path)
+            else:
+                _send(bot, accid, chat_id, caption)
+        finally:
+            if img_path and os.path.exists(img_path):
+                try:
+                    os.remove(img_path)
+                except: pass
+    except Exception as e:
+        logger.error(f"Error in _do_group_link_preview: {e}")
+
 def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: bool):
     """Run monolith compilation in background thread."""
+    # 0. Check exclusions first!
+    if database.is_excluded(url):
+        logger.info(f"Exclusion hit for URL: {url} in chat {chat_id}")
+        _react(bot, accid, req_msg_id, "⚠️")
+        _send(bot, accid, chat_id, f"⚠️ This URL is in the exclusion list.")
+        return
+
     import hashlib
     url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
     cache_key = f"{url_hash}_{1 if with_js else 0}"
@@ -468,6 +598,9 @@ def get_help_text(bot, accid, from_id):
         help_text += "/addtransport — Add a backup mail relay\n"
         help_text += "/rmtransport <addr> — Remove a mail relay\n"
         help_text += "/setprimary <addr> — Switch the primary mail relay\n"
+        help_text += "/preview_exclude <pattern> — Blacklist a URL pattern\n"
+        help_text += "/preview_unexclude <pattern> — Remove a blacklisted pattern\n"
+        help_text += "/preview_exclusions — List active URL exclusions\n"
 
     return help_text
 
@@ -699,6 +832,62 @@ def initadmin_command(bot, accid, event):
         _send(bot, accid, msg.chat_id,
               f"✅ You are now the admin!\n\nEmail: `{email}`\n⚠️ Fingerprint not available yet (will be used after key exchange).")
 
+@dc_cli.on(events.NewMessage(command="/preview_exclude"))
+def preview_exclude_command(bot, accid, event):
+    msg = event.msg
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /preview_exclude.")
+        return
+
+    pattern = event.payload.strip() if event.payload else ""
+    if not pattern:
+        _send(bot, accid, msg.chat_id, "Usage: `/preview_exclude <pattern>`")
+        return
+
+    try:
+        database.add_exclusion(pattern)
+        _send(bot, accid, msg.chat_id, f"✅ Added to exclusions: `{pattern}`")
+    except Exception as e:
+        _send(bot, accid, msg.chat_id, f"❌ Failed to add exclusion: {e}")
+
+@dc_cli.on(events.NewMessage(command="/preview_unexclude"))
+def preview_unexclude_command(bot, accid, event):
+    msg = event.msg
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /preview_unexclude.")
+        return
+
+    pattern = event.payload.strip() if event.payload else ""
+    if not pattern:
+        _send(bot, accid, msg.chat_id, "Usage: `/preview_unexclude <pattern>`")
+        return
+
+    try:
+        database.remove_exclusion(pattern)
+        _send(bot, accid, msg.chat_id, f"✅ Removed from exclusions: `{pattern}`")
+    except Exception as e:
+        _send(bot, accid, msg.chat_id, f"❌ Failed to remove exclusion: {e}")
+
+@dc_cli.on(events.NewMessage(command="/preview_exclusions"))
+def preview_exclusions_command(bot, accid, event):
+    msg = event.msg
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /preview_exclusions.")
+        return
+
+    try:
+        exclusions = database.list_exclusions()
+        if not exclusions:
+            _send(bot, accid, msg.chat_id, "Exclusion list is empty.")
+            return
+        
+        reply = "🚫 **URL Exclusions:**\n\n"
+        for idx, pat in enumerate(exclusions, 1):
+            reply += f"{idx}. `{pat}`\n"
+        _send(bot, accid, msg.chat_id, reply)
+    except Exception as e:
+        _send(bot, accid, msg.chat_id, f"❌ Failed to list exclusions: {e}")
+
 def _parse_chat_info_is_private(chat_info) -> bool:
     if isinstance(chat_info, dict):
         chat_type = chat_info.get("chatType") or chat_info.get("chat_type")
@@ -771,7 +960,38 @@ def on_new_message(bot, accid, event):
     if not text:
         return
 
-    # Automatic welcoming & auto-parsing of links in 1-on-1 private chats
+    # 1. Intercept dynamic commands: /preview_urlhash or /previewjs_urlhash
+    m = re.match(r"^/(preview|previewjs)_([0-9a-fA-F]{8})(?:@\w+)?", text)
+    if m:
+        cmd_type, urlhash = m.group(1), m.group(2)
+        url = database.get_url_by_hash(urlhash)
+        if not url:
+            _react(bot, accid, msg.id, "❌")
+            _send(bot, accid, msg.chat_id, "❌ Invalid or expired preview trigger.")
+            return
+
+        # Check exclusions first!
+        if database.is_excluded(url):
+            logger.info(f"Exclusion hit for URL: {url} in chat {msg.chat_id} via hash command")
+            _react(bot, accid, msg.id, "⚠️")
+            _send(bot, accid, msg.chat_id, f"⚠️ This URL is in the exclusion list.")
+            return
+
+        # Rate limiting check
+        if _is_rate_limited(bot, accid, msg.from_id):
+            _react(bot, accid, msg.id, "⏱")
+            return
+
+        with_js = (cmd_type == "previewjs")
+        t = threading.Thread(
+            target=_do_preview, 
+            args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, with_js), 
+            daemon=True
+        )
+        t.start()
+        return
+
+    # Automatic welcoming & auto-parsing of links in chats/groups
     try:
         is_private = _is_private_chat(bot, accid, msg.chat_id)
         if is_private:
@@ -800,8 +1020,30 @@ def on_new_message(bot, accid, event):
                         daemon=True
                     )
                     t.start()
+        else:
+            # Automatic preview of links in group chats
+            if not text.startswith("/"):
+                url_match = re.search(r'(https?://[^\s<>"]+)', text)
+                if url_match:
+                    url = url_match.group(1).rstrip('.,;:)!?')
+                    
+                    # Skip if the URL is in the exclusions
+                    if database.is_excluded(url):
+                        return
+                        
+                    # Rate limiting check
+                    if _is_rate_limited(bot, accid, msg.from_id):
+                        return
+                    
+                    # Run OG preview generation in background thread
+                    t = threading.Thread(
+                        target=_do_group_link_preview, 
+                        args=(bot, accid, msg.chat_id, msg.from_id, url), 
+                        daemon=True
+                    )
+                    t.start()
     except Exception as e:
-        logger.error(f"Private chat processing error: {e}")
+        logger.error(f"Chat processing error: {e}")
 
 # ── CLI Setup Hooks ──
 

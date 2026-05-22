@@ -39,7 +39,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "1.0.9"
+VERSION = "1.1.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -384,6 +384,10 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
         ]
         return any(sig in html_content for sig in signatures)
 
+    import urllib.error
+    
+    hard_failure_code = None
+
     # First attempt with standard User-Agent
     html_head = None
     try:
@@ -397,6 +401,10 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
                 # Read first 512KB
                 html_bytes = response.read(512 * 1024)
                 html_head = html_bytes.decode('utf-8', errors='ignore')
+    except urllib.error.HTTPError as e:
+        logger.warning(f"Standard fetch failed/blocked for {url} in OG parse: HTTP Error {e.code}: {e.reason}. Trying non-Mozilla User-Agent fallback...")
+        if e.code in (401, 403, 404):
+            hard_failure_code = e.code
     except Exception as e:
         logger.warning(f"Standard fetch failed/blocked for {url} in OG parse: {e}. Trying non-Mozilla User-Agent fallback...")
 
@@ -418,8 +426,17 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
                     # Read first 512KB
                     html_bytes = response.read(512 * 1024)
                     html_head = html_bytes.decode('utf-8', errors='ignore')
+                # Succeeded, clear any recorded hard failure code
+                hard_failure_code = None
+        except urllib.error.HTTPError as e:
+            logger.warning(f"Fallback fetch failed for {url} with non-Mozilla User-Agent: HTTP Error {e.code}: {e.reason}")
+            if e.code in (401, 403, 404):
+                hard_failure_code = e.code
         except Exception as e:
             logger.warning(f"Fallback fetch failed for {url} with non-Mozilla User-Agent: {e}")
+
+    if hard_failure_code is not None:
+        return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}"
 
     # Parse and extract
     if html_head is not None:
@@ -504,6 +521,11 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                 cached_title = cached.get("title", "")
                 cached_image_path = cached.get("image_path")
                 
+                # Suppress if cached as a failed block
+                if cached_title == "__FAILED_BLOCK__":
+                    logger.info(f"Suppressing group preview due to cached hard failure block for {url}")
+                    return
+                
                 # Verify that if there is a cached image path, the file still exists on disk
                 if not cached_image_path or os.path.exists(cached_image_path):
                     logger.info(f"OG Cache hit for group preview: {url}")
@@ -521,6 +543,12 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         # 4. Cache Miss - Fetch OG tags
         logger.info(f"OG Cache miss for group preview: {url}. Fetching from network.")
         title, image_url = _get_og_preview_data(url)
+        
+        if title == "__FAILED_BLOCK__":
+            # Cache failure for 1 hour to prevent redundant requests
+            database.add_cached_og(urlhash, "__FAILED_BLOCK__", image_url)
+            logger.warning(f"Suppressing group preview for {url} due to hard failure block: {image_url}")
+            return
         
         # 5. Format caption
         caption = (
@@ -553,6 +581,35 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         logger.info(f"Exclusion hit for URL: {url} in chat {chat_id}")
         _react(bot, accid, req_msg_id, "⚠️")
         _send(bot, accid, chat_id, f"⚠️ This URL is in the exclusion list.")
+        return
+
+    # Check cache for hard block fast rejection
+    urlhash = database.get_or_create_url_hash(url)
+    cached_og = database.get_cached_og(urlhash)
+    
+    # If not in cache, do a fast pre-check to populate the cache and avoid monolith overhead on blocked sites!
+    if not cached_og:
+        logger.info(f"Pre-checking URL status for {url} before starting monolith compilation...")
+        og_title, og_image = _get_og_preview_data(url)
+        if og_title == "__FAILED_BLOCK__":
+            database.add_cached_og(urlhash, "__FAILED_BLOCK__", og_image)
+            cached_og = {"title": "__FAILED_BLOCK__", "image_path": og_image}
+        else:
+            database.add_cached_og(urlhash, og_title, og_image)
+            cached_og = {"title": og_title, "image_path": og_image}
+            
+    if cached_og and cached_og.get("title") == "__FAILED_BLOCK__":
+        reason = cached_og.get("image_path") or "HTTP 403 Forbidden"
+        if "HTTP 403" in reason:
+            reason = "HTTP 403 Forbidden"
+        elif "HTTP 401" in reason:
+            reason = "HTTP 401 Unauthorized"
+        elif "HTTP 404" in reason:
+            reason = "HTTP 404 Not Found"
+            
+        logger.warning(f"Fast-rejecting manual preview request for {url} because website is blocking bot requests ({reason}).")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests ({reason}).")
         return
 
     import hashlib

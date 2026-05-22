@@ -4,6 +4,13 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-22
+
+### Added
+- Implemented Fast-Rejection Optimization for blocked websites. When a target website blocks the bot's lightweight fetches with hard HTTP status codes (such as HTTP 403 Forbidden, 401 Unauthorized, or 404 Not Found) on both standard and fallback User-Agents, the bot caches this failure in SQLite as a `__FAILED_BLOCK__` entry for 1 hour.
+- Suppressed empty button auto-preview spam in group chats when lightweight fetches fail with a hard block.
+- Implemented fast-rejection check in manual monolith compilation commands (`/preview` and `/previewjs`) using the cache, or running a quick pre-check if the URL is not yet cached. Rejects requests instantly with a `❌` reaction and a clean block error message, completely bypassing the heavy 35-second `monolith` subprocess and saving massive CPU and bandwidth resources.
+
 ## [1.0.9] - 2026-05-22
 
 ### Added

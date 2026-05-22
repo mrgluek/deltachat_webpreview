@@ -598,11 +598,17 @@ def _handle_preview_command(bot, accid, event, with_js: bool):
 def preview_command(bot, accid, event):
     if accid != dc_accid:
         return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/preview(?:\s|$)", text):
+        return
     _handle_preview_command(bot, accid, event, with_js=False)
 
 @dc_cli.on(events.NewMessage(command="/previewjs"))
 def previewjs_command(bot, accid, event):
     if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/previewjs(?:\s|$)", text):
         return
     _handle_preview_command(bot, accid, event, with_js=True)
 
@@ -874,6 +880,9 @@ def initadmin_command(bot, accid, event):
 @dc_cli.on(events.NewMessage(command="/preview_exclude"))
 def preview_exclude_command(bot, accid, event):
     msg = event.msg
+    text = (msg.text or "").strip()
+    if not re.match(r"^/preview_exclude(?:\s|$)", text):
+        return
     if not _is_dc_admin(bot, accid, msg.from_id):
         _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /preview_exclude.")
         return
@@ -892,6 +901,9 @@ def preview_exclude_command(bot, accid, event):
 @dc_cli.on(events.NewMessage(command="/preview_unexclude"))
 def preview_unexclude_command(bot, accid, event):
     msg = event.msg
+    text = (msg.text or "").strip()
+    if not re.match(r"^/preview_unexclude(?:\s|$)", text):
+        return
     if not _is_dc_admin(bot, accid, msg.from_id):
         _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /preview_unexclude.")
         return
@@ -910,6 +922,9 @@ def preview_unexclude_command(bot, accid, event):
 @dc_cli.on(events.NewMessage(command="/preview_exclusions"))
 def preview_exclusions_command(bot, accid, event):
     msg = event.msg
+    text = (msg.text or "").strip()
+    if not re.match(r"^/preview_exclusions(?:\s|$)", text):
+        return
     if not _is_dc_admin(bot, accid, msg.from_id):
         _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /preview_exclusions.")
         return

@@ -159,6 +159,45 @@ def _is_rate_limited(bot, accid, from_id) -> bool:
     _user_rate_limits[from_id] = now
     return False
 
+def _is_yt_bot_in_chat(bot, accid, chat_id) -> bool:
+    """Check if the YT Bot is present in the specified chat."""
+    try:
+        contacts = bot.rpc.get_chat_contacts(accid, chat_id)
+        if not contacts:
+            return False
+        for contact_id in contacts:
+            if contact_id <= 9:  # Skip system contacts
+                continue
+            contact = bot.rpc.get_contact(accid, contact_id)
+            display_name = getattr(contact, "display_name", "") or getattr(contact, "displayname", "")
+            if not display_name and hasattr(contact, "get"):
+                display_name = contact.get("display_name") or contact.get("displayname") or ""
+            
+            display_name_str = str(display_name).lower()
+            if "yt bot" in display_name_str or "youtube bot" in display_name_str:
+                return True
+    except Exception as e:
+        logger.warning(f"Error checking if YT Bot is in chat: {e}")
+    return False
+
+def _is_handled_by_yt_bot(url: str) -> bool:
+    """Return True if the URL is of a media type handled by YT Bot."""
+    url_lower = url.lower()
+    # 1. YouTube URLs
+    if "youtube.com" in url_lower or "youtu.be" in url_lower or "youtube-nocookie.com" in url_lower:
+        return True
+    # 2. Yandex Music URLs
+    if "music.yandex." in url_lower:
+        return True
+    # 3. Major video/audio hosting sites supported by YT Bot
+    other_media_domains = [
+        "vimeo.com", "vk.com/video", "vkvideo.ru", "rutube.ru", "soundcloud.com", 
+        "tiktok.com", "twitch.tv", "bilibili.com", "dzen.ru", "ok.ru", "coub.com"
+    ]
+    if any(domain in url_lower for domain in other_media_domains):
+        return True
+    return False
+
 # ── Message sending helpers with Failover and Stats ──
 
 def _send(bot, accid, chat_id, text, file=None):
@@ -1029,6 +1068,11 @@ def on_new_message(bot, accid, event):
                     
                     # Skip if the URL is in the exclusions
                     if database.is_excluded(url):
+                        return
+
+                    # Skip if YT Bot is in the chat and this is a link handled by YT Bot
+                    if _is_yt_bot_in_chat(bot, accid, msg.chat_id) and _is_handled_by_yt_bot(url):
+                        logger.info(f"Skipping group link auto-preview for {url} since YT Bot is present and handles it.")
                         return
                         
                     # Rate limiting check

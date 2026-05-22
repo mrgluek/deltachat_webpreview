@@ -371,10 +371,10 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
         logger.warning(f"Error fetching OG tags for {url}: {e}")
         return urllib.parse.urlparse(url).netloc or "Webpage", None
 
-def _download_temp_image(image_url: str) -> str | None:
+def _download_cached_image(image_url: str, urlhash: str) -> str | None:
     """
-    Downloads an image URL to a temporary file.
-    Returns absolute path of the temporary file, or None if failed.
+    Downloads an image URL and saves it in the persistent cache directory.
+    Returns absolute path of the cached file, or None if failed.
     """
     try:
         req = urllib.request.Request(
@@ -394,15 +394,19 @@ def _download_temp_image(image_url: str) -> str | None:
             elif "gif" in content_type.lower():
                 ext = ".gif"
                 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(response.read())
-                return tmp.name
+            cached_filename = f"og_{urlhash}{ext}"
+            cached_path = os.path.join(CACHE_DIR, cached_filename)
+            
+            with open(cached_path, "wb") as f:
+                f.write(response.read())
+                
+            return cached_path
     except Exception as e:
-        logger.warning(f"Failed to download OG image {image_url}: {e}")
+        logger.warning(f"Failed to download cached OG image {image_url}: {e}")
         return None
 
 def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
-    """Fetches OG data, downloads banner image, and sends preview options to group."""
+    """Fetches OG data, downloads banner image, and sends preview options to group (with 1h cache)."""
     try:
         # 1. Skip if the URL matches exclusion pattern
         if database.is_excluded(url):
@@ -412,30 +416,53 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         # 2. Get or create short hash in SQLite database
         urlhash = database.get_or_create_url_hash(url)
         
-        # 3. Get OG tags
+        # 3. Check Cache
+        cached = database.get_cached_og(urlhash)
+        if cached:
+            created_at = cached.get("created_at", 0)
+            if time.time() - created_at < CACHE_MAX_AGE:
+                cached_title = cached.get("title", "")
+                cached_image_path = cached.get("image_path")
+                
+                # Verify that if there is a cached image path, the file still exists on disk
+                if not cached_image_path or os.path.exists(cached_image_path):
+                    logger.info(f"OG Cache hit for group preview: {url}")
+                    caption = (
+                        f"🌐 {cached_title}\n\n"
+                        f"Preview page: /preview_{urlhash}\n"
+                        f"Preview with js: /previewjs_{urlhash}"
+                    )
+                    if cached_image_path:
+                        _send(bot, accid, chat_id, caption, file=cached_image_path)
+                    else:
+                        _send(bot, accid, chat_id, caption)
+                    return
+        
+        # 4. Cache Miss - Fetch OG tags
+        logger.info(f"OG Cache miss for group preview: {url}. Fetching from network.")
         title, image_url = _get_og_preview_data(url)
         
-        # 4. Format caption
+        # 5. Format caption
         caption = (
             f"🌐 {title}\n\n"
             f"Preview page: /preview_{urlhash}\n"
             f"Preview with js: /previewjs_{urlhash}"
         )
         
-        img_path = None
+        # 6. Download image if exists, saving to persistent cache folder
+        img_cache_path = None
         if image_url:
-            img_path = _download_temp_image(image_url)
+            img_cache_path = _download_cached_image(image_url, urlhash)
             
-        try:
-            if img_path:
-                _send(bot, accid, chat_id, caption, file=img_path)
-            else:
-                _send(bot, accid, chat_id, caption)
-        finally:
-            if img_path and os.path.exists(img_path):
-                try:
-                    os.remove(img_path)
-                except: pass
+        # 7. Add to SQLite cache
+        database.add_cached_og(urlhash, title, img_cache_path)
+        
+        # 8. Send to group
+        if img_cache_path and os.path.exists(img_cache_path):
+            _send(bot, accid, chat_id, caption, file=img_cache_path)
+        else:
+            _send(bot, accid, chat_id, caption)
+            
     except Exception as e:
         logger.error(f"Error in _do_group_link_preview: {e}")
 

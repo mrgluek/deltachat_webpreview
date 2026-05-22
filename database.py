@@ -68,6 +68,16 @@ def init_db():
                 pattern TEXT PRIMARY KEY
             )
         ''')
+
+        # OG Cache table for cached banner images and titles
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS og_cache (
+                url_key TEXT PRIMARY KEY,
+                title TEXT,
+                image_path TEXT,
+                created_at INTEGER
+            )
+        ''')
         
         conn.commit()
         conn.close()
@@ -204,6 +214,31 @@ def clear_expired_cache(max_age_seconds: int):
             "DELETE FROM url_cache WHERE created_at < CAST(strftime('%s','now') AS INTEGER) - ?",
             (max_age_seconds,)
         )
+        cursor.execute(
+            "DELETE FROM og_cache WHERE created_at < CAST(strftime('%s','now') AS INTEGER) - ?",
+            (max_age_seconds,)
+        )
+        conn.commit()
+        conn.close()
+
+def get_cached_og(url_key: str) -> dict | None:
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM og_cache WHERE url_key = ?", (url_key,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+def add_cached_og(url_key: str, title: str, image_path: str | None):
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO og_cache (url_key, title, image_path, created_at)
+            VALUES (?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
+        ''', (url_key, title, image_path))
         conn.commit()
         conn.close()
 

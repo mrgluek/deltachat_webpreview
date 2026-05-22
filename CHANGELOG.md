@@ -4,6 +4,13 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-05-22
+
+### Added
+- Implemented robust self-healing bypass for websites protected by the Anubis Web AI Firewall. The bot detects the cryptographic Proof-of-Work challenge and automatically retries utilizing a custom non-Mozilla User-Agent to retrieve the genuine webpage content.
+- Added self-healing fallback in both direct monolith page compilation and group chat Open Graph metadata auto-previews.
+- Extended the non-Mozilla fallback capability to the OG banner image downloading subsystem, securing complete preview generation for protected resources.
+
 ## [1.0.5] - 2026-05-22
 
 ### Added

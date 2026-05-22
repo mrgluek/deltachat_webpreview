@@ -39,6 +39,30 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
+VERSION = "1.0.9"
+STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
+
+def _is_anubis_blocked(filepath: str) -> bool:
+    """Check if the downloaded page is an Anubis challenge/block page."""
+    try:
+        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+            return False
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            # Read first 128KB to detect Anubis signature
+            content = f.read(128 * 1024)
+            signatures = [
+                "Protected by Anubis",
+                "Testing to determine if you are a bot!",
+                "anubis.techaro.lol"
+            ]
+            for sig in signatures:
+                if sig in content:
+                    return True
+    except Exception as e:
+        logger.warning(f"Error checking Anubis status on file {filepath}: {e}")
+    return False
+
 _processed_msg_ids = set()
 _processed_msg_lock = threading.Lock()
 
@@ -321,71 +345,126 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
     Returns (title, og_image_url).
     """
-    try:
-        req = urllib.request.Request(
-            url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        )
-        with urllib.request.urlopen(req, timeout=5) as response:
-            content_type = response.headers.get('Content-Type', '')
-            if 'text/html' not in content_type.lower():
-                return urllib.parse.urlparse(url).netloc, None
-            
-            # Read first 512KB
-            html_bytes = response.read(512 * 1024)
-            head = html_bytes.decode('utf-8', errors='ignore')
-            
-            # 1. Extract title
-            title = None
-            title_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:title["\'][^>]*content=["\'](.*?)["\']', head, re.IGNORECASE)
-            if not title_m:
-                title_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:title["\']', head, re.IGNORECASE)
+    def parse_html(html_content: str) -> tuple[str | None, str | None]:
+        # 1. Extract title
+        title = None
+        title_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:title["\'][^>]*content=["\'](.*?)["\']', html_content, re.IGNORECASE)
+        if not title_m:
+            title_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:title["\']', html_content, re.IGNORECASE)
+        if title_m:
+            import html
+            title = html.unescape(title_m.group(1).strip())
+        
+        if not title:
+            # Fallback to <title>
+            title_m = re.search(r'<title[^>]*>(.*?)</title>', html_content, re.IGNORECASE | re.DOTALL)
             if title_m:
                 import html
                 title = html.unescape(title_m.group(1).strip())
+        
+        # 2. Extract og:image
+        image_url = None
+        img_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:image["\'][^>]*content=["\'](.*?)["\']', html_content, re.IGNORECASE)
+        if not img_m:
+            img_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:image["\']', html_content, re.IGNORECASE)
+        if not img_m:
+            img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=["\'](.*?)["\']', html_content, re.IGNORECASE)
+        
+        if img_m:
+            image_url = img_m.group(1).strip()
+            image_url = urllib.parse.urljoin(url, image_url)
             
-            if not title:
-                # Fallback to <title>
-                title_m = re.search(r'<title[^>]*>(.*?)</title>', head, re.IGNORECASE | re.DOTALL)
-                if title_m:
-                    import html
-                    title = html.unescape(title_m.group(1).strip())
-            
-            if not title:
-                title = urllib.parse.urlparse(url).netloc or "Webpage"
-                
-            # 2. Extract og:image
-            image_url = None
-            img_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:image["\'][^>]*content=["\'](.*?)["\']', head, re.IGNORECASE)
-            if not img_m:
-                img_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:image["\']', head, re.IGNORECASE)
-            if not img_m:
-                img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=["\'](.*?)["\']', head, re.IGNORECASE)
-            
-            if img_m:
-                image_url = img_m.group(1).strip()
-                image_url = urllib.parse.urljoin(url, image_url)
-                
-            return title, image_url
+        return title, image_url
+
+    def is_anubis_html(html_content: str) -> bool:
+        signatures = [
+            "Protected by Anubis",
+            "Testing to determine if you are a bot!",
+            "anubis.techaro.lol"
+        ]
+        return any(sig in html_content for sig in signatures)
+
+    # First attempt with standard User-Agent
+    html_head = None
+    try:
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': STANDARD_USER_AGENT}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            content_type = response.headers.get('Content-Type', '')
+            if 'text/html' in content_type.lower():
+                # Read first 512KB
+                html_bytes = response.read(512 * 1024)
+                html_head = html_bytes.decode('utf-8', errors='ignore')
     except Exception as e:
-        logger.warning(f"Error fetching OG tags for {url}: {e}")
-        return urllib.parse.urlparse(url).netloc or "Webpage", None
+        logger.warning(f"Standard fetch failed/blocked for {url} in OG parse: {e}. Trying non-Mozilla User-Agent fallback...")
+
+    # If first fetch succeeded, check if it's an Anubis block page
+    if html_head is not None and is_anubis_html(html_head):
+        logger.warning(f"Anubis challenge detected in OG fetch for {url} with standard User-Agent. Triggering fallback...")
+        html_head = None  # Force retry
+
+    # Retry with non-Mozilla User-Agent if standard fetch failed or was blocked
+    if html_head is None:
+        try:
+            req = urllib.request.Request(
+                url, 
+                headers={'User-Agent': NON_MOZILLA_USER_AGENT}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'text/html' in content_type.lower():
+                    # Read first 512KB
+                    html_bytes = response.read(512 * 1024)
+                    html_head = html_bytes.decode('utf-8', errors='ignore')
+        except Exception as e:
+            logger.warning(f"Fallback fetch failed for {url} with non-Mozilla User-Agent: {e}")
+
+    # Parse and extract
+    if html_head is not None:
+        title, image_url = parse_html(html_head)
+        if title:
+            return title, image_url
+
+    return urllib.parse.urlparse(url).netloc or "Webpage", None
 
 def _download_cached_image(image_url: str, urlhash: str) -> str | None:
     """
     Downloads an image URL and saves it in the persistent cache directory.
     Returns absolute path of the cached file, or None if failed.
     """
+    # Try standard User-Agent first
+    response_data = None
+    content_type = ""
     try:
         req = urllib.request.Request(
             image_url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            headers={'User-Agent': STANDARD_USER_AGENT}
         )
         with urllib.request.urlopen(req, timeout=5) as response:
             content_type = response.headers.get('Content-Type', '')
-            if 'image' not in content_type.lower():
-                return None
-            
+            if 'image' in content_type.lower():
+                response_data = response.read()
+    except Exception as e:
+        logger.warning(f"Standard fetch failed for image {image_url}: {e}. Retrying with non-Mozilla User-Agent...")
+
+    # Fallback to non-Mozilla User-Agent
+    if response_data is None:
+        try:
+            req = urllib.request.Request(
+                image_url, 
+                headers={'User-Agent': NON_MOZILLA_USER_AGENT}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type.lower():
+                    response_data = response.read()
+        except Exception as e:
+            logger.warning(f"Fallback fetch failed for image {image_url}: {e}")
+
+    if response_data is not None:
+        try:
             ext = ".jpg"
             if "png" in content_type.lower():
                 ext = ".png"
@@ -398,12 +477,13 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
             cached_path = os.path.join(CACHE_DIR, cached_filename)
             
             with open(cached_path, "wb") as f:
-                f.write(response.read())
+                f.write(response_data)
                 
             return cached_path
-    except Exception as e:
-        logger.warning(f"Failed to download cached OG image {image_url}: {e}")
-        return None
+        except Exception as e:
+            logger.warning(f"Failed to write downloaded image to {cached_path}: {e}")
+            
+    return None
 
 def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
     """Fetches OG data, downloads banner image, and sends preview options to group (with 1h cache)."""
@@ -512,7 +592,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         cmd.append("-j")
     
     # User-agent to bypass primitive bots block
-    cmd.extend(["-u", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"])
+    cmd.extend(["-u", STANDARD_USER_AGENT])
     cmd.extend([url, "-o", output_path])
 
     start_time = time.time()
@@ -522,6 +602,27 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         code, err = loop.run_until_complete(_run_monolith_process(cmd))
     finally:
         loop.close()
+    
+    # Self-healing retry for Anubis block
+    if code == 0 and os.path.exists(output_path) and _is_anubis_blocked(output_path):
+        logger.warning(f"Anubis challenge detected for {url}. Retrying with non-Mozilla user agent...")
+        try:
+            os.remove(output_path)
+        except Exception as remove_err:
+            logger.warning(f"Error removing Anubis-blocked output: {remove_err}")
+            
+        cmd = ["monolith", "-e", "-t", "30"]
+        if not with_js:
+            cmd.append("-j")
+        cmd.extend(["-u", NON_MOZILLA_USER_AGENT])
+        cmd.extend([url, "-o", output_path])
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            code, err = loop.run_until_complete(_run_monolith_process(cmd))
+        finally:
+            loop.close()
     
     duration = int(time.time() - start_time)
 
@@ -1136,7 +1237,7 @@ def on_new_message(bot, accid, event):
 @dc_cli.on_init
 def on_init(bot, args):
     global dc_bot_instance, dc_accid
-    bot.logger.info("Initializing WebPreview Bot...")
+    bot.logger.info(f"Initializing WebPreview Bot v{VERSION}...")
     dc_bot_instance = bot
     
     accounts = bot.rpc.get_all_account_ids()
@@ -1169,7 +1270,7 @@ def on_start(bot, args):
     accid = accounts[0]
     dc_accid = accid
     
-    logger.info(f"WebPreview bot started with accid {accid}.")
+    logger.info(f"WebPreview bot v{VERSION} started with accid {accid}.")
     
     # Show configured admin and transports
     admin_email = database.get_config("admin_dc_email")

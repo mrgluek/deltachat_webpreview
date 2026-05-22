@@ -4,6 +4,11 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-05-22
+
+### Fixed
+- **Contact Fingerprint Parsing:** Fixed a parsing bug where PGP fingerprints containing newlines or extra whitespaces in `get_contact_encryption_info` failed to be extracted for contacts. This resolves admin verification failures when writing to the bot from secondary relay accounts using the same PGP keys.
+
 ## [1.2.0] - 2026-05-22
 
 ### Added

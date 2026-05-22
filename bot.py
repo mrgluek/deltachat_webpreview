@@ -39,7 +39,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -134,7 +134,8 @@ def _get_contact_fingerprint(bot, accid, contact_id, contact=None):
         try:
             enc_info = bot.rpc.get_contact_encryption_info(*args)
             if enc_info:
-                matches = re.findall(r'[0-9a-fA-F]{32,64}', enc_info.replace(' ', '').replace(':', ''))
+                cleaned = "".join(enc_info.split()).replace(':', '')
+                matches = re.findall(r'[0-9a-fA-F]{32,64}', cleaned)
                 valid_matches = [m.upper() for m in matches if m.upper() not in self_fps]
                 if valid_matches:
                     return ",".join(valid_matches)

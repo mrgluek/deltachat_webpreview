@@ -706,8 +706,10 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
             img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=["\'](.*?)["\']', html_content, re.IGNORECASE)
         
         if img_m:
-            image_url = img_m.group(1).strip()
+            import html
+            image_url = html.unescape(img_m.group(1).strip())
             image_url = urllib.parse.urljoin(url, image_url)
+
             
         return title, image_url
 

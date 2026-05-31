@@ -1,2 +1,6 @@
 deltabot-cli @ git+https://github.com/deltachat-bot/deltabot-cli-py.git
 qrcode
+readability-lxml
+beautifulsoup4
+Pillow
+lxml

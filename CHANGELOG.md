@@ -4,6 +4,17 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-05-31
+
+### Added
+- **Mozilla Readability Default Mode:** `/preview` now compiles pages using Mozilla's Readability algorithm into highly compressed, clean, and beautiful Reader Mode HTML documents.
+- **Pure-Python Image Optimization Engine:** Automatically downloads, resizes (maximum width 800px), compresses and base64-inlines all images inside readability pages into optimized WebP (preserving transparency) or JPEG formats using Pillow, producing completely offline-readable and featherweight outputs.
+- **Premium Reader Styling:** Readability documents are styled using a custom modern responsive layout that adapts seamlessly to desktop or mobile viewport dimensions and supports prefers-color-scheme light/dark modes automatically.
+- **Full Interactive Archiving Command:** Added a new `/archive` command running monolith with JavaScript execution enabled.
+- **Monolith Base64 Post-Compression:** Integrates BeautifulSoup and Pillow image post-processing to parse generated monolith archives and compress heavy inlined Base64 graphics, reducing monolith file sizes from dozens of megabytes down to 1-2 MB.
+- **Backwards Compatibility Support:** Kept `/previewjs` as a silent alias routed directly to the new `/archive` command.
+
+
 ## [1.2.2] - 2026-05-22
 
 ### Fixed

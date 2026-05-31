@@ -4,9 +4,9 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 
 ## Features
 
-- 📄 **Safe Static Previews (`/preview <url>`):** Compile complete pages into a single lightweight, secure, and fast HTML file with JavaScript execution disabled (recommended).
-- ⚡ **JS-Hydrated Previews (`/previewjs <url>`):** Save complete pages with JavaScript execution enabled to preserve dynamic page hydration.
-- 💬 **Quote Reply Parsing:** Reply with `/preview` or `/previewjs` (without a URL) to any message containing links, and the bot will automatically extract and capture the first link in the quoted text.
+- 📄 **Compressed Reader Mode (`/preview <url>`):** Compile webpages into highly compressed, clutter-free reader views using Mozilla's Readability. All images are automatically downloaded, optimized, resized, and inlined as Base64 (recommended default).
+- ⚡ **Full Page Archiving (`/archive <url>`):** Save complete pages as full interactive archives with JavaScript enabled using `monolith`. Proactively compresses and optimizes heavy base64-encoded image payloads post-generation to keep files tiny.
+- 💬 **Quote Reply Parsing:** Reply with `/preview` or `/archive` (without a URL) to any message containing links, and the bot will automatically extract and capture the first link in the quoted text.
 - ⏱️ **Rate Limiting:** Protects against abuse by rate-limiting regular users (15-second debounce) while allowing admins unlimited generations.
 - 🔄 **Failover Transports (Relays):** Supports multiple mail servers. The bot automatically switches to backup transports if the primary server fails to send messages.
 - 🛡️ **Secure Administration:** Claim ownership with `/initadmin`. Admins bypass rate limits and have exclusive control over relays and statistics.
@@ -43,8 +43,8 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 
 ## Commands
 
-- `/preview <url>` — Save web page preview as a safe static HTML attachment (no JS).
-- `/previewjs <url>` — Save web page preview with JavaScript execution enabled.
+- `/preview <url>` — Save page in highly compressed reader-mode format (using Mozilla's Readability).
+- `/archive <url>` — Save page as a full monolith-based dynamic archive (with JS enabled, optimized images). *(Note: `/previewjs` is also supported as an alias to `/archive`)*
 - `/stats` — Show generation counters, total traffic size, and disk space (disk space is admin-only).
 - `/source` — Show primary and backup source code links 🔌.
 - `/donate` — Support project development ❤️.

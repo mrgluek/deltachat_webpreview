@@ -17,6 +17,18 @@ from deltachat2 import events, MsgData
 from deltabot_cli import BotCli
 
 import database
+from bs4 import BeautifulSoup
+from readability import Document
+from PIL import Image
+import io
+import base64
+
+try:
+    import lxml
+    BS_PARSER = "lxml"
+except ImportError:
+    BS_PARSER = "html.parser"
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("webpreview_bot")
@@ -39,11 +51,333 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "1.2.2"
+VERSION = "2.0.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
+def compress_image(image_bytes: bytes, max_width=800, quality=70) -> bytes:
+    """Compresses an image to WebP or JPEG, resizing if wider than max_width."""
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Determine output format and convert if necessary
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            img_format = "WEBP"
+        else:
+            img_format = "JPEG"
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+        
+        # Resize if width exceeds max_width
+        if img.width > max_width:
+            ratio = max_width / float(img.width)
+            new_height = int(float(img.height) * ratio)
+            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+            
+        out_io = io.BytesIO()
+        img.save(out_io, format=img_format, quality=quality, optimize=True)
+        return out_io.getvalue()
+    except Exception as e:
+        logger.warning(f"Failed to compress image: {e}")
+        return image_bytes
+
+def _download_image_bytes(image_url: str) -> bytes | None:
+    """Downloads image bytes trying standard and fallback User-Agents."""
+    for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
+        try:
+            req = urllib.request.Request(image_url, headers={'User-Agent': ua})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type.lower() or response.status == 200:
+                    return response.read()
+        except Exception as e:
+            logger.debug(f"Failed to fetch image {image_url} with UA {ua}: {e}")
+    return None
+
+def _download_page_html(url: str) -> tuple[str | None, str | None]:
+    """
+    Downloads page HTML using standard and fallback User-Agents.
+    Returns (html_str, error_msg).
+    """
+    import urllib.request
+    import urllib.error
+    
+    html_str = None
+    error_msg = None
+    
+    for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': ua})
+            with urllib.request.urlopen(req, timeout=15) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'text/html' not in content_type.lower():
+                    continue
+                html_bytes = response.read()
+                decoded = html_bytes.decode('utf-8', errors='ignore')
+                
+                # Check for Anubis
+                if "Protected by Anubis" in decoded or "anubis.techaro.lol" in decoded:
+                    logger.warning(f"Anubis challenge detected in HTML with User-Agent: {ua}")
+                    error_msg = "Blocked by Anubis protection"
+                    continue
+                    
+                html_str = decoded
+                error_msg = None
+                break
+        except urllib.error.HTTPError as e:
+            error_msg = f"HTTP Error {e.code}: {e.reason}"
+        except Exception as e:
+            error_msg = str(e)
+            
+    return html_str, error_msg
+
+READABILITY_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{title}}</title>
+    <style>
+        :root {{
+            --bg-color: #f7f9fa;
+            --text-color: #1a1a1a;
+            --card-bg: #ffffff;
+            --link-color: #0076ff;
+            --border-color: #e1e8ed;
+            --muted-color: #657786;
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }}
+        @media (prefers-color-scheme: dark) {{
+            :root {{
+                --bg-color: #15202b;
+                --text-color: #f7f9fa;
+                --card-bg: #192734;
+                --link-color: #1b95e0;
+                --border-color: #38444d;
+                --muted-color: #8899a6;
+            }}
+        }}
+        body {{
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+        }}
+        .container {{
+            max-width: 700px;
+            width: 100%;
+            margin: 40px 20px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            box-sizing: border-box;
+        }}
+        @media (max-width: 600px) {{
+            .container {{
+                margin: 0;
+                border-radius: 0;
+                border: none;
+                padding: 20px;
+            }}
+        }}
+        header {{
+            margin-bottom: 30px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 20px;
+        }}
+        h1 {{
+            font-size: 2.2rem;
+            margin-top: 0;
+            margin-bottom: 10px;
+            line-height: 1.25;
+        }}
+        .meta {{
+            font-size: 0.9rem;
+            color: var(--muted-color);
+        }}
+        .meta a {{
+            color: var(--link-color);
+            text-decoration: none;
+        }}
+        .meta a:hover {{
+            text-decoration: underline;
+        }}
+        .content img {{
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin: 20px 0;
+            display: block;
+        }}
+        .content a {{
+            color: var(--link-color);
+            text-decoration: none;
+        }}
+        .content a:hover {{
+            text-decoration: underline;
+        }}
+        .content p {{
+            margin-bottom: 1.5em;
+        }}
+        .content blockquote {{
+            border-left: 4px solid var(--link-color);
+            padding-left: 20px;
+            margin: 20px 0;
+            color: var(--muted-color);
+            font-style: italic;
+        }}
+        .content pre {{
+            background-color: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            overflow-x: auto;
+            font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 0.9rem;
+        }}
+        .content code {{
+            font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+            background-color: var(--bg-color);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }}
+        .content pre code {{
+            padding: 0;
+            background-color: transparent;
+            border-radius: 0;
+        }}
+    </style>
+</head>
+<body>
+    <article class="container">
+        <header>
+            <h1>{title}</h1>
+            <div class="meta">
+                Original URL: <a href="{url}" target="_blank" rel="noopener noreferrer">{domain}</a>
+            </div>
+        </header>
+        <div class="content">
+            {content}
+        </div>
+    </article>
+</body>
+</html>
+"""
+
+def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str]:
+    """
+    Generates a readability preview file at output_path.
+    Returns (success, error_msg_or_title).
+    """
+    try:
+        from readability import Document
+        from bs4 import BeautifulSoup
+        import base64
+        import urllib.parse
+        
+        html_str, err = _download_page_html(url)
+        if not html_str:
+            return False, err or "Failed to download page content"
+            
+        doc = Document(html_str)
+        title = doc.title() or "Webpage Preview"
+        summary = doc.summary()
+        
+        if not summary or len(summary.strip()) < 50:
+            return False, "Readability failed to extract meaningful content from this page"
+            
+        soup = BeautifulSoup(summary, BS_PARSER)
+        
+        # Inline images with compression
+        for img in soup.find_all('img'):
+            img_src = img.get('src')
+            if not img_src or img_src.startswith('data:'):
+                continue
+                
+            absolute_img_url = urllib.parse.urljoin(url, img_src)
+            try:
+                img_bytes = _download_image_bytes(absolute_img_url)
+                if img_bytes:
+                    compressed = compress_image(img_bytes, max_width=800, quality=70)
+                    mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
+                    b64_str = base64.b64encode(compressed).decode('utf-8')
+                    img['src'] = f"data:{mime_type};base64,{b64_str}"
+            except Exception as img_err:
+                logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
+                
+        # Format templates
+        domain = urllib.parse.urlparse(url).netloc or "webpage"
+        final_html = READABILITY_HTML_TEMPLATE.format(
+            title=title,
+            url=url,
+            domain=domain,
+            content=str(soup)
+        )
+        
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(final_html)
+            
+        return True, title
+    except Exception as e:
+        logger.error(f"Error in _generate_readability_preview: {e}")
+        return False, str(e)
+
+def compress_monolith_html(filepath: str):
+    """
+    Reads monolith HTML, finds all base64-encoded img tags,
+    compresses the images, and writes them back.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        import base64
+        
+        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+            return
+            
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+            
+        soup = BeautifulSoup(content, BS_PARSER)
+        modified = False
+        
+        for img in soup.find_all('img'):
+            img_src = img.get('src', '')
+            if img_src.startswith('data:image/'):
+                try:
+                    # Extract mime type and base64 string
+                    if ',' in img_src:
+                        header, base64_data = img_src.split(',', 1)
+                        img_bytes = base64.b64decode(base64_data)
+                        
+                        # Only compress if it is reasonably large, e.g. > 10KB
+                        if len(img_bytes) > 10 * 1024:
+                            compressed = compress_image(img_bytes, max_width=800, quality=70)
+                            if len(compressed) < len(img_bytes):
+                                mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
+                                b64_str = base64.b64encode(compressed).decode('utf-8')
+                                img['src'] = f"data:{mime_type};base64,{b64_str}"
+                                modified = True
+                except Exception as e:
+                    logger.warning(f"Error compressing monolith base64 image: {e}")
+                    
+        if modified:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(str(soup))
+            logger.info(f"Successfully compressed images in monolith HTML file {filepath}")
+    except Exception as e:
+        logger.error(f"Error post-processing monolith file {filepath}: {e}")
+
 def _is_anubis_blocked(filepath: str) -> bool:
+
     """Check if the downloaded page is an Anubis challenge/block page."""
     try:
         if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -598,7 +932,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     caption = (
                         f"🌐 {cached_title}\n\n"
                         f"Preview page: /preview_{urlhash}\n"
-                        f"Preview with js: /previewjs_{urlhash}"
+                        f"Full archive: /archive_{urlhash}"
                     )
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
@@ -620,7 +954,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         caption = (
             f"🌐 {title}\n\n"
             f"Preview page: /preview_{urlhash}\n"
-            f"Preview with js: /previewjs_{urlhash}"
+            f"Full archive: /archive_{urlhash}"
         )
         
         # 6. Download image if exists, saving to persistent cache folder
@@ -640,8 +974,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
     except Exception as e:
         logger.error(f"Error in _do_group_link_preview: {e}")
 
-def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: bool):
-    """Run monolith compilation in background thread."""
+
+def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
+    """Run preview/archive generation in background thread."""
     # 0. Check exclusions first!
     if database.is_excluded(url):
         logger.info(f"Exclusion hit for URL: {url} in chat {chat_id}")
@@ -653,9 +988,9 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
     urlhash = database.get_or_create_url_hash(url)
     cached_og = database.get_cached_og(urlhash)
     
-    # If not in cache, do a fast pre-check to populate the cache and avoid monolith overhead on blocked sites!
+    # If not in cache, do a fast pre-check to populate the cache and avoid network overhead on blocked sites!
     if not cached_og:
-        logger.info(f"Pre-checking URL status for {url} before starting monolith compilation...")
+        logger.info(f"Pre-checking URL status for {url}...")
         og_title, og_image = _get_og_preview_data(url)
         if og_title == "__FAILED_BLOCK__":
             database.add_cached_og(urlhash, "__FAILED_BLOCK__", og_image)
@@ -680,7 +1015,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
 
     import hashlib
     url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
-    cache_key = f"{url_hash}_{1 if with_js else 0}"
+    cache_key = f"{url_hash}_{mode}"
 
     # 0. Check cache
     cached = database.get_cached_preview(cache_key)
@@ -691,13 +1026,13 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         filesize = cached.get("filesize", 0)
         
         if time.time() - created_at < CACHE_MAX_AGE and os.path.exists(filepath):
-            logger.info(f"Cache hit for URL: {url} (JS={with_js}). Sending cached preview: {filepath}")
+            logger.info(f"Cache hit for URL: {url} (mode={mode}). Sending cached preview: {filepath}")
             _react(bot, accid, req_msg_id, "⏳")
             
             caption = f"{title}\n\n🔗 {url}"
             _send(bot, accid, chat_id, caption, file=filepath)
             _react(bot, accid, req_msg_id, "☑️")
-            database.add_preview_log(chat_id, from_id, url, title, filesize, with_js)
+            database.add_preview_log(chat_id, from_id, url, title, filesize, 1 if mode == "archive" else 0)
             return
 
     # 0.5 Pre-check URL Content-Length and Content-Type to avoid downloading heavy/binary payloads
@@ -719,7 +1054,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests (HTTP {val}).")
         return
 
-    logger.info(f"Starting monolith download for URL: {url} (JS={with_js}) in chat {chat_id}")
+    logger.info(f"Starting generation for URL: {url} (mode={mode}) in chat {chat_id}")
     
     # 1. React with loading icon
     _react(bot, accid, req_msg_id, "⏳")
@@ -728,68 +1063,73 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
     tmpdir = tempfile.mkdtemp(prefix="webpreview_")
     output_path = os.path.join(tmpdir, "output.html")
 
-    # 2. Build Monolith Command
-    cmd = ["monolith", "-e", "-t", "30"]
-    if not with_js:
-        cmd.append("-j")
-    
-    # User-agent to bypass primitive bots block
-    cmd.extend(["-u", STANDARD_USER_AGENT])
-    cmd.extend([url, "-o", output_path])
-
-    start_time = time.time()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        code, err = loop.run_until_complete(_run_monolith_process(cmd))
-    finally:
-        loop.close()
-    
-    # Self-healing retry for Anubis block
-    if code == 0 and os.path.exists(output_path) and _is_anubis_blocked(output_path):
-        logger.warning(f"Anubis challenge detected for {url}. Retrying with non-Mozilla user agent...")
-        try:
-            os.remove(output_path)
-        except Exception as remove_err:
-            logger.warning(f"Error removing Anubis-blocked output: {remove_err}")
-            
+    if mode == "readability":
+        success, res = _generate_readability_preview(url, output_path)
+        if not success:
+            logger.error(f"Readability failed for URL {url}: {res}")
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to generate readability web preview.\nReason: {res}")
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return
+        title = res
+    else:
+        # Monolith compilation
         cmd = ["monolith", "-e", "-t", "30"]
-        if not with_js:
-            cmd.append("-j")
-        cmd.extend(["-u", NON_MOZILLA_USER_AGENT])
+        # In archive mode, JS is enabled (no -j).
+        cmd.extend(["-u", STANDARD_USER_AGENT])
         cmd.extend([url, "-o", output_path])
-        
+
+        start_time = time.time()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             code, err = loop.run_until_complete(_run_monolith_process(cmd))
         finally:
             loop.close()
-    
-    duration = int(time.time() - start_time)
+        
+        # Self-healing retry for Anubis block
+        if code == 0 and os.path.exists(output_path) and _is_anubis_blocked(output_path):
+            logger.warning(f"Anubis challenge detected for {url}. Retrying with non-Mozilla user agent...")
+            try:
+                os.remove(output_path)
+            except Exception as remove_err:
+                logger.warning(f"Error removing Anubis-blocked output: {remove_err}")
+                
+            cmd = ["monolith", "-e", "-t", "30"]
+            cmd.extend(["-u", NON_MOZILLA_USER_AGENT])
+            cmd.extend([url, "-o", output_path])
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                code, err = loop.run_until_complete(_run_monolith_process(cmd))
+            finally:
+                loop.close()
+        
+        if code != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            logger.error(f"Monolith failed with code {code} for URL {url}. Error: {err}")
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to generate web archive.\nReason: {err or 'Empty or missing output file.'}")
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return
 
-    # 3. Handle compilation output
-    if code != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        logger.error(f"Monolith failed with code {code} for URL {url}. Error: {err}")
-        _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: {err or 'Empty or missing output file.'}")
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        return
+        # Post-compress monolith inlined images to shrink the size!
+        compress_monolith_html(output_path)
+        title = _extract_title(output_path) or domain
 
-    # Check compiled size limit (50 MB)
+    # Check compiled/preview size limit (50 MB)
     compiled_size = os.path.getsize(output_path)
     if compiled_size > 50 * 1024 * 1024:
         size_str = _format_size(compiled_size)
-        logger.warning(f"Rejecting compiled preview for {url} because size {size_str} exceeds 50 MB limit.")
+        logger.warning(f"Rejecting generated output for {url} because size {size_str} exceeds 50 MB limit.")
         _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The compiled page size ({size_str}) exceeds the maximum delivery limit of 50 MB.")
+        _send(bot, accid, chat_id, f"❌ Failed to generate web preview/archive.\nReason: The generated page size ({size_str}) exceeds the maximum delivery limit of 50 MB.")
         shutil.rmtree(tmpdir, ignore_errors=True)
         return
 
     try:
-        # 4. Extract title and clean filename
-        title = _extract_title(output_path) or domain
-        safe_fname = _safe_filename(domain, with_js)
+        # 4. Extract clean filename
+        safe_fname = _safe_filename(domain, mode == "archive")
         cache_path = os.path.join(CACHE_DIR, safe_fname)
         
         # 5. Move to persistent cache for transfer
@@ -799,7 +1139,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         # Cache preview in database
         database.add_cached_preview(cache_key, cache_path, title, filesize)
         
-        # 6. Format simple, clean caption like YouTube bot
+        # 6. Format caption
         caption = f"{title}\n\n🔗 {url}"
         
         # 7. Send attachment
@@ -807,7 +1147,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
         _react(bot, accid, req_msg_id, "☑️")
         
         # 8. Store log stats
-        database.add_preview_log(chat_id, from_id, url, title, filesize, with_js)
+        database.add_preview_log(chat_id, from_id, url, title, filesize, 1 if mode == "archive" else 0)
         
     except Exception as e:
         logger.error(f"Error packing preview file: {e}")
@@ -816,10 +1156,11 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, with_js: boo
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+
 # ── Preview Trigger Handler ──
 
-def _handle_preview_command(bot, accid, event, with_js: bool):
-    """Processes `/preview` and `/previewjs` triggers."""
+def _handle_preview_command(bot, accid, event, mode: str):
+    """Processes `/preview`, `/previewjs` and `/archive` triggers."""
     msg = event.msg
     
     if _is_duplicate_msg(msg.id, "preview"):
@@ -859,18 +1200,19 @@ def _handle_preview_command(bot, accid, event, with_js: bool):
     if not url:
         _send(bot, accid, msg.chat_id, 
               "Usage:\n"
-              "• `/preview <url>` — Save page (default safe static)\n"
-              "• `/previewjs <url>` — Save page (with scripts enabled)\n"
-              "• Reply `/preview` or `/previewjs` to another message containing a link.")
+              "• `/preview <url>` — Save page (compressed reader-mode, recommended)\n"
+              "• `/archive <url>` — Save page (full monolith with JS enabled)\n"
+              "• Reply `/preview` or `/archive` to another message containing a link.")
         return
 
-    # Spawn thread to run monolith in background
+    # Spawn thread to run in background
     t = threading.Thread(
         target=_do_preview, 
-        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, with_js), 
+        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, mode), 
         daemon=True
     )
     t.start()
+
 
 # ── Command Listeners ──
 
@@ -881,7 +1223,16 @@ def preview_command(bot, accid, event):
     text = (event.msg.text or "").strip()
     if not re.match(r"^/preview(?:\s|$)", text):
         return
-    _handle_preview_command(bot, accid, event, with_js=False)
+    _handle_preview_command(bot, accid, event, mode="readability")
+
+@dc_cli.on(events.NewMessage(command="/archive"))
+def archive_command(bot, accid, event):
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/archive(?:\s|$)", text):
+        return
+    _handle_preview_command(bot, accid, event, mode="archive")
 
 @dc_cli.on(events.NewMessage(command="/previewjs"))
 def previewjs_command(bot, accid, event):
@@ -890,7 +1241,8 @@ def previewjs_command(bot, accid, event):
     text = (event.msg.text or "").strip()
     if not re.match(r"^/previewjs(?:\s|$)", text):
         return
-    _handle_preview_command(bot, accid, event, with_js=True)
+    _handle_preview_command(bot, accid, event, mode="archive")
+
 
 def get_help_text(bot, accid, from_id):
     contact = bot.rpc.get_contact(accid, from_id)
@@ -900,9 +1252,10 @@ def get_help_text(bot, accid, from_id):
         f"👋 Hi {sender_email}!\n\n"
         f"I save web pages as single self-contained HTML files and send them back to you.\n\n"
         f"**Commands:**\n"
-        f"/preview <url> — Generate safe, static page preview (recommended)\n"
-        f"/previewjs <url> — Generate full page preview (with JS enabled)\n"
+        f"/preview <url> — Generate compressed reader-mode page (recommended)\n"
+        f"/archive <url> — Generate full page archive (with JS enabled)\n"
         f"/stats — View bot generation statistics\n"
+
         f"/source — Show bot source code link 🔌\n"
         f"/donate — Support bot development ❤️\n"
         f"/help — This instruction message\n\n"
@@ -1294,8 +1647,8 @@ def on_new_message(bot, accid, event):
     if not text:
         return
 
-    # 1. Intercept dynamic commands: /preview_urlhash or /previewjs_urlhash
-    m = re.match(r"^/(preview|previewjs)_([0-9a-fA-F]{8})(?:@\w+)?", text)
+    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash or /archive_urlhash
+    m = re.match(r"^/(preview|previewjs|archive)_([0-9a-fA-F]{8})(?:@\w+)?", text)
     if m:
         cmd_type, urlhash = m.group(1), m.group(2)
         url = database.get_url_by_hash(urlhash)
@@ -1316,10 +1669,10 @@ def on_new_message(bot, accid, event):
             _react(bot, accid, msg.id, "⏱")
             return
 
-        with_js = (cmd_type == "previewjs")
+        mode = "archive" if cmd_type in ("previewjs", "archive") else "readability"
         t = threading.Thread(
             target=_do_preview, 
-            args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, with_js), 
+            args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, mode), 
             daemon=True
         )
         t.start()
@@ -1347,10 +1700,10 @@ def on_new_message(bot, accid, event):
                         _react(bot, accid, msg.id, "⏱")
                         return
 
-                    # Run monolith in background thread (JS disabled by default)
+                    # Run readability in background thread by default
                     t = threading.Thread(
                         target=_do_preview, 
-                        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, False), 
+                        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, "readability"), 
                         daemon=True
                     )
                     t.start()
@@ -1396,7 +1749,7 @@ def on_init(bot, args):
     if accounts:
         dc_accid = accounts[0]
         bot.rpc.set_config(dc_accid, "displayname", "WebPreview Bot")
-        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url> or send /help for commands.")
+        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url> or /archive <url>, or send /help for commands.")
         
         # Set icon if exists
         try:

@@ -443,7 +443,7 @@ def _get_contact_fingerprint(bot, accid, contact_id, contact=None):
                 except Exception:
                     continue
         if self_fps:
-            logger.info(f"Detected bot's own fingerprints from enc_info: {[f[-8:] for f in self_fps]}")
+            logger.debug(f"Detected bot's own fingerprints from enc_info: {[f[-8:] for f in self_fps]}")
     except Exception as e:
         logger.error(f"Error detecting self-fingerprint: {e}")
 
@@ -932,9 +932,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                 if not cached_image_path or os.path.exists(cached_image_path):
                     logger.info(f"OG Cache hit for group preview: {url}")
                     caption = (
-                        f"🌐 {cached_title}\n\n"
-                        f"Preview page: /preview_{urlhash}\n"
-                        f"Full archive: /archive_{urlhash}"
+                        f"🌐 {cached_title}\n"
+                        f"🔗 {url}\n"
+                        f"[ 🖥️ /preview_{urlhash} ]   [ 💾 /archive_{urlhash} ]"
                     )
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
@@ -954,9 +954,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         
         # 5. Format caption
         caption = (
-            f"🌐 {title}\n\n"
-            f"Preview page: /preview_{urlhash}\n"
-            f"Full archive: /archive_{urlhash}"
+            f"🌐 {title}\n"
+            f"🔗 {url}\n"
+            f"[ 🖥️ /preview_{urlhash} ]   [ 💾 /archive_{urlhash} ]"
         )
         
         # 6. Download image if exists, saving to persistent cache folder

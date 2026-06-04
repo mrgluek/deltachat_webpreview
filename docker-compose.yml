@@ -10,3 +10,8 @@ services:
       - DC_DB_DIR=/app/data
       - DB_PATH=/app/data/webpreview.db
       - TZ=UTC
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G

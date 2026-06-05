@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y git ca-certificates && rm -rf /var/lib/
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
+COPY bin/deltachat-rpc-server /usr/local/bin/deltachat-rpc-server
 COPY . .
 
 ENV DC_DB_DIR=/app/data

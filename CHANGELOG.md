@@ -4,6 +4,9 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 
 ## [Unreleased]
 
+### Added
+- **Resilient Sending Mode:** Added `/resilient` admin command to toggle resilient mode. When enabled, each outgoing message is sent through all configured mail relays sequentially to bypass chatmail blocking issues.
+
 ## [2.0.0] - 2026-05-31
 
 ### Added

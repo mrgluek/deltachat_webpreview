@@ -1953,6 +1953,13 @@ def on_start(bot, args):
     
     logger.info(f"WebPreview bot v{VERSION} started with accid {accid}.")
     
+    allowed_bots_env = os.environ.get("ALLOWED_BOT_EMAILS", "")
+    allowed_bots = [e.strip().lower() for e in allowed_bots_env.split(",") if e.strip()]
+    if allowed_bots:
+        logger.info(f"Whitelisted bot emails: {', '.join(allowed_bots)}")
+    else:
+        logger.info("No whitelisted bot emails configured (other bots will be ignored).")
+    
     # Show configured admin and transports
     admin_email = database.get_config("admin_dc_email")
     admin_fp = database.get_admin_fingerprint()

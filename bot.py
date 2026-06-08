@@ -413,6 +413,25 @@ def _is_duplicate_msg(msg_id: int, handler: str) -> bool:
             _processed_msg_ids.update(latest)
         return False
 
+def _is_bot_blocked(bot, accid, msg) -> bool:
+    """Return True if the message is from a bot and that bot is NOT whitelisted in ALLOWED_BOT_EMAILS."""
+    if not getattr(msg, 'is_bot', False):
+        return False
+        
+    allowed_bots_env = os.environ.get("ALLOWED_BOT_EMAILS", "")
+    allowed_bots = [e.strip().lower() for e in allowed_bots_env.split(",") if e.strip()]
+    
+    try:
+        contact = bot.rpc.get_contact(accid, msg.from_id)
+        sender_email = contact.address.lower().strip() if contact and contact.address else ""
+    except Exception:
+        sender_email = ""
+        
+    if sender_email and sender_email in allowed_bots:
+        return False  # Allowed
+        
+    return True  # Blocked
+
 # ── Admin helpers (matching other bots) ──
 
 def _get_contact_fingerprint(bot, accid, contact_id, contact=None):
@@ -1222,6 +1241,8 @@ def _handle_preview_command(bot, accid, event, mode: str):
 
 @dc_cli.on(events.NewMessage(command="/preview", is_bot=None))
 def preview_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
@@ -1231,6 +1252,8 @@ def preview_command(bot, accid, event):
 
 @dc_cli.on(events.NewMessage(command="/archive", is_bot=None))
 def archive_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
@@ -1240,6 +1263,8 @@ def archive_command(bot, accid, event):
 
 @dc_cli.on(events.NewMessage(command="/previewjs", is_bot=None))
 def previewjs_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
@@ -1655,6 +1680,8 @@ def _is_private_chat(bot, accid, chat_id) -> bool:
 
 @dc_cli.on(events.NewMessage(is_bot=None))
 def on_new_message(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
     msg = event.msg
     
     if _is_duplicate_msg(msg.id, "text"):

@@ -1220,7 +1220,7 @@ def _handle_preview_command(bot, accid, event, mode: str):
 
 # ── Command Listeners ──
 
-@dc_cli.on(events.NewMessage(command="/preview"))
+@dc_cli.on(events.NewMessage(command="/preview", is_bot=None))
 def preview_command(bot, accid, event):
     if accid != dc_accid:
         return
@@ -1229,7 +1229,7 @@ def preview_command(bot, accid, event):
         return
     _handle_preview_command(bot, accid, event, mode="readability")
 
-@dc_cli.on(events.NewMessage(command="/archive"))
+@dc_cli.on(events.NewMessage(command="/archive", is_bot=None))
 def archive_command(bot, accid, event):
     if accid != dc_accid:
         return
@@ -1238,7 +1238,7 @@ def archive_command(bot, accid, event):
         return
     _handle_preview_command(bot, accid, event, mode="archive")
 
-@dc_cli.on(events.NewMessage(command="/previewjs"))
+@dc_cli.on(events.NewMessage(command="/previewjs", is_bot=None))
 def previewjs_command(bot, accid, event):
     if accid != dc_accid:
         return
@@ -1653,7 +1653,7 @@ def _is_private_chat(bot, accid, chat_id) -> bool:
 
 # ── General Event Listener ──
 
-@dc_cli.on(events.NewMessage)
+@dc_cli.on(events.NewMessage(is_bot=None))
 def on_new_message(bot, accid, event):
     msg = event.msg
     

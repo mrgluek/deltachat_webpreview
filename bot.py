@@ -902,24 +902,52 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
             logger.warning(f"Fallback fetch failed for image {image_url}: {e}")
 
     if response_data is not None:
+        # Try to compress and resize the image using Pillow (max 800px on the longer side, WebP format)
         try:
-            ext = ".jpg"
-            if "png" in content_type.lower():
-                ext = ".png"
-            elif "webp" in content_type.lower():
-                ext = ".webp"
-            elif "gif" in content_type.lower():
-                ext = ".gif"
-                
-            cached_filename = f"og_{urlhash}{ext}"
-            cached_path = os.path.join(CACHE_DIR, cached_filename)
+            import io
+            from PIL import Image
             
-            with open(cached_path, "wb") as f:
-                f.write(response_data)
+            img = Image.open(io.BytesIO(response_data))
+            width, height = img.size
+            
+            if width > 800 or height > 800:
+                if width > height:
+                    new_width = 800
+                    new_height = int(height * (800 / width))
+                else:
+                    new_height = 800
+                    new_width = int(width * (800 / height))
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Convert palette or grayscale images to RGB/RGBA for clean WebP conversion
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
                 
+            cached_filename = f"og_{urlhash}.webp"
+            cached_path = os.path.join(CACHE_DIR, cached_filename)
+            img.save(cached_path, format="WEBP", quality=80)
+            logger.info(f"Compressed OG image to WebP: {width}x{height} -> {img.width}x{img.height}")
             return cached_path
-        except Exception as e:
-            logger.warning(f"Failed to write downloaded image to {cached_path}: {e}")
+        except Exception as pillow_err:
+            logger.warning(f"Pillow image compression failed: {pillow_err}. Falling back to original bytes.")
+            try:
+                ext = ".jpg"
+                if "png" in content_type.lower():
+                    ext = ".png"
+                elif "webp" in content_type.lower():
+                    ext = ".webp"
+                elif "gif" in content_type.lower():
+                    ext = ".gif"
+                    
+                cached_filename = f"og_{urlhash}{ext}"
+                cached_path = os.path.join(CACHE_DIR, cached_filename)
+                
+                with open(cached_path, "wb") as f:
+                    f.write(response_data)
+                    
+                return cached_path
+            except Exception as e:
+                logger.warning(f"Failed to write fallback original image to {cached_path}: {e}")
             
     return None
 

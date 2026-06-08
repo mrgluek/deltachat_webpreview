@@ -55,6 +55,54 @@ VERSION = "2.0.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
+def _decode_html(html_bytes: bytes, response_headers=None) -> str:
+    """
+    Decodes html_bytes by detecting the charset from response headers or
+    meta tags in HTML. Fallback to utf-8.
+    """
+    charset = None
+    
+    # 1. Try to get charset from response headers
+    if response_headers:
+        try:
+            charset = response_headers.get_content_charset()
+        except Exception:
+            pass
+
+    # 2. If not found in headers, check first 8KB of html_bytes for meta tags
+    if not charset:
+        try:
+            # Decode a prefix using latin-1 (safe for all bytes) to inspect HTML
+            chunk = html_bytes[:8192].decode('latin-1', errors='ignore')
+            
+            # Match <meta charset="...">
+            m = re.search(r'<meta\s+charset=["\']?([a-zA-Z0-9_-]+)', chunk, re.IGNORECASE)
+            if m:
+                charset = m.group(1)
+            else:
+                # Match <meta http-equiv="Content-Type" content="...; charset=...">
+                m = re.search(r'http-equiv=["\']Content-Type["\'][^>]*content=["\'][^"\']*charset=([a-zA-Z0-9_-]+)', chunk, re.IGNORECASE)
+                if not m:
+                    m = re.search(r'content=["\'][^"\']*charset=([a-zA-Z0-9_-]+)["\'][^>]*http-equiv=["\']Content-Type["\']', chunk, re.IGNORECASE)
+                if m:
+                    charset = m.group(1)
+        except Exception as e:
+            logger.debug(f"Failed to extract charset from meta tags: {e}")
+
+    # Fallback to utf-8 if still not found
+    if not charset:
+        charset = 'utf-8'
+
+    # Try decoding
+    try:
+        return html_bytes.decode(charset, errors='ignore')
+    except Exception as e:
+        logger.debug(f"Failed decoding HTML using {charset}: {e}")
+        try:
+            return html_bytes.decode('utf-8', errors='ignore')
+        except Exception:
+            return html_bytes.decode('latin-1', errors='ignore')
+
 def compress_image(image_bytes: bytes, max_width=800, quality=70) -> bytes:
     """Compresses an image to WebP or JPEG, resizing if wider than max_width."""
     try:
@@ -115,7 +163,7 @@ def _download_page_html(url: str) -> tuple[str | None, str | None]:
                 if 'text/html' not in content_type.lower():
                     continue
                 html_bytes = response.read()
-                decoded = html_bytes.decode('utf-8', errors='ignore')
+                decoded = _decode_html(html_bytes, response.headers)
                 
                 # Check for Anubis
                 if "Protected by Anubis" in decoded or "anubis.techaro.lol" in decoded:
@@ -756,7 +804,7 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
             if 'text/html' in content_type.lower():
                 # Read first 512KB
                 html_bytes = response.read(512 * 1024)
-                html_head = html_bytes.decode('utf-8', errors='ignore')
+                html_head = _decode_html(html_bytes, response.headers)
     except urllib.error.HTTPError as e:
         logger.warning(f"Standard fetch failed/blocked for {url} in OG parse: HTTP Error {e.code}: {e.reason}. Trying non-Mozilla User-Agent fallback...")
         if e.code in (401, 403, 404):
@@ -781,7 +829,7 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
                 if 'text/html' in content_type.lower():
                     # Read first 512KB
                     html_bytes = response.read(512 * 1024)
-                    html_head = html_bytes.decode('utf-8', errors='ignore')
+                    html_head = _decode_html(html_bytes, response.headers)
                 # Succeeded, clear any recorded hard failure code
                 hard_failure_code = None
         except urllib.error.HTTPError as e:

@@ -316,6 +316,10 @@ READABILITY_HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="content">
             {content}
         </div>
+        <hr style="border: none; border-top: 1px solid var(--border-color); margin-top: 30px; margin-bottom: 20px;">
+        <footer style="font-size: 0.85rem; color: var(--muted-color); text-align: center;">
+            Page downloaded at {downloaded_at} by <a href="https://git.gluek.info/gluek/deltachat_webpreview" style="color: var(--link-color); text-decoration: none;">Delta Chat WebPreview Bot</a>.
+        </footer>
     </article>
 </body>
 </html>
@@ -401,12 +405,15 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
                 logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
                 
         # Format templates
+        import datetime
+        downloaded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M GMT")
         domain = urllib.parse.urlparse(url).netloc or "webpage"
         final_html = READABILITY_HTML_TEMPLATE.format(
             title=title,
             url=url,
             domain=domain,
-            content=str(soup)
+            content=str(soup),
+            downloaded_at=downloaded_at
         )
         
         with open(output_path, "w", encoding="utf-8") as f:

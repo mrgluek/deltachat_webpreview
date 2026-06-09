@@ -336,9 +336,47 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
         if not html_str:
             return False, err or "Failed to download page content"
             
+        # Pre-clean the HTML of obvious boilerplate/non-content widgets to improve readability extraction
+        try:
+            soup_clean = BeautifulSoup(html_str, BS_PARSER)
+            # 1. Drop structural tags
+            for tag_name in ["header", "footer", "nav", "aside"]:
+                for el in list(soup_clean.find_all(tag_name)):
+                    el.decompose()
+            
+            # 2. Decompose widgets matching common non-content patterns in class/id
+            widget_patterns = [
+                re.compile(r"\bpoll\b|poll-container|article-poll", re.I),
+                re.compile(r"comment|disqus|shoutbox", re.I),
+                re.compile(r"social|share|recommend|related", re.I),
+                re.compile(r"promo|banner|sponsor|advertising|advert", re.I),
+                re.compile(r"\bfoot\b|\bheader\b|\bmenu\b|\bnav\b", re.I),
+            ]
+            
+            to_decompose = []
+            for pattern in widget_patterns:
+                for el in soup_clean.find_all(class_=pattern):
+                    to_decompose.append(el)
+                for el in soup_clean.find_all(id=pattern):
+                    to_decompose.append(el)
+                    
+            for el in to_decompose:
+                if el.parent is not None:
+                    el.decompose()
+            
+            # 3. Unwrap namespace wrapper divs (e.g. <div xmlns="http://www.w3.org/1999/xhtml">)
+            # that can confuse readability scoring or cause it to delete the wrapper
+            for el in list(soup_clean.find_all("div")):
+                if el.parent is not None and el.has_attr('xmlns'):
+                    el.unwrap()
+            
+            html_str = str(soup_clean)
+        except Exception as clean_err:
+            logger.warning(f"Failed to pre-clean HTML: {clean_err}")
+
         doc = Document(html_str)
         title = doc.title() or "Webpage Preview"
-        summary = doc.summary()
+        summary = doc.summary(html_partial=True)
         
         if not summary or len(summary.strip()) < 50:
             return False, "Readability failed to extract meaningful content from this page"
@@ -750,12 +788,12 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
     def parse_html(html_content: str) -> tuple[str | None, str | None]:
         # 1. Extract title
         title = None
-        title_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:title["\'][^>]*content=["\'](.*?)["\']', html_content, re.IGNORECASE)
+        title_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:title["\'][^>]*content=(["\'])(.*?)\1', html_content, re.IGNORECASE)
         if not title_m:
-            title_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:title["\']', html_content, re.IGNORECASE)
+            title_m = re.search(r'<meta[^>]*content=(["\'])(.*?)\1[^>]*(?:property|name)=["\']og:title["\']', html_content, re.IGNORECASE)
         if title_m:
             import html
-            title = html.unescape(title_m.group(1).strip())
+            title = html.unescape(title_m.group(2).strip())
         
         if not title:
             # Fallback to <title>
@@ -766,15 +804,15 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
         
         # 2. Extract og:image
         image_url = None
-        img_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:image["\'][^>]*content=["\'](.*?)["\']', html_content, re.IGNORECASE)
+        img_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:image["\'][^>]*content=(["\'])(.*?)\1', html_content, re.IGNORECASE)
         if not img_m:
-            img_m = re.search(r'<meta[^]*content=["\'](.*?)["\'][^>]*(?:property|name)=["\']og:image["\']', html_content, re.IGNORECASE)
+            img_m = re.search(r'<meta[^>]*content=(["\'])(.*?)\1[^>]*(?:property|name)=["\']og:image["\']', html_content, re.IGNORECASE)
         if not img_m:
-            img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=["\'](.*?)["\']', html_content, re.IGNORECASE)
+            img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=(["\'])(.*?)\1', html_content, re.IGNORECASE)
         
         if img_m:
             import html
-            image_url = html.unescape(img_m.group(1).strip())
+            image_url = html.unescape(img_m.group(2).strip())
             image_url = urllib.parse.urljoin(url, image_url)
 
             

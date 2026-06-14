@@ -12,6 +12,7 @@ import contextlib
 import urllib.request
 import urllib.parse
 import hashlib
+import ipaddress
 
 from deltachat2 import events, MsgData
 from deltabot_cli import BotCli
@@ -51,9 +52,240 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.0.0"
+VERSION = "2.2.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
+
+SAFE_FILE_EXTENSIONS = {
+    # PDF
+    "pdf",
+    # EPUB/DjVu
+    "epub", "djvu",
+    # Office documents (MS Office, OpenOffice, RTF)
+    "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "odt", "ods", "odp",
+    "rtf",
+    # Text and Data documents
+    "txt", "csv", "tsv", "md", "log", "json", "yaml", "yml", "xml"
+}
+
+def _get_url_file_info_by_ext(url: str) -> tuple[bool, str, str]:
+    """
+    Check if the URL path ends with one of the safe file extensions.
+    Returns (is_file, filename, extension).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path = urllib.parse.unquote(parsed.path)
+        filename = os.path.basename(path)
+        if not filename:
+            return False, "", ""
+        if "." in filename:
+            ext = filename.rsplit(".", 1)[-1].lower()
+            if ext in SAFE_FILE_EXTENSIONS:
+                return True, filename, ext
+    except Exception as e:
+        logger.warning(f"Error parsing URL path for extension: {e}")
+    return False, "", ""
+
+def _is_safe_file(filename: str, content_type: str) -> bool:
+    """
+    Checks if the filename or Content-Type is a safe file.
+    """
+    if filename:
+        if "." in filename:
+            ext = filename.rsplit(".", 1)[-1].lower()
+            if ext in SAFE_FILE_EXTENSIONS:
+                return True
+                
+    ct = content_type.lower()
+    safe_mime_keywords = [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.oasis.opendocument",
+        "application/rtf",
+        "text/rtf",
+        "text/plain",
+        "text/csv",
+        "text/tab-separated-values",
+        "text/markdown",
+        "application/json",
+        "application/x-yaml",
+        "text/yaml",
+        "text/xml",
+        "application/xml"
+    ]
+    if any(keyword in ct for keyword in safe_mime_keywords):
+        return True
+        
+    return False
+
+def _fetch_file_headers_info(url: str) -> tuple[str, int, str]:
+    """
+    Fetches the headers for the URL to get filename, size, and Content-Type.
+    Returns (filename, content_length, content_type).
+    """
+    response = None
+    for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': ua})
+            response = urllib.request.urlopen(req, timeout=5)
+            break
+        except Exception as e:
+            logger.warning(f"Failed to fetch headers for {url} with UA: {e}")
+            
+    if not response:
+        return "", 0, ""
+        
+    try:
+        headers = response.headers
+        content_type = headers.get('Content-Type', '').lower()
+        content_length = 0
+        cl_str = headers.get('Content-Length')
+        if cl_str:
+            try:
+                content_length = int(cl_str)
+            except ValueError:
+                pass
+                
+        # Try to extract filename from Content-Disposition
+        filename = ""
+        cd = headers.get('Content-Disposition')
+        if cd:
+            m = re.search(r'filename=["\']?(.*?)["\']?$', cd, re.IGNORECASE)
+            if m:
+                filename = m.group(1).split(';')[0].strip()
+                filename = os.path.basename(filename)
+                
+        # Fallback to URL path
+        if not filename:
+            parsed = urllib.parse.urlparse(url)
+            path = urllib.parse.unquote(parsed.path)
+            filename = os.path.basename(path)
+            
+        if not filename:
+            filename = "file"
+            
+        return filename, content_length, content_type
+    except Exception as e:
+        logger.warning(f"Error parsing headers for {url}: {e}")
+        return "", 0, ""
+    finally:
+        try:
+            response.close()
+        except:
+            pass
+
+def _detect_and_get_file_info(url: str) -> tuple[bool, str, int]:
+    """
+    Determines if the URL is a safe file, and returns (is_file, filename, size_bytes).
+    """
+    # 1. Fast check by extension
+    is_file_ext, filename, ext = _get_url_file_info_by_ext(url)
+    
+    # 2. Fetch headers to get/validate content-type and size
+    fname, size, ctype = _fetch_file_headers_info(url)
+    
+    if is_file_ext or _is_safe_file(fname or filename, ctype):
+        final_filename = fname or filename or "file"
+        return True, final_filename, size
+        
+    return False, "", 0
+
+def _clean_filename(filename: str) -> str:
+    cleaned = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    cleaned = cleaned.strip('_')
+    return cleaned or "file"
+
+def _download_file(url: str, output_path: str) -> tuple[bool, str]:
+    """
+    Downloads the file from URL to output_path.
+    Enforces a maximum size limit of 50 MB during download.
+    Returns (success, error_message).
+    """
+    max_size = 50 * 1024 * 1024 # 50 MB
+    
+    response = None
+    for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': ua})
+            response = urllib.request.urlopen(req, timeout=15)
+            break
+        except Exception as e:
+            logger.warning(f"Download attempt failed for {url} with UA: {e}")
+            
+    if not response:
+        return False, "Failed to connect to the remote server."
+        
+    try:
+        cl = response.headers.get('Content-Length')
+        if cl:
+            try:
+                if int(cl) > max_size:
+                    return False, f"File size exceeds the 50 MB limit."
+            except ValueError:
+                pass
+                
+        downloaded = 0
+        with open(output_path, 'wb') as f:
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > max_size:
+                    return False, f"File size exceeds the 50 MB limit."
+                f.write(chunk)
+                
+        return True, ""
+    except Exception as e:
+        logger.error(f"Error downloading file {url}: {e}")
+        return False, str(e)
+    finally:
+        try:
+            response.close()
+        except:
+            pass
+
+def _is_internal_or_invalid_url(url: str) -> bool:
+    """
+    Checks if a URL has an internal, private, reserved or invalid domain/IP address.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return True
+            
+        host = host.lower()
+        
+        # 1. Check obvious invalid/test hostnames
+        if host in ("localhost", "example", "example.com", "example.org", "example.net", "example.edu"):
+            return True
+            
+        # 2. Check local domain suffixes
+        local_suffixes = (".local", ".lan", ".home", ".internal", ".onion", ".test", ".invalid", ".localhost")
+        if host.endswith(local_suffixes):
+            return True
+            
+        # 3. Check if hostname is an IP address (IPv4 or IPv6) and check if it's private/loopback/link-local/reserved
+        try:
+            ip_str = host.strip("[]")
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return True
+        except ValueError:
+            # Not an IP address, which is fine
+            pass
+            
+    except Exception as e:
+        logger.warning(f"Error checking internal/invalid URL {url}: {e}")
+        return True # Treat as invalid if parsing failed
+        
+    return False
 
 def _decode_html(html_bytes: bytes, response_headers=None) -> str:
     """
@@ -1068,6 +1300,16 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     logger.info(f"Suppressing group preview due to cached hard failure block for {url}")
                     return
                 
+                # If cached title starts with "📝 ", it's a file preview
+                if cached_title and cached_title.startswith("📝 "):
+                    caption = (
+                        f"{cached_title}\n\n"
+                        f"🔗 {url}\n\n"
+                        f"[ 💾 /download_{urlhash} ]"
+                    )
+                    _send(bot, accid, chat_id, caption)
+                    return
+                
                 # Verify that if there is a cached image path, the file still exists on disk
                 if not cached_image_path or os.path.exists(cached_image_path):
                     logger.info(f"OG Cache hit for group preview: {url}")
@@ -1083,8 +1325,27 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                         _send(bot, accid, chat_id, caption)
                     return
         
-        # 4. Cache Miss - Fetch OG tags
+        # 4. Cache Miss - Fetch OG tags or file info
         logger.info(f"OG Cache miss for group preview: {url}. Fetching from network.")
+        
+        is_file, filename, size = _detect_and_get_file_info(url)
+        if is_file:
+            if size > 0:
+                title = f"📝 {filename} ({_format_size(size)})"
+            else:
+                title = f"📝 {filename}"
+                
+            # Cache file preview in OG cache
+            database.add_cached_og(urlhash, title, None)
+            
+            caption = (
+                f"{title}\n\n"
+                f"🔗 {url}\n\n"
+                f"[ 💾 /download_{urlhash} ]"
+            )
+            _send(bot, accid, chat_id, caption)
+            return
+
         title, image_url = _get_og_preview_data(url)
         
         if title == "__FAILED_BLOCK__":
@@ -1119,13 +1380,104 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         logger.error(f"Error in _do_group_link_preview: {e}")
 
 
+def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
+    """Downloads the file and sends it to the chat."""
+    if _is_internal_or_invalid_url(url):
+        logger.info(f"Local or invalid URL check hit for download: {url} in chat {chat_id}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to process URL.\nReason: Local, internal, or invalid host/IP address.")
+        return
+
+    import hashlib
+    url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
+    cache_key = f"{url_hash}_download"
+    urlhash = database.get_or_create_url_hash(url)
+    
+    # 0. Check cache
+    cached = database.get_cached_preview(cache_key)
+    if cached:
+        created_at = cached.get("created_at", 0)
+        filepath = cached.get("filepath", "")
+        title = cached.get("title", "")
+        filesize = cached.get("filesize", 0)
+        
+        if time.time() - created_at < CACHE_MAX_AGE and os.path.exists(filepath):
+            logger.info(f"Cache hit for URL download: {url}. Sending cached file: {filepath}")
+            _react(bot, accid, req_msg_id, "⏳")
+            
+            caption = f"📝 {title}\n\n🔗 {url}"
+            _send(bot, accid, chat_id, caption, file=filepath)
+            _react(bot, accid, req_msg_id, "☑️")
+            database.add_preview_log(chat_id, from_id, url, title, filesize, False)
+            return
+            
+    # 1. React with loading icon
+    _react(bot, accid, req_msg_id, "⏳")
+    
+    # 2. Get file info to know the filename
+    is_file, filename, size = _detect_and_get_file_info(url)
+    if not filename:
+        filename = "downloaded_file"
+        
+    tmpdir = tempfile.mkdtemp(prefix="webdownload_")
+    temp_filepath = os.path.join(tmpdir, _clean_filename(filename))
+    
+    success, err = _download_file(url, temp_filepath)
+    if not success:
+        logger.error(f"Download failed for URL {url}: {err}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to download file.\nReason: {err}")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return
+        
+    try:
+        filesize = os.path.getsize(temp_filepath)
+        safe_fname = f"dl_{urlhash}_{_clean_filename(filename)}"
+        cache_path = os.path.join(CACHE_DIR, safe_fname)
+        
+        # Move to persistent cache
+        shutil.move(temp_filepath, cache_path)
+        
+        # Cache preview in database
+        database.add_cached_preview(cache_key, cache_path, filename, filesize)
+        
+        # Format caption
+        caption = f"📝 {filename}\n\n🔗 {url}"
+        
+        # Send attachment
+        _send(bot, accid, chat_id, caption, file=cache_path)
+        _react(bot, accid, req_msg_id, "☑️")
+        
+        # Store log stats
+        database.add_preview_log(chat_id, from_id, url, filename, filesize, False)
+        
+    except Exception as e:
+        logger.error(f"Error packing downloaded file: {e}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Error processing downloaded file: {e}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
 def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
     """Run preview/archive generation in background thread."""
+    if _is_internal_or_invalid_url(url):
+        logger.info(f"Local or invalid URL check hit for preview: {url} in chat {chat_id}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to process URL.\nReason: Local, internal, or invalid host/IP address.")
+        return
+
     # 0. Check exclusions first!
     if database.is_excluded(url):
         logger.info(f"Exclusion hit for URL: {url} in chat {chat_id}")
         _react(bot, accid, req_msg_id, "⚠️")
         _send(bot, accid, chat_id, f"⚠️ This URL is in the exclusion list.")
+        return
+
+    # Check if URL is a file URL
+    is_file, filename, size = _detect_and_get_file_info(url)
+    if is_file:
+        logger.info(f"URL {url} is detected as a file. Redirecting from preview/archive to download.")
+        _do_download(bot, accid, chat_id, req_msg_id, from_id, url)
         return
 
     # Check cache for hard block fast rejection
@@ -1393,6 +1745,58 @@ def previewjs_command(bot, accid, event):
         return
     _handle_preview_command(bot, accid, event, mode="archive")
 
+@dc_cli.on(events.NewMessage(command="/download", is_bot=None))
+def download_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/download(?:\s|$)", text):
+        return
+    
+    msg = event.msg
+    if _is_duplicate_msg(msg.id, "preview"):
+        return
+    if _is_rate_limited(bot, accid, msg.from_id):
+        _react(bot, accid, msg.id, "⏱")
+        return
+
+    # Extract target URL
+    url = ""
+    payload = event.payload.strip() if event.payload else ""
+    if payload:
+        url_match = re.search(r'(https?://[^\s<>"]+)', payload)
+        if url_match:
+            url = url_match.group(1).rstrip('.,;:)!?')
+    else:
+        quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
+        if quote:
+            quoted_text = ""
+            if isinstance(quote, dict):
+                quoted_text = quote.get("text", "")
+            else:
+                quoted_text = getattr(quote, "text", "")
+            if quoted_text:
+                url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
+                if url_match:
+                    url = url_match.group(1).rstrip('.,;:)!?')
+
+    if not url:
+        _send(bot, accid, msg.chat_id, 
+              "Usage:\n"
+              "• `/download <url>` — Download file directly and send as attachment\n"
+              "• Reply `/download` to another message containing a link.")
+        return
+
+    # Spawn thread to run in background
+    t = threading.Thread(
+        target=_do_download, 
+        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url), 
+        daemon=True
+    )
+    t.start()
+
 
 def get_help_text(bot, accid, from_id):
     contact = bot.rpc.get_contact(accid, from_id)
@@ -1404,6 +1808,7 @@ def get_help_text(bot, accid, from_id):
         f"**Commands:**\n"
         f"/preview <url> — Generate compressed reader-mode page (recommended)\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
+        f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/stats — View bot generation statistics\n"
 
         f"/source — Show bot source code link 🔌\n"
@@ -1859,8 +2264,8 @@ def on_new_message(bot, accid, event):
     if not text:
         return
 
-    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash or /archive_urlhash
-    m = re.match(r"^/(preview|previewjs|archive)_([0-9a-fA-F]{8})(?:@\w+)?", text)
+    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash or /download_urlhash
+    m = re.match(r"^/(preview|previewjs|archive|download)_([0-9a-fA-F]{8})(?:@\w+)?", text)
     if m:
         cmd_type, urlhash = m.group(1), m.group(2)
         url = database.get_url_by_hash(urlhash)
@@ -1881,13 +2286,21 @@ def on_new_message(bot, accid, event):
             _react(bot, accid, msg.id, "⏱")
             return
 
-        mode = "archive" if cmd_type in ("previewjs", "archive") else "readability"
-        t = threading.Thread(
-            target=_do_preview, 
-            args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, mode), 
-            daemon=True
-        )
-        t.start()
+        if cmd_type == "download":
+            t = threading.Thread(
+                target=_do_download, 
+                args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url), 
+                daemon=True
+            )
+            t.start()
+        else:
+            mode = "archive" if cmd_type in ("previewjs", "archive") else "readability"
+            t = threading.Thread(
+                target=_do_preview, 
+                args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, mode), 
+                daemon=True
+            )
+            t.start()
         return
 
     # Automatic welcoming & auto-parsing of links in chats/groups
@@ -1907,6 +2320,9 @@ def on_new_message(bot, accid, event):
                 if url_match:
                     url = url_match.group(1).rstrip('.,;:)!?')
                     
+                    if _is_internal_or_invalid_url(url):
+                        return
+
                     # Rate limiting check
                     if _is_rate_limited(bot, accid, msg.from_id):
                         _react(bot, accid, msg.id, "⏱")
@@ -1926,6 +2342,9 @@ def on_new_message(bot, accid, event):
                 if url_match:
                     url = url_match.group(1).rstrip('.,;:)!?')
                     
+                    if _is_internal_or_invalid_url(url):
+                        return
+
                     # Skip if the URL is in the exclusions
                     if database.is_excluded(url):
                         return

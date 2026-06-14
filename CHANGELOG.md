@@ -2,6 +2,14 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.0] - 2026-06-14
+
+### Added
+- **Direct File Downloads:** Added automatic detection of document file URLs (PDF, EPUB, DjVu, MS Office, LibreOffice, and plain text/data files) via extension and response Content-Type headers. Instead of generating HTML previews, the bot now shows a `[ 💾 /download_urlhash ]` button in group chat preview cards.
+- **Background Downloader:** Implemented a non-blocking downloader to fetch and cache files up to 50 MB in size using stream chunking to prevent memory overload, sending them directly as Delta Chat message attachments.
+- **Safety Exclusions for Local Hosts/IPs:** Integrated local host/IP filtering utilizing the standard Python `ipaddress` library to exclude local hostnames (`localhost`, `example.com`), private IPv4/IPv6 ranges (`127.0.0.1`, `10.0.0.0/8`, link-local, etc.), and local/private domains (`.local`, `.lan`), preventing unnecessary outbound connections and chat spam.
+- **Manual Download Command:** Added `/download <url>` manual command trigger.
+
 ## [2.1.0] - 2026-06-05
 
 ### Added

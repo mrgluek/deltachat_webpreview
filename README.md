@@ -11,6 +11,8 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - 🔄 **Failover Transports (Relays):** Supports multiple mail servers. The bot automatically switches to backup transports if the primary server fails to send messages.
 - 🛡️ **Secure Administration:** Claim ownership with `/initadmin`. Admins bypass rate limits and have exclusive control over relays and statistics.
 - 🧹 **Automatic Cache Rotation:** Keeps disk usage low by automatically purging compiled HTML cache previews older than 24 hours.
+- 💾 **Direct File Downloads:** Automatically detects URLs pointing to document files (PDF, EPUB, DjVu, MS Office, LibreOffice, plain text/data files). Instead of attempting an HTML preview, the bot offers a `/download` command in groups or directly downloads/attaches the file in private chats (up to 50 MB limits, with chunked streaming).
+- 🛡️ **Local Network Protection:** Uses standard Python `ipaddress` validation to identify and skip local hosts/IPs (`localhost`, private IP subnets, `.local`/`.lan` domains, etc.), blocking resource-wasting internal network requests and spam.
 - 🐳 **Docker Ready:** Built with a multi-stage Docker build compiling Rust-based `monolith` and packing it into a slim Python runtime.
 
 ## Setup
@@ -45,6 +47,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 
 - `/preview <url>` — Save page in highly compressed reader-mode format (using Mozilla's Readability).
 - `/archive <url>` — Save page as a full monolith-based dynamic archive (with JS enabled, optimized images). *(Note: `/previewjs` is also supported as an alias to `/archive`)*
+- `/download <url>` — Download file directly and send as attachment (supported for PDF, office documents, text files).
 - `/stats` — Show generation counters, total traffic size, and disk space (disk space is admin-only).
 - `/source` — Show primary and backup source code links 🔌.
 - `/donate` — Support project development ❤️.

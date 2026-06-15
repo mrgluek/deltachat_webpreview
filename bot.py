@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -1027,9 +1027,9 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
     def parse_html(html_content: str) -> tuple[str | None, str | None]:
         # 1. Extract title
         title = None
-        title_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:title["\'][^>]*content=(["\'])(.*?)\1', html_content, re.IGNORECASE)
+        title_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:title["\'][^>]*content=(["\'])([^>]*?)\1', html_content, re.IGNORECASE)
         if not title_m:
-            title_m = re.search(r'<meta[^>]*content=(["\'])(.*?)\1[^>]*(?:property|name)=["\']og:title["\']', html_content, re.IGNORECASE)
+            title_m = re.search(r'<meta[^>]*content=(["\'])([^>]*?)\1[^>]*(?:property|name)=["\']og:title["\']', html_content, re.IGNORECASE)
         if title_m:
             import html
             title = html.unescape(title_m.group(2).strip())
@@ -1043,11 +1043,11 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
         
         # 2. Extract og:image
         image_url = None
-        img_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:image["\'][^>]*content=(["\'])(.*?)\1', html_content, re.IGNORECASE)
+        img_m = re.search(r'<meta[^>]*(?:property|name)=["\']og:image["\'][^>]*content=(["\'])([^>]*?)\1', html_content, re.IGNORECASE)
         if not img_m:
-            img_m = re.search(r'<meta[^>]*content=(["\'])(.*?)\1[^>]*(?:property|name)=["\']og:image["\']', html_content, re.IGNORECASE)
+            img_m = re.search(r'<meta[^>]*content=(["\'])([^>]*?)\1[^>]*(?:property|name)=["\']og:image["\']', html_content, re.IGNORECASE)
         if not img_m:
-            img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=(["\'])(.*?)\1', html_content, re.IGNORECASE)
+            img_m = re.search(r'<meta[^>]*(?:property|name)=["\']twitter:image["\'][^>]*content=(["\'])([^>]*?)\1', html_content, re.IGNORECASE)
         
         if img_m:
             import html

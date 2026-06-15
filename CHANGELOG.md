@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.1] - 2026-06-16
+
+### Fixed
+- **Meta Tag Parsing Bug:** Corrected regular expression patterns in Open Graph metadata extraction to use non-greedy matching confined to a single tag (`[^>]*?` instead of `.*?`), preventing false matches across multiple tag boundaries (e.g. on Yandex Translate turbopages proxy URLs).
+
 ## [2.2.0] - 2026-06-14
 
 ### Added

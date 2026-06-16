@@ -7,6 +7,13 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 ### Added
 - **Automatic Transport Failover:** Implemented a robust, event-driven transport failover mechanism. The bot now listens to the core's `MSG_FAILED` event. When a message fails to deliver, it automatically switches `configured_addr` to the next configured backup transport, and schedules a resend of the message using exponential backoff (5s, 10s, 20s, 40s...) via an asynchronous timer thread. The failover process is limited to a maximum of 10 attempts per message to prevent infinite loops, and the administrator is alerted only on the first failure.
 
+### Fixed
+- **E2E Failover Loop & Key Fallback**:
+  - Added fallback support for both `chat_id` and `chatId` keys in message snapshots to prevent `chat 'Unknown' (ID: None)` errors.
+  - Downgraded permanent E2E and resend logs to `WARNING`.
+  - Blocked sending of admin failover alerts if the failed message itself was sent to the admin chat, preventing recursion.
+
+
 ## [2.2.1] - 2026-06-16
 
 ### Fixed

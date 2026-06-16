@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.2] - 2026-06-16
+
+### Added
+- **Automatic Transport Failover:** Implemented a robust, event-driven transport failover mechanism. The bot now listens to the core's `MSG_FAILED` event. When a message fails to deliver, it automatically switches `configured_addr` to the next configured backup transport, resends the message, and alerts the administrator.
+
 ## [2.2.1] - 2026-06-16
 
 ### Fixed

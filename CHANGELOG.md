@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.3] - 2026-06-17
+
+### Added
+- **Image Compression Logging:** Log messages for compressed images (both OG banner images and monolith HTML files) now print the original and compressed sizes in parentheses (e.g. `(120 KB -> 45 KB)`), providing better visibility into optimization efficiency.
+
 ## [2.2.2] - 2026-06-16
 
 ### Added

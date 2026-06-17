@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.2.1"
+VERSION = "2.2.3"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -695,9 +695,11 @@ def compress_monolith_html(filepath: str):
                     logger.warning(f"Error compressing monolith base64 image: {e}")
                     
         if modified:
+            orig_size = os.path.getsize(filepath)
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(str(soup))
-            logger.info(f"Successfully compressed images in monolith HTML file {filepath}")
+            comp_size = os.path.getsize(filepath)
+            logger.info(f"Successfully compressed images in monolith HTML file {filepath} ({_format_size(orig_size)} -> {_format_size(comp_size)})")
     except Exception as e:
         logger.error(f"Error post-processing monolith file {filepath}: {e}")
 
@@ -1213,7 +1215,9 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
             cached_filename = f"og_{urlhash}.webp"
             cached_path = os.path.join(CACHE_DIR, cached_filename)
             img.save(cached_path, format="WEBP", quality=80)
-            logger.info(f"Compressed OG image to WebP: {width}x{height} -> {img.width}x{img.height}")
+            orig_size_str = _format_size(len(response_data))
+            comp_size_str = _format_size(os.path.getsize(cached_path))
+            logger.info(f"Compressed OG image to WebP: {width}x{height} -> {img.width}x{img.height} ({orig_size_str} -> {comp_size_str})")
             return cached_path
         except Exception as pillow_err:
             logger.warning(f"Pillow image compression failed: {pillow_err}. Falling back to original bytes.")

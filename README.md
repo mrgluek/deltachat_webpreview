@@ -12,6 +12,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - 🛡️ **Secure Administration:** Claim ownership with `/initadmin`. Admins bypass rate limits and have exclusive control over relays and statistics.
 - 🧹 **Automatic Cache Rotation:** Keeps disk usage low by automatically purging compiled HTML cache previews older than 24 hours.
 - 💾 **Direct File Downloads:** Automatically detects URLs pointing to document files (PDF, EPUB, DjVu, MS Office, LibreOffice, plain text/data files). Instead of attempting an HTML preview, the bot offers a `/download` command in groups or directly downloads/attaches the file in private chats (up to 50 MB limits, with chunked streaming).
+- 🤖 **Jina.ai Fallback Support:** Integrated Jina AI Reader (`r.jina.ai`) to resolve webpage titles, preview banners, and markdown-to-HTML text contents if the target site blocks standard user agents or readability parser fails to extract meaningful data (e.g. on anti-bot challenge pages). It automatically strips tracking pixels/broken images to preserve privacy and presentation.
 - 🛡️ **Local Network Protection:** Uses standard Python `ipaddress` validation to identify and skip local hosts/IPs (`localhost`, private IP subnets, `.local`/`.lan` domains, etc.), blocking resource-wasting internal network requests and spam.
 - 🐳 **Docker Ready:** Built with a multi-stage Docker build compiling Rust-based `monolith` and packing it into a slim Python runtime.
 

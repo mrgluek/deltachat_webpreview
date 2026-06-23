@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.2.3"
+VERSION = "2.2.4"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -569,63 +569,84 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
         import urllib.parse
         
         html_str, err = _download_page_html(url)
-        if not html_str:
-            return False, err or "Failed to download page content"
-            
-        # Pre-clean the HTML of obvious boilerplate/non-content widgets to improve readability extraction
-        try:
-            soup_clean = BeautifulSoup(html_str, BS_PARSER)
-            # 1. Drop structural tags
-            for tag_name in ["header", "footer", "nav", "aside"]:
-                for el in list(soup_clean.find_all(tag_name)):
-                    el.decompose()
-            
-            # 2. Decompose widgets matching common non-content patterns in class/id
-            widget_patterns = [
-                re.compile(r"\bpoll\b|poll-container|article-poll", re.I),
-                re.compile(r"comment|disqus|shoutbox", re.I),
-                re.compile(r"social|share|recommend|related", re.I),
-                re.compile(r"promo|banner|sponsor|advertising|advert", re.I),
-                re.compile(r"\bfoot\b|\bheader\b|\bmenu\b|\bnav\b", re.I),
-            ]
-            
-            to_decompose = []
-            for pattern in widget_patterns:
-                for el in soup_clean.find_all(class_=pattern):
-                    to_decompose.append(el)
-                for el in soup_clean.find_all(id=pattern):
-                    to_decompose.append(el)
-                    
-            for el in to_decompose:
-                if el.parent is not None:
-                    el.decompose()
-            
-            # 3. Unwrap namespace wrapper divs (e.g. <div xmlns="http://www.w3.org/1999/xhtml">)
-            # that can confuse readability scoring or cause it to delete the wrapper
-            for el in list(soup_clean.find_all("div")):
-                if el.parent is not None and el.has_attr('xmlns'):
-                    el.unwrap()
-            
-            html_str = str(soup_clean)
-        except Exception as clean_err:
-            logger.warning(f"Failed to pre-clean HTML: {clean_err}")
+        success = False
+        title = "Webpage Preview"
+        summary = ""
 
-        doc = Document(html_str)
-        title = doc.title() or "Webpage Preview"
-        summary = doc.summary(html_partial=True)
-        
-        if not summary or len(summary.strip()) < 50:
-            return False, "Readability failed to extract meaningful content from this page"
+        if html_str:
+            try:
+                # Pre-clean the HTML of obvious boilerplate/non-content widgets to improve readability extraction
+                try:
+                    soup_clean = BeautifulSoup(html_str, BS_PARSER)
+                    # 1. Drop structural tags
+                    for tag_name in ["header", "footer", "nav", "aside"]:
+                        for el in list(soup_clean.find_all(tag_name)):
+                            el.decompose()
+                    
+                    # 2. Decompose widgets matching common non-content patterns in class/id
+                    widget_patterns = [
+                        re.compile(r"\bpoll\b|poll-container|article-poll", re.I),
+                        re.compile(r"comment|disqus|shoutbox", re.I),
+                        re.compile(r"social|share|recommend|related", re.I),
+                        re.compile(r"promo|banner|sponsor|advertising|advert", re.I),
+                        re.compile(r"\bfoot\b|\bheader\b|\bmenu\b|\bnav\b", re.I),
+                    ]
+                    
+                    to_decompose = []
+                    for pattern in widget_patterns:
+                        for el in soup_clean.find_all(class_=pattern):
+                            to_decompose.append(el)
+                        for el in soup_clean.find_all(id=pattern):
+                            to_decompose.append(el)
+                            
+                    for el in to_decompose:
+                        if el.parent is not None:
+                            el.decompose()
+                    
+                    # 3. Unwrap namespace wrapper divs (e.g. <div xmlns="http://www.w3.org/1999/xhtml">)
+                    # that can confuse readability scoring or cause it to delete the wrapper
+                    for el in list(soup_clean.find_all("div")):
+                        if el.parent is not None and el.has_attr('xmlns'):
+                            el.unwrap()
+                    
+                    html_str = str(soup_clean)
+                except Exception as clean_err:
+                    logger.warning(f"Failed to pre-clean HTML: {clean_err}")
+
+                doc = Document(html_str)
+                title = doc.title() or "Webpage Preview"
+                summary = doc.summary(html_partial=True)
+                if summary:
+                    text_content = BeautifulSoup(summary, BS_PARSER).get_text().strip()
+                    if len(text_content) >= 150:
+                        success = True
+            except Exception as e:
+                logger.warning(f"Standard readability failed: {e}")
+
+        if not success:
+            logger.info(f"Standard readability failed or was empty for {url}. Attempting Jina Reader fallback...")
+            jina_title, _, jina_markdown = _fetch_from_jina(url)
+            if jina_markdown:
+                title = jina_title or "Webpage Preview"
+                summary = markdown_to_html(jina_markdown)
+                success = True
+
+        if not success:
+            return False, err or "Readability failed to extract meaningful content from this page"
             
         soup = BeautifulSoup(summary, BS_PARSER)
         
         # Inline images with compression
-        for img in soup.find_all('img'):
+        for img in list(soup.find_all('img')):
             img_src = img.get('src')
-            if not img_src or img_src.startswith('data:'):
+            if not img_src:
+                img.decompose()
+                continue
+            if img_src.startswith('data:'):
                 continue
                 
             absolute_img_url = urllib.parse.urljoin(url, img_src)
+            success = False
             try:
                 img_bytes = _download_image_bytes(absolute_img_url)
                 if img_bytes:
@@ -633,8 +654,12 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
                     mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
                     b64_str = base64.b64encode(compressed).decode('utf-8')
                     img['src'] = f"data:{mime_type};base64,{b64_str}"
+                    success = True
             except Exception as img_err:
                 logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
+                
+            if not success:
+                img.decompose()
                 
         # Format templates
         import datetime
@@ -983,6 +1008,164 @@ async def _run_monolith_process(cmd: list) -> tuple[int, str]:
     except Exception as e:
         return -99, str(e)
 
+def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None]:
+    """
+    Parses r.jina.ai response.
+    Returns (title, image_url, markdown_content).
+    """
+    title = None
+    image_url = None
+    markdown_content = None
+
+    title_match = re.search(r'^Title:\s*(.*)$', text, re.MULTILINE | re.IGNORECASE)
+    if title_match:
+        title = title_match.group(1).strip()
+
+    md_match = re.search(r'Markdown Content:\s*(.*)', text, re.DOTALL | re.IGNORECASE)
+    if md_match:
+        markdown_content = md_match.group(1).strip()
+
+    if markdown_content:
+        # Match markdown image, e.g. ![alt](url)
+        img_match = re.search(r'!\[[^\]]*\]\(([^)\s]+)', markdown_content)
+        if img_match:
+            image_url = img_match.group(1).strip().strip('"\'')
+
+    return title, image_url, markdown_content
+
+def _fetch_from_jina(url: str) -> tuple[str | None, str | None, str | None]:
+    """
+    Queries Jina AI Reader to fetch the page metadata and content.
+    Returns (title, image_url, markdown_content).
+    """
+    jina_url = f"https://r.jina.ai/{url}"
+    try:
+        logger.info(f"Querying Jina AI Reader for URL: {url}")
+        req = urllib.request.Request(
+            jina_url,
+            headers={'User-Agent': 'curl/7.88.1'}
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            text_bytes = response.read(1024 * 1024) # Read up to 1MB of content
+            text = _decode_html(text_bytes, response.headers)
+            return _parse_jina_response(text)
+    except Exception as e:
+        logger.warning(f"Jina AI Reader fetch failed for {url}: {e}")
+        return None, None, None
+
+def markdown_to_html(md_text: str) -> str:
+    """
+    Converts a simple markdown string to HTML.
+    """
+    import html
+    escaped = html.escape(md_text)
+
+    # Convert images and links first, wrapping generated HTML tags in special placeholders
+    # so we don't touch their contents during subsequent replacements.
+    def repl_img(match):
+        alt = match.group(1)
+        url = match.group(2)
+        return f'___HTML_TAG_START___img src="{url}" alt="{alt}" style="max-width: 100%; height: auto; display: block; margin: 10px auto; border-radius: 8px;"___HTML_TAG_END___'
+
+    def repl_link(match):
+        text = match.group(1)
+        url = match.group(2)
+        return f'___HTML_TAG_START___a href="{url}" style="color: var(--link-color); text-decoration: none;"___HTML_TAG_END___{text}___HTML_TAG_START___/a___HTML_TAG_END___'
+
+    text = re.sub(
+        r'!\[(.*?)\]\(([^)\s]+)(?:\s+(?:["\']|&quot;|&#x27;).*?(?:["\']|&quot;|&#x27;))?\)',
+        repl_img,
+        escaped
+    )
+    text = re.sub(
+        r'\[(.*?)\]\(([^)\s]+)(?:\s+(?:["\']|&quot;|&#x27;).*?(?:["\']|&quot;|&#x27;))?\)',
+        repl_link,
+        text
+    )
+
+    lines = text.splitlines()
+    html_lines = []
+    in_list = False
+    in_code = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Code blocks
+        if stripped.startswith("```"):
+            if in_code:
+                html_lines.append("</pre>")
+                in_code = False
+            else:
+                html_lines.append('<pre style="background: var(--card-bg); border: 1px solid var(--border-color); padding: 10px; border-radius: 6px; overflow-x: auto; font-family: monospace;">')
+                in_code = True
+            continue
+
+        if in_code:
+            html_lines.append(line)
+            continue
+
+        # Headers
+        header_match = re.match(r'^(#{1,6})\s+(.*)$', line)
+        if header_match:
+            level = len(header_match.group(1))
+            content = _process_inline_formatting(header_match.group(2))
+            html_lines.append(f"<h{level}>{content}</h{level}>")
+            continue
+
+        # Lists
+        list_match = re.match(r'^[-*+]\s+(.*)$', line)
+        if list_match:
+            if not in_list:
+                html_lines.append("<ul>")
+                in_list = True
+            content = _process_inline_formatting(list_match.group(1))
+            html_lines.append(f"<li>{content}</li>")
+            continue
+        else:
+            if in_list:
+                html_lines.append("</ul>")
+                in_list = False
+
+        # Blockquotes
+        blockquote_match = re.match(r'^>\s+(.*)$', line)
+        if blockquote_match:
+            content = _process_inline_formatting(blockquote_match.group(1))
+            html_lines.append(f'<blockquote style="border-left: 4px solid var(--border-color); padding-left: 10px; margin: 10px 0; color: var(--muted-color);">{content}</blockquote>')
+            continue
+
+        # Paragraph or empty line
+        if not stripped:
+            html_lines.append("<br/>")
+        else:
+            content = _process_inline_formatting(line)
+            html_lines.append(f"<p>{content}</p>")
+
+    if in_list:
+        html_lines.append("</ul>")
+    if in_code:
+        html_lines.append("</pre>")
+
+    result = "\n".join(html_lines)
+    result = result.replace("___HTML_TAG_START___", "<").replace("___HTML_TAG_END___", ">")
+    return result
+
+def _process_inline_formatting(text: str) -> str:
+    parts = re.split(r'(___HTML_TAG_START___.*?___HTML_TAG_END___)', text)
+    processed_parts = []
+    for part in parts:
+        if part.startswith('___HTML_TAG_START___') and part.endswith('___HTML_TAG_END___'):
+            processed_parts.append(part)
+        else:
+            # Bold
+            part = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', part)
+            part = re.sub(r'__(.*?)__', r'<strong>\1</strong>', part)
+            # Italic
+            part = re.sub(r'\*(.*?)\*', r'<em>\1</em>', part)
+            part = re.sub(r'_(.*?)_', r'<em>\1</em>', part)
+            processed_parts.append(part)
+    return "".join(processed_parts)
+
 def _get_og_preview_data(url: str) -> tuple[str, str | None]:
     """
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
@@ -1080,16 +1263,33 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
         except Exception as e:
             logger.warning(f"Fallback fetch failed for {url} with non-Mozilla User-Agent: {e}")
 
+    # Parse and extract
+    title = None
+    image_url = None
+    if html_head is not None:
+        title, image_url = parse_html(html_head)
+
+    netloc = urllib.parse.urlparse(url).netloc or "Webpage"
+    is_fallback_title = (not title) or (title.strip() == netloc) or (title.strip() == "Webpage")
+
+    # If standard fetch was blocked/failed OR we got a fallback title OR we have no preview image, try Jina
+    if is_fallback_title or not image_url or hard_failure_code is not None:
+        logger.info(f"Standard OG parse didn't get complete title/image for {url}. Trying Jina.ai fallback...")
+        jina_title, jina_image, _ = _fetch_from_jina(url)
+        if jina_title:
+            title = jina_title
+            # Clear hard failure code if Jina fetch succeeded!
+            hard_failure_code = None
+        if jina_image:
+            image_url = jina_image
+
     if hard_failure_code is not None:
         return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}"
 
-    # Parse and extract
-    if html_head is not None:
-        title, image_url = parse_html(html_head)
-        if title:
-            return title, image_url
+    if title:
+        return title, image_url
 
-    return urllib.parse.urlparse(url).netloc or "Webpage", None
+    return netloc, None
 
 def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | None]:
     """

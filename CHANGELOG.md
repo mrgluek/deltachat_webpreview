@@ -2,6 +2,13 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.4] - 2026-06-23
+
+### Added
+- **Jina.ai Fallback Support:** Integrated Jina AI Reader (`r.jina.ai`) to resolve webpage titles, preview images, and markdown text content when standard fetching or readability extraction fails or gets blocked (e.g. by anti-bot checks).
+- **Markdown-to-HTML Translator:** Implemented a placeholder-based markdown-to-HTML parser that formats Jina's markdown output into styled HTML. It protects underscores inside URLs from being parsed as italic markdown.
+- **Privacy & Safety Image Filtering:** In readability previews, any images that fail to download/inline (such as analytics tracking pixels, ads, or broken links) are automatically stripped from the HTML, preventing data leakage and broken images.
+
 ## [2.2.3] - 2026-06-17
 
 ### Added

@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.5] - 2026-06-23
+
+### Added
+- **Invidious Detection and YT Bot Redirection:** Automatically identifies Invidious instances (alternative YouTube front-ends) by checking description metadata. When `YT Bot` is present in the chat, it intercepts these links, extracts the video ID, rewrites them to `youtu.be` links, and forwards them to the chat, completely skipping WebPreview generation.
+- **Invidious Domain Learning Cache:** Implemented a self-learning database cache that remembers detected Invidious instance domains. On subsequent requests, it immediately identifies the instance and redirects video links to `YT Bot` without making any network calls.
+
 ## [2.2.4] - 2026-06-23
 
 ### Added

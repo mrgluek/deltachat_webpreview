@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.2.4"
+VERSION = "2.2.5"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -1166,10 +1166,25 @@ def _process_inline_formatting(text: str) -> str:
             processed_parts.append(part)
     return "".join(processed_parts)
 
-def _get_og_preview_data(url: str) -> tuple[str, str | None]:
+def _extract_youtube_id_from_invidious(url: str) -> str | None:
+    """Extract YouTube video ID from an Invidious URL."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        if 'v' in query_params:
+            return query_params['v'][0]
+        
+        path_parts = parsed.path.strip('/').split('/')
+        if len(path_parts) >= 2 and path_parts[0] in ('embed', 'v'):
+            return path_parts[1]
+    except Exception as e:
+        logger.warning(f"Failed to extract video ID from Invidious URL {url}: {e}")
+    return None
+
+def _get_og_preview_data(url: str) -> tuple[str, str | None, bool]:
     """
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
-    Returns (title, og_image_url).
+    Returns (title, og_image_url, is_invidious).
     """
     def parse_html(html_content: str) -> tuple[str | None, str | None]:
         # 1. Extract title
@@ -1215,6 +1230,13 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
     import urllib.error
     
     hard_failure_code = None
+    is_invidious = False
+    domain = urllib.parse.urlparse(url).netloc.lower()
+    try:
+        if database.get_config(f"invidious_domain_{domain}") == "1":
+            is_invidious = True
+    except Exception:
+        pass
 
     # First attempt with standard User-Agent
     html_head = None
@@ -1268,6 +1290,8 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
     image_url = None
     if html_head is not None:
         title, image_url = parse_html(html_head)
+        if "alternative front-end to YouTube" in html_head or "alternative frontend to YouTube" in html_head:
+            is_invidious = True
 
     netloc = urllib.parse.urlparse(url).netloc or "Webpage"
     is_fallback_title = (not title) or (title.strip() == netloc) or (title.strip() == "Webpage")
@@ -1275,21 +1299,29 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None]:
     # If standard fetch was blocked/failed OR we got a fallback title OR we have no preview image, try Jina
     if is_fallback_title or not image_url or hard_failure_code is not None:
         logger.info(f"Standard OG parse didn't get complete title/image for {url}. Trying Jina.ai fallback...")
-        jina_title, jina_image, _ = _fetch_from_jina(url)
+        jina_title, jina_image, jina_markdown = _fetch_from_jina(url)
         if jina_title:
             title = jina_title
             # Clear hard failure code if Jina fetch succeeded!
             hard_failure_code = None
         if jina_image:
             image_url = jina_image
+        if jina_markdown and ("alternative front-end to YouTube" in jina_markdown or "alternative frontend to YouTube" in jina_markdown):
+            is_invidious = True
+
+    if is_invidious:
+        try:
+            database.set_config(f"invidious_domain_{domain}", "1")
+        except Exception as db_err:
+            logger.warning(f"Failed to save Invidious domain {domain} to config: {db_err}")
 
     if hard_failure_code is not None:
-        return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}"
+        return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}", is_invidious
 
     if title:
-        return title, image_url
+        return title, image_url, is_invidious
 
-    return netloc, None
+    return netloc, None, is_invidious
 
 def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | None]:
     """
@@ -1462,7 +1494,14 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                 cached_image_path = cached.get("image_path")
                 
                 # Suppress if cached as a failed block
-                if cached_title == "__FAILED_BLOCK__":
+                if cached_title == "__INVIDIOUS__":
+                    if _is_yt_bot_in_chat(bot, accid, chat_id):
+                        video_id = cached_image_path
+                        yt_link = f"https://youtu.be/{video_id}"
+                        logger.info(f"Invidious cache hit. Forwarding to YT Bot: {yt_link}")
+                        _send(bot, accid, chat_id, yt_link)
+                        return
+                elif cached_title == "__FAILED_BLOCK__":
                     logger.info(f"Suppressing group preview due to cached hard failure block for {url}")
                     return
                 
@@ -1512,7 +1551,18 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             _send(bot, accid, chat_id, caption)
             return
 
-        title, image_url = _get_og_preview_data(url)
+        title, image_url, is_invidious = _get_og_preview_data(url)
+        
+        if is_invidious:
+            video_id = _extract_youtube_id_from_invidious(url)
+            if video_id:
+                # Cache as invidious
+                database.add_cached_og(urlhash, "__INVIDIOUS__", video_id)
+                if _is_yt_bot_in_chat(bot, accid, chat_id):
+                    yt_link = f"https://youtu.be/{video_id}"
+                    logger.info(f"Invidious URL detected. Forwarding to YT Bot: {yt_link}")
+                    _send(bot, accid, chat_id, yt_link)
+                    return
         
         if title == "__FAILED_BLOCK__":
             # Cache failure for 1 hour to prevent redundant requests
@@ -1650,11 +1700,31 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
     urlhash = database.get_or_create_url_hash(url)
     cached_og = database.get_cached_og(urlhash)
     
+    if cached_og and cached_og.get("title") == "__INVIDIOUS__":
+        if _is_yt_bot_in_chat(bot, accid, chat_id):
+            video_id = cached_og.get("image_path")
+            yt_link = f"https://youtu.be/{video_id}"
+            logger.info(f"Manual preview Invidious cache hit. Forwarding to YT Bot: {yt_link}")
+            _send(bot, accid, chat_id, yt_link)
+            _react(bot, accid, req_msg_id, "☑️")
+            return
+
     # If not in cache, do a fast pre-check to populate the cache and avoid network overhead on blocked sites!
     if not cached_og:
         logger.info(f"Pre-checking URL status for {url}...")
-        og_title, og_image = _get_og_preview_data(url)
-        if og_title == "__FAILED_BLOCK__":
+        og_title, og_image, is_invidious = _get_og_preview_data(url)
+        if is_invidious:
+            video_id = _extract_youtube_id_from_invidious(url)
+            if video_id:
+                database.add_cached_og(urlhash, "__INVIDIOUS__", video_id)
+                if _is_yt_bot_in_chat(bot, accid, chat_id):
+                    yt_link = f"https://youtu.be/{video_id}"
+                    logger.info(f"Manual preview Invidious URL pre-check hit. Forwarding to YT Bot: {yt_link}")
+                    _send(bot, accid, chat_id, yt_link)
+                    _react(bot, accid, req_msg_id, "☑️")
+                    return
+                cached_og = {"title": og_title, "image_path": og_image}
+        elif og_title == "__FAILED_BLOCK__":
             database.add_cached_og(urlhash, "__FAILED_BLOCK__", og_image)
             cached_og = {"title": "__FAILED_BLOCK__", "image_path": og_image}
         else:
@@ -2516,9 +2586,26 @@ def on_new_message(bot, accid, event):
                         return
 
                     # Skip if YT Bot is in the chat and this is a link handled by YT Bot
-                    if _is_yt_bot_in_chat(bot, accid, msg.chat_id) and _is_handled_by_yt_bot(url):
-                        logger.info(f"Skipping group link auto-preview for {url} since YT Bot is present and handles it.")
-                        return
+                    if _is_yt_bot_in_chat(bot, accid, msg.chat_id):
+                        if _is_handled_by_yt_bot(url):
+                            logger.info(f"Skipping group link auto-preview for {url} since YT Bot is present and handles it.")
+                            return
+                        # Check if this is a known Invidious domain
+                        domain = urllib.parse.urlparse(url).netloc.lower()
+                        is_invidious = False
+                        try:
+                            if database.get_config(f"invidious_domain_{domain}") == "1":
+                                is_invidious = True
+                        except Exception:
+                            pass
+                        
+                        if is_invidious:
+                            video_id = _extract_youtube_id_from_invidious(url)
+                            if video_id:
+                                yt_link = f"https://youtu.be/{video_id}"
+                                logger.info(f"Detected known Invidious URL {url} in chat with YT Bot. Forwarding: {yt_link}")
+                                _send(bot, accid, msg.chat_id, yt_link)
+                                return
                         
                     # Rate limiting check
                     if _is_rate_limited(bot, accid, msg.from_id):

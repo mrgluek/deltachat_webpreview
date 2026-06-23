@@ -323,4 +323,29 @@ def is_excluded(url: str) -> bool:
         conn.close()
         return bool(result)
 
+def add_invidious_domain(domain: str):
+    """Save an Invidious domain to database config."""
+    set_config(f"invidious_domain_{domain.strip().lower()}", "1")
+
+def remove_invidious_domain(domain: str):
+    """Remove an Invidious domain from database config."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM config WHERE key = ?", (f"invidious_domain_{domain.strip().lower()}",))
+        conn.commit()
+        conn.close()
+
+def list_invidious_domains() -> list[str]:
+    """List all registered Invidious domains from database config."""
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT key FROM config WHERE key LIKE 'invidious_domain_%'")
+        rows = cursor.fetchall()
+        conn.close()
+        prefix = "invidious_domain_"
+        return [r[0][len(prefix):] for r in rows if r[0].startswith(prefix)]
+
 init_db()
+

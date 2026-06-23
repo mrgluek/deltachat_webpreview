@@ -13,7 +13,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - 🧹 **Automatic Cache Rotation:** Keeps disk usage low by automatically purging compiled HTML cache previews older than 24 hours.
 - 💾 **Direct File Downloads:** Automatically detects URLs pointing to document files (PDF, EPUB, DjVu, MS Office, LibreOffice, plain text/data files). Instead of attempting an HTML preview, the bot offers a `/download` command in groups or directly downloads/attaches the file in private chats (up to 50 MB limits, with chunked streaming).
 - 🤖 **Jina.ai Fallback Support:** Integrated Jina AI Reader (`r.jina.ai`) to resolve webpage titles, preview banners, and markdown-to-HTML text contents if the target site blocks standard user agents or readability parser fails to extract meaningful data (e.g. on anti-bot challenge pages). It automatically strips tracking pixels/broken images to preserve privacy and presentation.
-- 📺 **Invidious & YT Bot Redirection:** Detects Invidious instances (alternative YouTube front-ends) by checking page description metadata. If `YT Bot` is present in the chat, the bot extracts the video ID and redirects it to a standard `youtu.be` link to be processed by `YT Bot`, completely bypassing WebPreview generation and learning the instance domain to handle future requests instantly.
+- 📺 **Invidious & YT Bot Redirection:** Detects Invidious instances (alternative YouTube front-ends) by checking page description metadata. If `YT Bot` is present in the chat, the bot extracts the video ID and redirects it to a standard `youtu.be` link to be processed by `YT Bot`, completely bypassing WebPreview generation. It automatically learns detected instance domains and supports manual domain registration/management via admin commands.
 - 🛡️ **Local Network Protection:** Uses standard Python `ipaddress` validation to identify and skip local hosts/IPs (`localhost`, private IP subnets, `.local`/`.lan` domains, etc.), blocking resource-wasting internal network requests and spam.
 - 🐳 **Docker Ready:** Built with a multi-stage Docker build compiling Rust-based `monolith` and packing it into a slim Python runtime.
 
@@ -60,6 +60,10 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - `/rmtransport <addr>` — Remove a mail relay (Admin only).
 - `/setprimary <addr>` — Switch the primary mail relay (Admin only).
 - `/resilient` — Toggle resilient sending mode across all relays (Admin only).
+- `/invidious_add <domain/url>` — Register a custom Invidious instance domain (Admin only).
+- `/invidious_rm <domain/url>` — Deregister an Invidious instance domain (Admin only). *(Note: `/invidious_remove` is also supported as an alias)*
+- `/invidious_list` — List registered Invidious instance domains (Admin only).
+
 
 ## Admin Management
 

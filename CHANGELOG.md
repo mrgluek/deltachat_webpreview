@@ -2,7 +2,13 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.6] - 2026-06-23
+
+### Added
+- **Manual Invidious Domain Management:** Added admin commands `/invidious_add <domain/url>`, `/invidious_rm <domain/url>`, and `/invidious_list` to allow manually registering, deregistering, and listing Invidious instances. This ensures video links can still be rewritten and forwarded to `YT Bot` even if the Invidious server blocks the WebPreview Bot from auto-detecting it (e.g. returning `418 I'm a teapot` or Cloudflare checks).
+
 ## [2.2.5] - 2026-06-23
+
 
 ### Added
 - **Invidious Detection and YT Bot Redirection:** Automatically identifies Invidious instances (alternative YouTube front-ends) by checking description metadata. When `YT Bot` is present in the chat, it intercepts these links, extracts the video ID, rewrites them to `youtu.be` links, and forwards them to the chat, completely skipping WebPreview generation.

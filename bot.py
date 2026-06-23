@@ -2071,6 +2071,9 @@ def get_help_text(bot, accid, from_id):
         help_text += "/preview_exclude <pattern> — Blacklist a URL pattern\n"
         help_text += "/preview_unexclude <pattern> — Remove a blacklisted pattern\n"
         help_text += "/preview_exclusions — List active URL exclusions\n"
+        help_text += "/invidious_add <domain/url> — Register an Invidious server domain\n"
+        help_text += "/invidious_rm <domain/url> — Deregister an Invidious server domain\n"
+        help_text += "/invidious_list — List registered Invidious domains\n"
 
     return help_text
 
@@ -2425,6 +2428,109 @@ def preview_exclusions_command(bot, accid, event):
         _send(bot, accid, msg.chat_id, reply)
     except Exception as e:
         _send(bot, accid, msg.chat_id, f"❌ Failed to list exclusions: {e}")
+
+def _clean_domain(domain_or_url: str) -> str:
+    """Clean a domain input, extracting it from a full URL if necessary."""
+    val = domain_or_url.strip()
+    if "://" in val or val.startswith("//"):
+        try:
+            parsed = urllib.parse.urlparse(val)
+            netloc = parsed.netloc or parsed.path.split('/')[0]
+            if netloc:
+                val = netloc
+        except Exception:
+            pass
+    # Strip any port number if present
+    if ":" in val:
+        val = val.split(":")[0]
+    return val.lower().strip()
+
+@dc_cli.on(events.NewMessage(command="/invidious_add"))
+def invidious_add_command(bot, accid, event):
+    msg = event.msg
+    text = (msg.text or "").strip()
+    if not re.match(r"^/invidious_add(?:\s|$)", text):
+        return
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /invidious_add.")
+        return
+
+    arg = event.payload.strip() if event.payload else ""
+    if not arg:
+        _send(bot, accid, msg.chat_id, "Usage: `/invidious_add <domain_or_url>`")
+        return
+
+    domain = _clean_domain(arg)
+    if not domain:
+        _send(bot, accid, msg.chat_id, "❌ Invalid domain or URL.")
+        return
+
+    try:
+        database.add_invidious_domain(domain)
+        _send(bot, accid, msg.chat_id, f"✅ Registered Invidious domain: `{domain}`")
+    except Exception as e:
+        _send(bot, accid, msg.chat_id, f"❌ Failed to register Invidious domain: {e}")
+
+def _invidious_rm_logic(bot, accid, event):
+    msg = event.msg
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use this command.")
+        return
+
+    arg = event.payload.strip() if event.payload else ""
+    if not arg:
+        _send(bot, accid, msg.chat_id, f"Usage: `{msg.text.split()[0]} <domain_or_url>`")
+        return
+
+    domain = _clean_domain(arg)
+    if not domain:
+        _send(bot, accid, msg.chat_id, "❌ Invalid domain or URL.")
+        return
+
+    try:
+        database.remove_invidious_domain(domain)
+        _send(bot, accid, msg.chat_id, f"✅ Deregistered Invidious domain: `{domain}`")
+    except Exception as e:
+        _send(bot, accid, msg.chat_id, f"❌ Failed to deregister Invidious domain: {e}")
+
+@dc_cli.on(events.NewMessage(command="/invidious_rm"))
+def invidious_rm_command(bot, accid, event):
+    msg = event.msg
+    text = (msg.text or "").strip()
+    if not re.match(r"^/invidious_rm(?:\s|$)", text):
+        return
+    _invidious_rm_logic(bot, accid, event)
+
+@dc_cli.on(events.NewMessage(command="/invidious_remove"))
+def invidious_remove_command(bot, accid, event):
+    msg = event.msg
+    text = (msg.text or "").strip()
+    if not re.match(r"^/invidious_remove(?:\s|$)", text):
+        return
+    _invidious_rm_logic(bot, accid, event)
+
+@dc_cli.on(events.NewMessage(command="/invidious_list"))
+def invidious_list_command(bot, accid, event):
+    msg = event.msg
+    text = (msg.text or "").strip()
+    if not re.match(r"^/invidious_list(?:\s|$)", text):
+        return
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /invidious_list.")
+        return
+
+    try:
+        domains = database.list_invidious_domains()
+        if not domains:
+            _send(bot, accid, msg.chat_id, "No custom Invidious domains registered.")
+            return
+
+        reply = "📺 **Registered Invidious Domains:**\n\n"
+        for idx, dom in enumerate(domains, 1):
+            reply += f"{idx}. `{dom}`\n"
+        _send(bot, accid, msg.chat_id, reply)
+    except Exception as e:
+        _send(bot, accid, msg.chat_id, f"❌ Failed to list Invidious domains: {e}")
 
 def _parse_chat_info_is_private(chat_info) -> bool:
     if isinstance(chat_info, dict):

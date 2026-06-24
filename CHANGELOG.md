@@ -2,7 +2,14 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.2.7] - 2026-06-24
+
+### Fixed
+- **URL Validation Enhancements:** Improved `_is_internal_or_invalid_url` to filter out malformed URLs with hostnames containing no dots (e.g. `https://юрл`, `http://test`), unless they represent `localhost` or valid IP addresses.
+- **Log Noise Reduction:** Silenced warning log messages for bracketed invalid hostname/IP syntax issues by handling `ValueError` separately and logging it as debug messages.
+
 ## [2.2.6] - 2026-06-23
+
 
 ### Added
 - **Manual Invidious Domain Management:** Added admin commands `/invidious_add <domain/url>`, `/invidious_rm <domain/url>`, and `/invidious_list` to allow manually registering, deregistering, and listing Invidious instances. This ensures video links can still be rewritten and forwarded to `YT Bot` even if the Invidious server blocks the WebPreview Bot from auto-detecting it (e.g. returning `418 I'm a teapot` or Cloudflare checks).

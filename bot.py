@@ -266,6 +266,18 @@ def _is_internal_or_invalid_url(url: str) -> bool:
         if host in ("localhost", "example", "example.com", "example.org", "example.net", "example.edu"):
             return True
             
+        # 1b. Check if host has a dot or is localhost / valid IP
+        if "." not in host and host != "localhost":
+            is_ip = False
+            try:
+                ip_str = host.strip("[]")
+                ipaddress.ip_address(ip_str)
+                is_ip = True
+            except ValueError:
+                pass
+            if not is_ip:
+                return True
+            
         # 2. Check local domain suffixes
         local_suffixes = (".local", ".lan", ".home", ".internal", ".onion", ".test", ".invalid", ".localhost")
         if host.endswith(local_suffixes):
@@ -281,6 +293,9 @@ def _is_internal_or_invalid_url(url: str) -> bool:
             # Not an IP address, which is fine
             pass
             
+    except ValueError as e:
+        logger.debug(f"Invalid URL hostname syntax {url}: {e}")
+        return True
     except Exception as e:
         logger.warning(f"Error checking internal/invalid URL {url}: {e}")
         return True # Treat as invalid if parsing failed

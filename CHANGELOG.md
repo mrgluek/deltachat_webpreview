@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.7] - 2026-06-25
+
+### Changed
+- **WAF Bypass / Octet-Stream Handling:** Improved `_check_url_headers` to allow `application/octet-stream` content-types for URLs that do not match known binary file extensions. This prevents fast-rejection of webpages protected by anti-bot/WAF systems (like QRATOR returning empty octet-streams to bots) and lets the bot proceed to the Jina AI fallback preview generator successfully.
+
 ## [2.3.6] - 2026-06-25
 
 ### Fixed

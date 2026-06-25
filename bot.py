@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.6"
+VERSION = "2.3.7"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -1473,15 +1473,31 @@ def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | No
             return "SIZE_LIMIT", content_length, content_type
             
         # 2. Content-Type check
-        # Non-webpage/binary files (ZIP, MP4, PDFs, Octet-stream, audio, video, zip, rar, tar, exe, dmg, etc.)
+        # Non-webpage/binary files (ZIP, MP4, PDFs, audio, video, zip, rar, tar, exe, dmg, etc.)
         binary_types = [
-            "application/zip", "application/x-zip-compressed", "application/octet-stream",
+            "application/zip", "application/x-zip-compressed",
             "video/", "audio/", "application/pdf", "application/x-rar-compressed",
             "application/x-tar", "application/x-executable", "application/x-msdownload",
             "application/x-apple-diskimage"
         ]
         if any(bt in content_type for bt in binary_types) and 'text/html' not in content_type:
             return "BINARY_TYPE", content_length, content_type
+            
+        # For application/octet-stream, only reject if it also looks like a binary file by extension
+        if "application/octet-stream" in content_type and 'text/html' not in content_type:
+            try:
+                parsed_url = urllib.parse.urlparse(url)
+                path = urllib.parse.unquote(parsed_url.path).lower()
+                binary_extensions = (
+                    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".exe", ".dmg", ".pkg", ".deb", ".rpm",
+                    ".msi", ".iso", ".bin", ".pdf", ".mp4", ".mp3", ".mov", ".avi", ".mkv", ".wav", ".flac", ".ogg"
+                )
+                if path.endswith(binary_extensions):
+                    return "BINARY_TYPE", content_length, content_type
+                # Otherwise, let it pass so it can proceed to standard fetch / Jina AI fallback!
+                logger.info(f"Allowing application/octet-stream for {url} because it does not match known binary extensions.")
+            except Exception:
+                return "BINARY_TYPE", content_length, content_type
             
         return None, content_length, content_type
 

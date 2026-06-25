@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.4"
+VERSION = "2.3.5"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -60,6 +60,56 @@ NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.
 KARAKEEP_URL = os.environ.get("KARAKEEP_URL", "").rstrip("/")
 KARAKEEP_API_KEY = os.environ.get("KARAKEEP_API_KEY", "")
 KARAKEEP_TAGS = [t.strip() for t in os.environ.get("KARAKEEP_TAGS", "").split(",") if t.strip()]
+
+# Jina AI key (opt-in via env)
+JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
+
+# Proxy settings (opt-in via env)
+PROXY_URL = os.environ.get("PROXY_URL", "").strip()
+PROXY_DOMAINS = [d.strip().lower() for d in os.environ.get("PROXY_DOMAINS", ".ru").split(",") if d.strip()]
+
+def _should_use_proxy(url: str) -> bool:
+    """Return True if the URL should be routed through the proxy."""
+    if not PROXY_URL:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc.lower()
+        if ":" in domain:
+            domain = domain.split(":")[0]
+        for proxy_domain in PROXY_DOMAINS:
+            if domain.endswith(proxy_domain):
+                return True
+                
+        # If Jina Reader, also check nested target URL
+        if domain == "r.jina.ai":
+            path = parsed.path
+            if path.startswith("/"):
+                path = path[1:]
+            nested_url = urllib.parse.unquote(path)
+            if nested_url.startswith("http://") or nested_url.startswith("https://"):
+                nested_parsed = urllib.parse.urlparse(nested_url)
+                nested_domain = nested_parsed.netloc.lower()
+                if ":" in nested_domain:
+                    nested_domain = nested_domain.split(":")[0]
+                for proxy_domain in PROXY_DOMAINS:
+                    if nested_domain.endswith(proxy_domain):
+                        return True
+    except Exception:
+        pass
+    return False
+
+def _urlopen(req_or_url, timeout=None):
+    """
+    urlopen wrapper that dynamically routes specific domains through a proxy.
+    """
+    url = req_or_url.full_url if isinstance(req_or_url, urllib.request.Request) else req_or_url
+    if _should_use_proxy(url):
+        logger.info(f"Routing request for {url} through proxy: {PROXY_URL}")
+        proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
+        opener = urllib.request.build_opener(proxy_handler)
+        return opener.open(req_or_url, timeout=timeout)
+    return urllib.request.urlopen(req_or_url, timeout=timeout)
 
 def _karakeep_enabled() -> bool:
     """Return True if KaraKeep integration is configured."""
@@ -141,7 +191,7 @@ def _fetch_file_headers_info(url: str) -> tuple[str, int, str]:
     for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
         try:
             req = urllib.request.Request(url, headers={'User-Agent': ua})
-            response = urllib.request.urlopen(req, timeout=5)
+            response = _urlopen(req, timeout=5)
             break
         except Exception as e:
             logger.warning(f"Failed to fetch headers for {url} with UA: {e}")
@@ -221,7 +271,7 @@ def _download_file(url: str, output_path: str) -> tuple[bool, str]:
     for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
         try:
             req = urllib.request.Request(url, headers={'User-Agent': ua})
-            response = urllib.request.urlopen(req, timeout=15)
+            response = _urlopen(req, timeout=15)
             break
         except Exception as e:
             logger.warning(f"Download attempt failed for {url} with UA: {e}")
@@ -392,7 +442,7 @@ def _download_image_bytes(image_url: str) -> bytes | None:
     for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
         try:
             req = urllib.request.Request(image_url, headers={'User-Agent': ua})
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with _urlopen(req, timeout=5) as response:
                 content_type = response.headers.get('Content-Type', '')
                 if 'image' in content_type.lower() or response.status == 200:
                     return response.read()
@@ -414,7 +464,7 @@ def _download_page_html(url: str) -> tuple[str | None, str | None]:
     for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
         try:
             req = urllib.request.Request(url, headers={'User-Agent': ua})
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with _urlopen(req, timeout=15) as response:
                 content_type = response.headers.get('Content-Type', '')
                 if 'text/html' not in content_type.lower():
                     continue
@@ -1015,11 +1065,18 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024:.0f} KB"
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
-async def _run_monolith_process(cmd: list) -> tuple[int, str]:
+async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int, str]:
     """Execute monolith process with timeout."""
+    env = os.environ.copy()
+    if url and _should_use_proxy(url):
+        env["http_proxy"] = PROXY_URL
+        env["https_proxy"] = PROXY_URL
+        env["HTTP_PROXY"] = PROXY_URL
+        env["HTTPS_PROXY"] = PROXY_URL
+        logger.info(f"Routing monolith subprocess for {url} through proxy: {PROXY_URL}")
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=35)
         return proc.returncode, stderr.decode(errors='replace').strip()
@@ -1074,7 +1131,9 @@ def _fetch_from_jina(url: str) -> tuple[str | None, str | None, str | None, str 
             jina_url,
             headers={'User-Agent': 'curl/7.88.1'}
         )
-        with urllib.request.urlopen(req, timeout=15) as response:
+        if JINA_API_KEY:
+            req.add_header('Authorization', f'Bearer {JINA_API_KEY}')
+        with _urlopen(req, timeout=15) as response:
             text_bytes = response.read(1024 * 1024) # Read up to 1MB of content
             text = _decode_html(text_bytes, response.headers)
             return _parse_jina_response(text)
@@ -1274,7 +1333,7 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None]:
             url, 
             headers={'User-Agent': STANDARD_USER_AGENT}
         )
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with _urlopen(req, timeout=5) as response:
             content_type = response.headers.get('Content-Type', '')
             if 'text/html' in content_type.lower():
                 # Read first 512KB
@@ -1299,7 +1358,7 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None]:
                 url, 
                 headers={'User-Agent': NON_MOZILLA_USER_AGENT}
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with _urlopen(req, timeout=5) as response:
                 content_type = response.headers.get('Content-Type', '')
                 if 'text/html' in content_type.lower():
                     # Read first 512KB
@@ -1404,7 +1463,7 @@ def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | No
     # Standard attempt
     try:
         req = urllib.request.Request(url, headers={'User-Agent': STANDARD_USER_AGENT})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with _urlopen(req, timeout=5) as response:
             return check_response(response)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403, 404):
@@ -1418,7 +1477,7 @@ def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | No
     # Fallback attempt
     try:
         req = urllib.request.Request(url, headers={'User-Agent': NON_MOZILLA_USER_AGENT})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with _urlopen(req, timeout=5) as response:
             return check_response(response)
     except urllib.error.HTTPError as e:
         return "HTTP_ERROR", e.code, None
@@ -1438,7 +1497,7 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
             image_url, 
             headers={'User-Agent': STANDARD_USER_AGENT}
         )
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with _urlopen(req, timeout=5) as response:
             content_type = response.headers.get('Content-Type', '')
             if 'image' in content_type.lower():
                 response_data = response.read()
@@ -1452,7 +1511,7 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
                 image_url, 
                 headers={'User-Agent': NON_MOZILLA_USER_AGENT}
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with _urlopen(req, timeout=5) as response:
                 content_type = response.headers.get('Content-Type', '')
                 if 'image' in content_type.lower():
                     response_data = response.read()
@@ -1853,7 +1912,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            code, err = loop.run_until_complete(_run_monolith_process(cmd))
+            code, err = loop.run_until_complete(_run_monolith_process(cmd, url))
         finally:
             loop.close()
         
@@ -1872,7 +1931,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                code, err = loop.run_until_complete(_run_monolith_process(cmd))
+                code, err = loop.run_until_complete(_run_monolith_process(cmd, url))
             finally:
                 loop.close()
         
@@ -2000,7 +2059,7 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             bookmark_id = body.get("id", "")
             if not bookmark_id:
@@ -2033,7 +2092,7 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(tag_req, timeout=10) as tag_resp:
+            with _urlopen(tag_req, timeout=10) as tag_resp:
                 pass
         except Exception as e:
             logger.warning(f"Failed to attach tags to KaraKeep bookmark {bookmark_id}: {e}")

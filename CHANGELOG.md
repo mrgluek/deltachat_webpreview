@@ -2,6 +2,13 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.5] - 2026-06-25
+
+### Added
+- **Jina AI API Key Support:** Added support for specifying a Jina AI API key via `JINA_API_KEY` (either in `docker-compose.yml` or a `.env` file) to authenticate requests to Jina Reader and increase rate limits.
+- **Domain-Specific Proxy Routing:** Added support for routing requests targeting specific domain suffixes (like `.ru`) through an optional proxy server, configured via `PROXY_URL` and `PROXY_DOMAINS` environment variables. This affects standard URL fetches, nested Jina Reader URLs, and subprocess executions of `monolith`.
+- **Environment Template:** Added a `.env.example` template file for local deployment convenience.
+
 ## [2.3.4] - 2026-06-25
 
 ### Added

@@ -48,11 +48,14 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 
 ## Configuration
 
-The bot can be configured using environment variables in `docker-compose.yml` or a `.env` file:
+The bot can be configured using environment variables in `docker-compose.yml` or a `.env` file (you can copy `.env.example` to `.env` as a template):
 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `ALLOWED_BOT_EMAILS` | Comma-separated list of allowed bot emails. | *(Empty)* |
+| `JINA_API_KEY` | Optional API Key for Jina Reader (`r.jina.ai`) to raise rate limits (from 20 req/min to 500+). | *(Empty)* |
+| `PROXY_URL` | Optional proxy server URL to route matching domains through (e.g. `http://127.0.0.1:8118` or `socks5://127.0.0.1:9050`). | *(Empty)* |
+| `PROXY_DOMAINS` | Comma-separated list of domain suffixes to route via `PROXY_URL`. | `.ru` |
 | `KARAKEEP_URL` | The base URL of your KaraKeep instance (e.g., `https://keep.gluek.info`). | *(Empty)* |
 | `KARAKEEP_API_KEY` | The API Key for authenticating with your KaraKeep instance. | *(Empty)* |
 | `KARAKEEP_TAGS` | Optional comma-separated list of tags to automatically attach to saved bookmarks (e.g., `deltachat`). | *(Empty)* |

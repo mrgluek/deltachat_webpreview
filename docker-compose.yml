@@ -19,6 +19,9 @@ services:
       - KARAKEEP_URL=${KARAKEEP_URL:-}
       - KARAKEEP_API_KEY=${KARAKEEP_API_KEY:-}
       - KARAKEEP_TAGS=${KARAKEEP_TAGS:-}
+      - JINA_API_KEY=${JINA_API_KEY:-}
+      - PROXY_URL=${PROXY_URL:-}
+      - PROXY_DOMAINS=${PROXY_DOMAINS:-}
     deploy:
       resources:
         limits:

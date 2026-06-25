@@ -137,7 +137,8 @@ def _save_jina_preview_to_cache(url: str, urlhash: str, title: str, jina_markdow
         import urllib.parse
         import datetime
 
-        summary = markdown_to_html(jina_markdown)
+        cleaned_md = _clean_jina_markdown(jina_markdown, title)
+        summary = markdown_to_html(cleaned_md)
         soup = BeautifulSoup(summary, BS_PARSER)
         
         # Inline images with compression
@@ -774,7 +775,8 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
             jina_title, _, jina_markdown, jina_warning = _fetch_from_jina(url)
             if jina_markdown:
                 title = jina_title or "Webpage Preview"
-                summary = markdown_to_html(jina_markdown)
+                cleaned_md = _clean_jina_markdown(jina_markdown, title)
+                summary = markdown_to_html(cleaned_md)
                 success = True
 
         if not success:
@@ -1177,6 +1179,113 @@ async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int,
     except Exception as e:
         return -99, str(e)
 
+def is_likely_meta(line: str) -> bool:
+    line = line.strip()
+    if not line:
+        return True
+    
+    months_rx = r"(?:янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+    if re.search(r'\b\d{1,2}\s+' + months_rx, line, re.I):
+        return True
+    if re.search(r'\b\d{2}:\d{2}\b', line):
+        return True
+    
+    cat_match = re.match(r'^\[([^\]]{1,30})\]\(https?://[^\)]+\)$', line)
+    if cat_match:
+        return True
+        
+    return False
+
+FOOTER_INDICATORS = [
+    r'^(?:#+\s+|\*\*|)?Авторы(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Теги(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Персоны(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Материалы по теме(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Читайте также(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Интересное(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Новости партн(?:е|ё)ров(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Рубрики(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Новости регионов(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Социальные сети(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Подписки(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Уведомления(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Другие продукты РБК(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?РБК Новости(?:\*\*|)?$',
+    r'^© ООО «БИЗНЕСПРЕСС»',
+    r'^Владельцем сайта является',
+    r'^Чтобы отправить редакции сообщение',
+    r'^(?:#+\s+|\*\*|)?Тематические программы',
+    r'^(?:#+\s+|\*\*|)?Related Articles(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Share this(?:\*\*|)?$',
+    r'^(?:#+\s+|\*\*|)?Recommended for you(?:\*\*|)?$',
+]
+
+def _clean_jina_markdown(markdown_text: str, title: str | None = None) -> str:
+    if not markdown_text:
+        return ""
+    
+    lines = markdown_text.split('\n')
+    
+    title_idx = -1
+    if title:
+        norm_title = re.sub(r'\W+', '', title).lower()
+        # Phase 1: Look for heading/bold lines matching the title
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            is_heading = stripped.startswith('#') or (stripped.startswith('**') and stripped.endswith('**'))
+            if not is_heading:
+                continue
+            norm_line = re.sub(r'\W+', '', stripped).lower()
+            if norm_title and norm_line and (norm_title in norm_line or norm_line in norm_title):
+                title_idx = idx
+                break
+                
+        # Phase 2: Fallback to any line matching the title
+        if title_idx == -1:
+            for idx, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                norm_line = re.sub(r'\W+', '', stripped).lower()
+                if norm_title and norm_line and (norm_title in norm_line or norm_line in norm_title):
+                    title_idx = idx
+                    break
+                
+    if title_idx == -1:
+        for idx, line in enumerate(lines):
+            if line.strip().startswith('# '):
+                title_idx = idx
+                break
+                
+    start_idx = 0
+    if title_idx != -1:
+        start_idx = title_idx
+        for back_idx in range(title_idx - 1, max(-1, title_idx - 6), -1):
+            line = lines[back_idx]
+            if is_likely_meta(line):
+                start_idx = back_idx
+            else:
+                break
+                
+    content_lines = lines[start_idx:]
+    
+    footer_idx = -1
+    for idx, line in enumerate(content_lines):
+        stripped = line.strip()
+        for pattern in FOOTER_INDICATORS:
+            if re.match(pattern, stripped, re.IGNORECASE):
+                footer_idx = idx
+                break
+        if footer_idx != -1:
+            break
+            
+    if footer_idx != -1:
+        content_lines = content_lines[:footer_idx]
+        
+    return '\n'.join(content_lines).strip()
+
 def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None, str | None]:
     """
     Parses r.jina.ai response.
@@ -1217,7 +1326,10 @@ def _fetch_from_jina(url: str) -> tuple[str | None, str | None, str | None, str 
         logger.info(f"Querying Jina AI Reader for URL: {url}")
         req = urllib.request.Request(
             jina_url,
-            headers={'User-Agent': 'curl/7.88.1'}
+            headers={
+                'User-Agent': 'curl/7.88.1',
+                'X-Exclude-Selector': 'nav, footer, header, aside, .sidebar, .ads, .ad, .promo, .comments, .related, .popup, #footer, #header, #sidebar, #nav, #menu, .header, .footer, .menu, .nav'
+            }
         )
         if JINA_API_KEY:
             req.add_header('Authorization', f'Bearer {JINA_API_KEY}')
@@ -1727,36 +1839,20 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                         f"💾 /download_{urlhash}"
                     )
                     _send(bot, accid, chat_id, caption)
+                    return
                   # Verify that if there is a cached image path, the file still exists on disk
                 if not cached_image_path or os.path.exists(cached_image_path):
                     logger.info(f"OG Cache hit for group preview: {url}")
                     cached_warning = cached.get("warning")
                     cached_jina_markdown = cached.get("jina_markdown")
                     
-                    if cached_jina_markdown:
-                        max_len = 8000
-                        formatted_md = cached_jina_markdown
-                        is_truncated = False
-                        if len(formatted_md) > max_len:
-                            cut_idx = formatted_md.rfind('\n', 0, max_len)
-                            if cut_idx == -1:
-                                cut_idx = max_len
-                            formatted_md = formatted_md[:cut_idx]
-                            is_truncated = True
-                            
-                        caption = f"🌐 [{cached_title}]({url})\n\n"
-                        if cached_warning:
-                            caption += f"Warning: {cached_warning}\n\n"
-                        caption += formatted_md
-                        if is_truncated:
-                            caption += f"\n\n... (preview truncated, [read full page at source]({url}))"
+                    emoji_prefix = "🤖🌐" if cached_jina_markdown else "🌐"
+                    if cached_warning:
+                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
                     else:
-                        if cached_warning:
-                            caption = f"🌐 [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
-                        else:
-                            caption = f"🌐 [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
-                        if _karakeep_enabled():
-                            caption += f"   🏛️ /keep_{urlhash}"
+                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                    if _karakeep_enabled():
+                        caption += f"   🏛️ /keep_{urlhash}"
 
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
@@ -1807,31 +1903,14 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         if jina_markdown:
             _save_jina_preview_to_cache(url, urlhash, title, jina_markdown)
             
-            # Format markdown caption directly
-            max_len = 8000
-            formatted_md = jina_markdown
-            is_truncated = False
-            if len(formatted_md) > max_len:
-                cut_idx = formatted_md.rfind('\n', 0, max_len)
-                if cut_idx == -1:
-                    cut_idx = max_len
-                formatted_md = formatted_md[:cut_idx]
-                is_truncated = True
-                
-            caption = f"🌐 [{title}]({url})\n\n"
-            if warning:
-                caption += f"Warning: {warning}\n\n"
-            caption += formatted_md
-            if is_truncated:
-                caption += f"\n\n... (preview truncated, [read full page at source]({url}))"
+        emoji_prefix = "🤖🌐" if jina_markdown else "🌐"
+        if warning:
+            caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
         else:
-            if warning:
-                caption = f"🌐 [{title}]({url})\n\nWarning: {warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
-            else:
-                caption = f"🌐 [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
-                
-            if _karakeep_enabled():
-                caption += f"   🏛️ /keep_{urlhash}"
+            caption = f"{emoji_prefix} [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+            
+        if _karakeep_enabled():
+            caption += f"   🏛️ /keep_{urlhash}"
         
         # 6. Download image if exists, saving to persistent cache folder
         img_cache_path = None
@@ -2060,7 +2139,8 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
                 import base64
                 import datetime
                 
-                summary = markdown_to_html(cached_jina_markdown)
+                cleaned_md = _clean_jina_markdown(cached_jina_markdown, cached_og.get("title"))
+                summary = markdown_to_html(cleaned_md)
                 soup = BeautifulSoup(summary, BS_PARSER)
                 
                 # Inline images with compression

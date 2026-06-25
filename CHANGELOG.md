@@ -2,6 +2,16 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.9] - 2026-06-25
+
+### Added
+- **Robot Indicator for Jina Previews:** Added a robot emoji indicator `🤖🌐` next to the title when the preview is served or fetched via Jina AI Reader, giving visual feedback that Jina was used.
+- **Jina Request Exclusions:** Configured Jina Reader requests with `X-Exclude-Selector` headers to exclude common layout elements (`nav`, `footer`, `header`, etc.) directly on Jina's side, reducing payload size.
+- **Jina Markdown Cleaning Heuristics:** Implemented a robust markdown-cleaning algorithm (`_clean_jina_markdown`) to isolate only the main article text (starts with title heading and ends before copyright/boilerplates), greatly enhancing readability results.
+
+### Changed
+- **Reverted Group Previews to Clean Buttons:** Reverted direct rendering of Jina markdown inside group chat messages. Group previews now always show the clean card layout with `/preview`, `/archive`, and `/keep` buttons instead of displaying full-page articles directly in the chat.
+
 ## [2.3.8] - 2026-06-25
 
 ### Added

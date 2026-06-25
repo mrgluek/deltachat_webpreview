@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.3"
+VERSION = "2.3.4"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -649,7 +649,7 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
 
         if not success:
             logger.info(f"Standard readability failed or was empty for {url}. Attempting Jina Reader fallback...")
-            jina_title, _, jina_markdown = _fetch_from_jina(url)
+            jina_title, _, jina_markdown, jina_warning = _fetch_from_jina(url)
             if jina_markdown:
                 title = jina_title or "Webpage Preview"
                 summary = markdown_to_html(jina_markdown)
@@ -1032,18 +1032,23 @@ async def _run_monolith_process(cmd: list) -> tuple[int, str]:
     except Exception as e:
         return -99, str(e)
 
-def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None]:
+def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None, str | None]:
     """
     Parses r.jina.ai response.
-    Returns (title, image_url, markdown_content).
+    Returns (title, image_url, markdown_content, warning).
     """
     title = None
     image_url = None
     markdown_content = None
+    warning = None
 
-    title_match = re.search(r'^Title:\s*(.*)$', text, re.MULTILINE | re.IGNORECASE)
+    title_match = re.search(r'^Title:[ \t]*(.*)$', text, re.MULTILINE | re.IGNORECASE)
     if title_match:
         title = title_match.group(1).strip()
+
+    warning_match = re.search(r'^Warning:[ \t]*(.*)$', text, re.MULTILINE | re.IGNORECASE)
+    if warning_match:
+        warning = warning_match.group(1).strip()
 
     md_match = re.search(r'Markdown Content:\s*(.*)', text, re.DOTALL | re.IGNORECASE)
     if md_match:
@@ -1055,12 +1060,12 @@ def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None]
         if img_match:
             image_url = img_match.group(1).strip().strip('"\'')
 
-    return title, image_url, markdown_content
+    return title, image_url, markdown_content, warning
 
-def _fetch_from_jina(url: str) -> tuple[str | None, str | None, str | None]:
+def _fetch_from_jina(url: str) -> tuple[str | None, str | None, str | None, str | None]:
     """
     Queries Jina AI Reader to fetch the page metadata and content.
-    Returns (title, image_url, markdown_content).
+    Returns (title, image_url, markdown_content, warning).
     """
     jina_url = f"https://r.jina.ai/{url}"
     try:
@@ -1075,7 +1080,7 @@ def _fetch_from_jina(url: str) -> tuple[str | None, str | None, str | None]:
             return _parse_jina_response(text)
     except Exception as e:
         logger.warning(f"Jina AI Reader fetch failed for {url}: {e}")
-        return None, None, None
+        return None, None, None, None
 
 def markdown_to_html(md_text: str) -> str:
     """
@@ -1205,10 +1210,10 @@ def _extract_youtube_id_from_invidious(url: str) -> str | None:
         logger.warning(f"Failed to extract video ID from Invidious URL {url}: {e}")
     return None
 
-def _get_og_preview_data(url: str) -> tuple[str, str | None, bool]:
+def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None]:
     """
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
-    Returns (title, og_image_url, is_invidious).
+    Returns (title, og_image_url, is_invidious, warning).
     """
     def parse_html(html_content: str) -> tuple[str | None, str | None]:
         # 1. Extract title
@@ -1321,17 +1326,25 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool]:
     is_fallback_title = (not title) or (title.strip() == netloc) or (title.strip() == "Webpage")
 
     # If standard fetch was blocked/failed OR we got a fallback title OR we have no preview image, try Jina
+    warning = None
     if is_fallback_title or not image_url or hard_failure_code is not None:
         logger.info(f"Standard OG parse didn't get complete title/image for {url}. Trying Jina.ai fallback...")
-        jina_title, jina_image, jina_markdown = _fetch_from_jina(url)
-        if jina_title:
+        jina_title, jina_image, jina_markdown, jina_warning = _fetch_from_jina(url)
+        if jina_title and jina_title.strip():
             title = jina_title
             # Clear hard failure code if Jina fetch succeeded!
             hard_failure_code = None
+        elif jina_warning:
+            # Empty title but warning exists: use URL Source as fallback title
+            title = f"URL Source: {url}"
+            hard_failure_code = None
+            
         if jina_image:
             image_url = jina_image
         if jina_markdown and ("alternative front-end to YouTube" in jina_markdown or "alternative frontend to YouTube" in jina_markdown):
             is_invidious = True
+        if jina_warning:
+            warning = jina_warning
 
     if is_invidious:
         try:
@@ -1340,12 +1353,12 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool]:
             logger.warning(f"Failed to save Invidious domain {domain} to config: {db_err}")
 
     if hard_failure_code is not None:
-        return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}", is_invidious
+        return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}", is_invidious, None
 
     if title:
-        return title, image_url, is_invidious
+        return title, image_url, is_invidious, warning
 
-    return netloc, None, is_invidious
+    return netloc, None, is_invidious, warning
 
 def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | None]:
     """
@@ -1542,7 +1555,11 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                 # Verify that if there is a cached image path, the file still exists on disk
                 if not cached_image_path or os.path.exists(cached_image_path):
                     logger.info(f"OG Cache hit for group preview: {url}")
-                    caption = f"🌐 [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                    cached_warning = cached.get("warning")
+                    if cached_warning:
+                        caption = f"🌐 [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                    else:
+                        caption = f"🌐 [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
                     if _karakeep_enabled():
                         caption += f"   🏛️ /keep_{urlhash}"
                     if cached_image_path:
@@ -1571,7 +1588,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             _send(bot, accid, chat_id, caption)
             return
 
-        title, image_url, is_invidious = _get_og_preview_data(url)
+        title, image_url, is_invidious, warning = _get_og_preview_data(url)
         
         if is_invidious:
             video_id = _extract_youtube_id_from_invidious(url)
@@ -1591,7 +1608,11 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             return
         
         # 5. Format caption
-        caption = f"🌐 [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+        if warning:
+            caption = f"🌐 [{title}]({url})\n\nWarning: {warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+        else:
+            caption = f"🌐 [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+            
         if _karakeep_enabled():
             caption += f"   🏛️ /keep_{urlhash}"
         
@@ -1601,7 +1622,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             img_cache_path = _download_cached_image(image_url, urlhash)
             
         # 7. Add to SQLite cache
-        database.add_cached_og(urlhash, title, img_cache_path)
+        database.add_cached_og(urlhash, title, img_cache_path, warning)
         
         # 8. Send to group
         if img_cache_path and os.path.exists(img_cache_path):
@@ -1729,7 +1750,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
     # If not in cache, do a fast pre-check to populate the cache and avoid network overhead on blocked sites!
     if not cached_og:
         logger.info(f"Pre-checking URL status for {url}...")
-        og_title, og_image, is_invidious = _get_og_preview_data(url)
+        og_title, og_image, is_invidious, warning = _get_og_preview_data(url)
         if is_invidious:
             video_id = _extract_youtube_id_from_invidious(url)
             if video_id:
@@ -1740,13 +1761,13 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
                     _send(bot, accid, chat_id, yt_link)
                     _react(bot, accid, req_msg_id, "☑️")
                     return
-                cached_og = {"title": og_title, "image_path": og_image}
+                cached_og = {"title": og_title, "image_path": og_image, "warning": warning}
         elif og_title == "__FAILED_BLOCK__":
             database.add_cached_og(urlhash, "__FAILED_BLOCK__", og_image)
-            cached_og = {"title": "__FAILED_BLOCK__", "image_path": og_image}
+            cached_og = {"title": "__FAILED_BLOCK__", "image_path": og_image, "warning": None}
         else:
-            database.add_cached_og(urlhash, og_title, og_image)
-            cached_og = {"title": og_title, "image_path": og_image}
+            database.add_cached_og(urlhash, og_title, og_image, warning)
+            cached_og = {"title": og_title, "image_path": og_image, "warning": warning}
             
     if cached_og and cached_og.get("title") == "__FAILED_BLOCK__":
         reason = cached_og.get("image_path") or "HTTP 403 Forbidden"

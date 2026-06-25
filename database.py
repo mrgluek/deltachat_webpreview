@@ -75,9 +75,14 @@ def init_db():
                 url_key TEXT PRIMARY KEY,
                 title TEXT,
                 image_path TEXT,
+                warning TEXT,
                 created_at INTEGER
             )
         ''')
+        try:
+            cursor.execute("ALTER TABLE og_cache ADD COLUMN warning TEXT")
+        except sqlite3.OperationalError:
+            pass
         
         conn.commit()
         conn.close()
@@ -231,14 +236,14 @@ def get_cached_og(url_key: str) -> dict | None:
         conn.close()
         return dict(row) if row else None
 
-def add_cached_og(url_key: str, title: str, image_path: str | None):
+def add_cached_og(url_key: str, title: str, image_path: str | None, warning: str | None = None):
     with _lock:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO og_cache (url_key, title, image_path, created_at)
-            VALUES (?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
-        ''', (url_key, title, image_path))
+            INSERT OR REPLACE INTO og_cache (url_key, title, image_path, warning, created_at)
+            VALUES (?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
+        ''', (url_key, title, image_path, warning))
         conn.commit()
         conn.close()
 

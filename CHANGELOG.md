@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.4] - 2026-06-25
+
+### Added
+- **Jina AI Warning Previews:** The bot now extracts and displays warnings (such as CAPTCHA notices) in group link previews if Jina AI returns a blank title and warns about page access restrictions, falling back to a clean `URL Source: <url>` title.
+
 ## [2.3.3] - 2026-06-25
 
 ### Changed

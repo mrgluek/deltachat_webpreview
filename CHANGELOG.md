@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.10] - 2026-06-25
+
+### Added
+- **Jina HTML Readability Fallback:** Added support for requesting raw HTML from Jina AI Reader (`X-Return-Format: html`). When standard readability extraction fails, the bot now falls back to querying raw HTML from Jina and running `readability-lxml` directly on it. This combines Jina's dynamic rendering/WAF bypass capabilities with Python's native readability/BeautifulSoup pre-cleaning logic, yielding 100% clean layouts without menus or boilerplate, while keeping Jina Markdown as a tertiary fallback.
+
 ## [2.3.9] - 2026-06-25
 
 ### Added

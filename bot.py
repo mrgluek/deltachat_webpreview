@@ -715,6 +715,14 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
         import base64
         import urllib.parse
         
+        widget_patterns = [
+            re.compile(r"\bpoll\b|poll-container|article-poll", re.I),
+            re.compile(r"comment|disqus|shoutbox", re.I),
+            re.compile(r"social|share|recommend|related", re.I),
+            re.compile(r"promo|banner|sponsor|advertising|advert", re.I),
+            re.compile(r"\bfoot\b|\bheader\b|\bmenu\b|\bnav\b", re.I),
+        ]
+        
         html_str, err = _download_page_html(url)
         success = False
         title = "Webpage Preview"
@@ -729,15 +737,6 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
                     for tag_name in ["header", "footer", "nav", "aside"]:
                         for el in list(soup_clean.find_all(tag_name)):
                             el.decompose()
-                    
-                    # 2. Decompose widgets matching common non-content patterns in class/id
-                    widget_patterns = [
-                        re.compile(r"\bpoll\b|poll-container|article-poll", re.I),
-                        re.compile(r"comment|disqus|shoutbox", re.I),
-                        re.compile(r"social|share|recommend|related", re.I),
-                        re.compile(r"promo|banner|sponsor|advertising|advert", re.I),
-                        re.compile(r"\bfoot\b|\bheader\b|\bmenu\b|\bnav\b", re.I),
-                    ]
                     
                     to_decompose = []
                     for pattern in widget_patterns:
@@ -771,8 +770,47 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
                 logger.warning(f"Standard readability failed: {e}")
 
         if not success:
-            logger.info(f"Standard readability failed or was empty for {url}. Attempting Jina Reader fallback...")
-            jina_title, _, jina_markdown, jina_warning = _fetch_from_jina(url)
+            logger.info(f"Standard readability failed or was empty for {url}. Attempting Jina Reader HTML fallback...")
+            _, _, jina_html, _ = _fetch_from_jina(url, return_html=True)
+            if jina_html:
+                try:
+                    soup_clean = BeautifulSoup(jina_html, BS_PARSER)
+                    # 1. Drop structural tags
+                    for tag_name in ["header", "footer", "nav", "aside"]:
+                        for el in list(soup_clean.find_all(tag_name)):
+                            el.decompose()
+                    
+                    # 2. Decompose widgets matching common non-content patterns in class/id
+                    to_decompose = []
+                    for pattern in widget_patterns:
+                        for el in soup_clean.find_all(class_=pattern):
+                            to_decompose.append(el)
+                        for el in soup_clean.find_all(id=pattern):
+                            to_decompose.append(el)
+                            
+                    for el in to_decompose:
+                        if el.parent is not None:
+                            el.decompose()
+                    
+                    # 3. Unwrap namespace wrapper divs
+                    for el in list(soup_clean.find_all("div")):
+                        if el.parent is not None and el.has_attr('xmlns'):
+                            el.unwrap()
+                    
+                    jina_html_cleaned = str(soup_clean)
+                    doc = Document(jina_html_cleaned)
+                    title = doc.title() or "Webpage Preview"
+                    summary = doc.summary(html_partial=True)
+                    if summary:
+                        text_content = BeautifulSoup(summary, BS_PARSER).get_text().strip()
+                        if len(text_content) >= 150:
+                            success = True
+                except Exception as jina_html_err:
+                    logger.warning(f"Readability failed on Jina HTML: {jina_html_err}")
+
+        if not success:
+            logger.info(f"Jina Reader HTML fallback failed or was empty. Attempting Jina Reader Markdown fallback...")
+            jina_title, _, jina_markdown, jina_warning = _fetch_from_jina(url, return_html=False)
             if jina_markdown:
                 title = jina_title or "Webpage Preview"
                 cleaned_md = _clean_jina_markdown(jina_markdown, title)
@@ -1316,26 +1354,34 @@ def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None,
 
     return title, image_url, markdown_content, warning
 
-def _fetch_from_jina(url: str) -> tuple[str | None, str | None, str | None, str | None]:
+def _fetch_from_jina(url: str, return_html: bool = False) -> tuple[str | None, str | None, str | None, str | None]:
     """
     Queries Jina AI Reader to fetch the page metadata and content.
-    Returns (title, image_url, markdown_content, warning).
+    Returns (title, image_url, content_str, warning).
+    If return_html is True, content_str is the raw HTML and other values are None.
     """
     jina_url = f"https://r.jina.ai/{url}"
     try:
-        logger.info(f"Querying Jina AI Reader for URL: {url}")
+        logger.info(f"Querying Jina AI Reader for URL: {url} (return_html={return_html})")
+        headers = {
+            'User-Agent': 'curl/7.88.1'
+        }
+        if return_html:
+            headers['X-Return-Format'] = 'html'
+        else:
+            headers['X-Exclude-Selector'] = 'nav, footer, header, aside, .sidebar, .ads, .ad, .promo, .comments, .related, .popup, #footer, #header, #sidebar, #nav, #menu, .header, .footer, .menu, .nav'
+            
         req = urllib.request.Request(
             jina_url,
-            headers={
-                'User-Agent': 'curl/7.88.1',
-                'X-Exclude-Selector': 'nav, footer, header, aside, .sidebar, .ads, .ad, .promo, .comments, .related, .popup, #footer, #header, #sidebar, #nav, #menu, .header, .footer, .menu, .nav'
-            }
+            headers=headers
         )
         if JINA_API_KEY:
             req.add_header('Authorization', f'Bearer {JINA_API_KEY}')
         with _urlopen(req, timeout=15) as response:
             text_bytes = response.read(1024 * 1024) # Read up to 1MB of content
             text = _decode_html(text_bytes, response.headers)
+            if return_html:
+                return None, None, text, None
             return _parse_jina_response(text)
     except Exception as e:
         logger.warning(f"Jina AI Reader fetch failed for {url}: {e}")

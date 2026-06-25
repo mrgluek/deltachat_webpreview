@@ -2,6 +2,15 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.13] - 2026-06-25
+
+### Added
+- **Unit Test Suite (`tests/`):** Introduced a structured `tests/` directory with 53 unit tests across three modules:
+  - `test_url_validation.py` – URL validation (`_is_internal_or_invalid_url`): valid external domains, blocked IP ranges, local TLDs.
+  - `test_invidious.py` – Invidious/YouTube helpers: video ID extraction, domain cleaning, and database add/remove/list operations.
+  - `test_proxy_and_jina.py` – Proxy routing, Jina AI Reader integration, SVG skip logic, octet-stream header handling, cache saving, OG fallback, and the `_do_preview` cache optimization.
+- **GitHub Actions CI (`.github/workflows/tests.yml`):** Automated test runner that executes the full test suite on every push and pull request to `main`.
+
 ## [2.3.12] - 2026-06-25
 
 ### Optimized

@@ -105,6 +105,25 @@ Although we recommend using `/addtransport` in chat, you can also add a backup r
 2. Add relay: `docker compose run --rm webpreview_bot python bot.py init transport backup-email@example.com password`
 3. Start the bot: `docker compose up -d`
 
+## Development & Testing
+
+The repository ships with a `tests/` directory containing 53 unit tests:
+
+| File | What it covers |
+|---|---|
+| `tests/test_url_validation.py` | `_is_internal_or_invalid_url` – valid domains, private IPs, blocked TLDs |
+| `tests/test_invidious.py` | `_extract_youtube_id_from_invidious`, `_clean_domain`, Invidious database helpers |
+| `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, SVG skip, octet-stream logic, cache saving, OG fallback |
+
+To run locally (inside the virtualenv):
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+CI runs automatically on every push and pull-request via GitHub Actions (`.github/workflows/tests.yml`).
+
+
 ## Support & Development
 
 If you find this bot useful, consider supporting its development:

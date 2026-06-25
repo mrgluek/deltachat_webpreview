@@ -1377,6 +1377,9 @@ def _fetch_from_jina(url: str, return_html: bool = False) -> tuple[str | None, s
         )
         if JINA_API_KEY:
             req.add_header('Authorization', f'Bearer {JINA_API_KEY}')
+        if _should_use_proxy(url):
+            logger.info(f"Adding X-Proxy-Url header for Jina crawl request to {url}: {PROXY_URL}")
+            req.add_header('X-Proxy-Url', PROXY_URL)
         with _urlopen(req, timeout=15) as response:
             text_bytes = response.read(1024 * 1024) # Read up to 1MB of content
             text = _decode_html(text_bytes, response.headers)

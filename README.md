@@ -55,7 +55,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 | `ALLOWED_BOT_EMAILS` | Comma-separated list of allowed bot emails. | *(Empty)* |
 | `JINA_API_KEY` | Optional API Key for Jina Reader (`r.jina.ai`) to raise rate limits (from 20 req/min to 500+). | *(Empty)* |
 | `JINA_PROXY_URL` | Optional dedicated proxy server URL for routing Jina Reader requests (if unset, Jina queries run directly). | *(Empty)* |
-| `PROXY_URL` | Optional proxy server URL to route matching domains through (e.g. `http://127.0.0.1:8118` or `socks5://127.0.0.1:9050`). | *(Empty)* |
+| `PROXY_URL` | Optional proxy server URL to route matching domains through (e.g. `http://127.0.0.1:8118` or `socks5://127.0.0.1:9050`). This proxy is also passed to Jina Reader via `X-Proxy-Url` to route Jina's crawler for matching domains. | *(Empty)* |
 | `PROXY_DOMAINS` | Comma-separated list of domain suffixes to route via `PROXY_URL`. | `.ru` |
 | `KARAKEEP_URL` | The base URL of your KaraKeep instance (e.g., `https://keep.gluek.info`). | *(Empty)* |
 | `KARAKEEP_API_KEY` | The API Key for authenticating with your KaraKeep instance. | *(Empty)* |

@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.11] - 2026-06-25
+
+### Added
+- **Jina Crawler Proxy Routing (X-Proxy-Url):** If the target URL matches a domain in `PROXY_DOMAINS` (e.g. `.ru`) and `PROXY_URL` is set, the bot now forwards the proxy URL to Jina using the `X-Proxy-Url` header. This instructs Jina's remote crawler to download the target site through our proxy server, resolving geo-restrictions or IP blocks on target Russian sites, while keeping `JINA_PROXY_URL` isolated for local bot connection to the Jina API.
+
 ## [2.3.10] - 2026-06-25
 
 ### Added

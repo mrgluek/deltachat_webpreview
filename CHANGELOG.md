@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.3] - 2026-06-25
+
+### Changed
+- **Bidirectional Suffix Matching:** Suffix matching is now bidirectional (e.g. `@w` or `@webpreview` will match WebPreview bot).
+- **Smart Group Chat Command Filtering:** The bot now automatically ignores unaddressed general `/help` and `/stats` commands in group chats if other bots are present in the chat.
+
 ## [2.3.2] - 2026-06-25
 
 ### Added

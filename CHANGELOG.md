@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.12] - 2026-06-25
+
+### Optimized
+- **Manual Preview and Download Caching optimization:** Modified `_do_preview` and `_do_download` to check `og_cache` first and skip redundant network/HTTP header queries to the remote site if a fresh preview cache is already found in the SQLite database. This fixes the issue where clicking `/preview` or `/download` triggered another request to the target website despite having a cached copy.
+
 ## [2.3.11] - 2026-06-25
 
 ### Added

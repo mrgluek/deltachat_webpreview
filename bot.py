@@ -2014,9 +2014,33 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
     _react(bot, accid, req_msg_id, "⏳")
     
     # 2. Get file info to know the filename
-    is_file, filename, size = _detect_and_get_file_info(url)
+    cached_og = database.get_cached_og(urlhash)
+    is_fresh_og = False
+    if cached_og:
+        created_at = cached_og.get("created_at", 0)
+        if time.time() - created_at < CACHE_MAX_AGE:
+            is_fresh_og = True
+
+    filename = ""
+    if is_fresh_og:
+        title = cached_og.get("title", "")
+        if title and (title.startswith("📝 ") or title.startswith("📝")):
+            # Extract filename from title
+            raw_title = title.lstrip("📝").strip()
+            filename = raw_title
+            if " (" in raw_title and raw_title.endswith(")"):
+                filename = raw_title.rsplit(" (", 1)[0]
+    
     if not filename:
-        filename = "downloaded_file"
+        is_file, filename, size = _detect_and_get_file_info(url)
+
+    if not filename:
+        # Fallback to URL path
+        parsed = urllib.parse.urlparse(url)
+        path = urllib.parse.unquote(parsed.path)
+        filename = os.path.basename(path)
+        if not filename:
+            filename = "downloaded_file"
         
     tmpdir = tempfile.mkdtemp(prefix="webdownload_")
     temp_filepath = os.path.join(tmpdir, _clean_filename(filename))
@@ -2072,28 +2096,53 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         _send(bot, accid, chat_id, f"⚠️ This URL is in the exclusion list.")
         return
 
-    # Check if URL is a file URL
-    is_file, filename, size = _detect_and_get_file_info(url)
-    if is_file:
-        logger.info(f"URL {url} is detected as a file. Redirecting from preview/archive to download.")
-        _do_download(bot, accid, chat_id, req_msg_id, from_id, url)
-        return
-
-    # Check cache for hard block fast rejection
+    # Check cache for hard block fast rejection or redirect
     urlhash = database.get_or_create_url_hash(url)
     cached_og = database.get_cached_og(urlhash)
-    
-    if cached_og and cached_og.get("title") == "__INVIDIOUS__":
-        if _is_yt_bot_in_chat(bot, accid, chat_id):
-            video_id = cached_og.get("image_path")
-            yt_link = f"https://youtu.be/{video_id}"
-            logger.info(f"Manual preview Invidious cache hit. Forwarding to YT Bot: {yt_link}")
-            _send(bot, accid, chat_id, yt_link)
-            _react(bot, accid, req_msg_id, "☑️")
+
+    is_fresh_og = False
+    if cached_og:
+        created_at = cached_og.get("created_at", 0)
+        if time.time() - created_at < CACHE_MAX_AGE:
+            is_fresh_og = True
+
+    if is_fresh_og:
+        title = cached_og.get("title", "")
+        if title and (title.startswith("📝 ") or title.startswith("📝")):
+            logger.info(f"URL {url} is cached as a file. Redirecting from preview/archive to download.")
+            _do_download(bot, accid, chat_id, req_msg_id, from_id, url)
             return
 
-    # If not in cache, do a fast pre-check to populate the cache and avoid network overhead on blocked sites!
-    if not cached_og:
+        if title == "__INVIDIOUS__":
+            if _is_yt_bot_in_chat(bot, accid, chat_id):
+                video_id = cached_og.get("image_path")
+                yt_link = f"https://youtu.be/{video_id}"
+                logger.info(f"Manual preview Invidious cache hit. Forwarding to YT Bot: {yt_link}")
+                _send(bot, accid, chat_id, yt_link)
+                _react(bot, accid, req_msg_id, "☑️")
+                return
+
+        if title == "__FAILED_BLOCK__":
+            reason = cached_og.get("image_path") or "HTTP 403 Forbidden"
+            if "HTTP 403" in reason:
+                reason = "HTTP 403 Forbidden"
+            elif "HTTP 401" in reason:
+                reason = "HTTP 401 Unauthorized"
+            elif "HTTP 404" in reason:
+                reason = "HTTP 404 Not Found"
+            logger.warning(f"Fast-rejecting manual preview request for {url} because website is blocking bot requests ({reason}).")
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests ({reason}).")
+            return
+    else:
+        # Check if URL is a file URL (network call)
+        is_file, filename, size = _detect_and_get_file_info(url)
+        if is_file:
+            logger.info(f"URL {url} is detected as a file. Redirecting from preview/archive to download.")
+            _do_download(bot, accid, chat_id, req_msg_id, from_id, url)
+            return
+
+        # If not in cache, do a fast pre-check to populate the cache and avoid network overhead on blocked sites!
         logger.info(f"Pre-checking URL status for {url}...")
         og_title, og_image, is_invidious, warning, jina_markdown = _get_og_preview_data(url)
         if is_invidious:
@@ -2113,20 +2162,19 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         else:
             database.add_cached_og(urlhash, og_title, og_image, warning, jina_markdown)
             cached_og = {"title": og_title, "image_path": og_image, "warning": warning, "jina_markdown": jina_markdown}
-            
-    if cached_og and cached_og.get("title") == "__FAILED_BLOCK__":
-        reason = cached_og.get("image_path") or "HTTP 403 Forbidden"
-        if "HTTP 403" in reason:
-            reason = "HTTP 403 Forbidden"
-        elif "HTTP 401" in reason:
-            reason = "HTTP 401 Unauthorized"
-        elif "HTTP 404" in reason:
-            reason = "HTTP 404 Not Found"
-            
-        logger.warning(f"Fast-rejecting manual preview request for {url} because website is blocking bot requests ({reason}).")
-        _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests ({reason}).")
-        return
+
+        if cached_og and cached_og.get("title") == "__FAILED_BLOCK__":
+            reason = cached_og.get("image_path") or "HTTP 403 Forbidden"
+            if "HTTP 403" in reason:
+                reason = "HTTP 403 Forbidden"
+            elif "HTTP 401" in reason:
+                reason = "HTTP 401 Unauthorized"
+            elif "HTTP 404" in reason:
+                reason = "HTTP 404 Not Found"
+            logger.warning(f"Fast-rejecting manual preview request for {url} because website is blocking bot requests ({reason}).")
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests ({reason}).")
+            return
 
     import hashlib
     url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
@@ -2151,23 +2199,25 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             return
 
     # 0.5 Pre-check URL Content-Length and Content-Type to avoid downloading heavy/binary payloads
-    err_type, val, ctype = _check_url_headers(url)
-    if err_type == "SIZE_LIMIT":
-        size_str = _format_size(val) if isinstance(val, int) else "unknown size"
-        logger.warning(f"Rejecting manual preview for {url} because declared Content-Length {size_str} exceeds 10 MB limit.")
-        _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The remote file size ({size_str}) exceeds the limit of 10 MB.")
-        return
-    elif err_type == "BINARY_TYPE":
-        logger.warning(f"Rejecting manual preview for {url} because Content-Type is a binary/media format: {ctype}.")
-        _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The target URL points to a binary or media file ({ctype or 'unknown type'}), not a webpage.")
-        return
-    elif err_type == "HTTP_ERROR" and isinstance(val, int) and val in (401, 403, 404):
-        logger.warning(f"Rejecting manual preview for {url} due to HTTP {val} returned during headers check.")
-        _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests (HTTP {val}).")
-        return
+    # Only check if we don't have a fresh cached OG indicating it's a valid webpage
+    if not is_fresh_og:
+        err_type, val, ctype = _check_url_headers(url)
+        if err_type == "SIZE_LIMIT":
+            size_str = _format_size(val) if isinstance(val, int) else "unknown size"
+            logger.warning(f"Rejecting manual preview for {url} because declared Content-Length {size_str} exceeds 10 MB limit.")
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The remote file size ({size_str}) exceeds the limit of 10 MB.")
+            return
+        elif err_type == "BINARY_TYPE":
+            logger.warning(f"Rejecting manual preview for {url} because Content-Type is a binary/media format: {ctype}.")
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: The target URL points to a binary or media file ({ctype or 'unknown type'}), not a webpage.")
+            return
+        elif err_type == "HTTP_ERROR" and isinstance(val, int) and val in (401, 403, 404):
+            logger.warning(f"Rejecting manual preview for {url} due to HTTP {val} returned during headers check.")
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to generate web preview.\nReason: Website is blocking bot requests (HTTP {val}).")
+            return
 
     logger.info(f"Starting generation for URL: {url} (mode={mode}) in chat {chat_id}")
     

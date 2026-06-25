@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.1] - 2026-06-25
+
+### Changed
+- **Compact Preview Format:** Simplified the layout of web and file preview messages to be more compact, utilizing Markdown links to combine the title/filename with the URL, and aligning command options side-by-side.
+- **Dynamic Keep Command:** Added a dynamic `/keep_[hash]` command link alongside the `/preview_[hash]` and `/archive_[hash]` links to easily bookmark pages.
+
 ## [2.3.0] - 2026-06-25
 
 ### Added

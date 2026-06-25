@@ -1530,11 +1530,11 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     return
                 
                 # If cached title starts with "📝 ", it's a file preview
-                if cached_title and cached_title.startswith("📝 "):
+                if cached_title and (cached_title.startswith("📝 ") or cached_title.startswith("📝")):
+                    title_text = cached_title.lstrip("📝").strip()
                     caption = (
-                        f"{cached_title}\n\n"
-                        f"🔗 {url}\n\n"
-                        f"[ 💾 /download_{urlhash} ]"
+                        f"📝 [{title_text}]({url})\n\n"
+                        f"💾 /download_{urlhash}"
                     )
                     _send(bot, accid, chat_id, caption)
                     return
@@ -1542,12 +1542,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                 # Verify that if there is a cached image path, the file still exists on disk
                 if not cached_image_path or os.path.exists(cached_image_path):
                     logger.info(f"OG Cache hit for group preview: {url}")
-                    caption = (
-                        f"🌐 {cached_title}\n\n"
-                        f"🔗 {url}\n\n"
-                        f"[ 🖥️ /preview_{urlhash} ]\n\n"
-                        f"[ 💾 /archive_{urlhash} ]"
-                    )
+                    caption = f"🌐 [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                    if _karakeep_enabled():
+                        caption += f"   🏛️ /keep_{urlhash}"
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
                     else:
@@ -1560,17 +1557,16 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         is_file, filename, size = _detect_and_get_file_info(url)
         if is_file:
             if size > 0:
-                title = f"📝 {filename} ({_format_size(size)})"
+                title = f"{filename} ({_format_size(size)})"
             else:
-                title = f"📝 {filename}"
+                title = f"{filename}"
                 
             # Cache file preview in OG cache
-            database.add_cached_og(urlhash, title, None)
+            database.add_cached_og(urlhash, f"📝 {title}", None)
             
             caption = (
-                f"{title}\n\n"
-                f"🔗 {url}\n\n"
-                f"[ 💾 /download_{urlhash} ]"
+                f"📝 [{title}]({url})\n\n"
+                f"💾 /download_{urlhash}"
             )
             _send(bot, accid, chat_id, caption)
             return
@@ -1595,12 +1591,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             return
         
         # 5. Format caption
-        caption = (
-            f"🌐 {title}\n\n"
-            f"🔗 {url}\n\n"
-            f"[ 🖥️ /preview_{urlhash} ]\n\n"
-            f"[ 💾 /archive_{urlhash} ]"
-        )
+        caption = f"🌐 [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+        if _karakeep_enabled():
+            caption += f"   🏛️ /keep_{urlhash}"
         
         # 6. Download image if exists, saving to persistent cache folder
         img_cache_path = None
@@ -2770,8 +2763,8 @@ def on_new_message(bot, accid, event):
     if not text:
         return
 
-    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash or /download_urlhash
-    m = re.match(r"^/(preview|previewjs|archive|download)_([0-9a-fA-F]{8})(?:@\w+)?", text)
+    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash, /download_urlhash or /keep_urlhash
+    m = re.match(r"^/(preview|previewjs|archive|download|keep)_([0-9a-fA-F]{8})(?:@\w+)?", text)
     if m:
         cmd_type, urlhash = m.group(1), m.group(2)
         url = database.get_url_by_hash(urlhash)
@@ -2792,7 +2785,21 @@ def on_new_message(bot, accid, event):
             _react(bot, accid, msg.id, "⏱")
             return
 
-        if cmd_type == "download":
+        if cmd_type == "keep":
+            if not _karakeep_enabled():
+                _send(bot, accid, msg.chat_id, "❌ KaraKeep integration is not configured.\nSet `KARAKEEP_URL` and `KARAKEEP_API_KEY` environment variables.")
+                return
+            if not _is_dc_admin(bot, accid, msg.from_id):
+                _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /keep.")
+                return
+            _react(bot, accid, msg.id, "🔖")
+            t = threading.Thread(
+                target=_do_keep,
+                args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
+                daemon=True
+            )
+            t.start()
+        elif cmd_type == "download":
             t = threading.Thread(
                 target=_do_download, 
                 args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url), 

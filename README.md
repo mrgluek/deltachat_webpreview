@@ -15,7 +15,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - 🤖 **Jina.ai Fallback Support:** Integrated Jina AI Reader (`r.jina.ai`) to resolve webpage titles, preview banners, and markdown-to-HTML text contents if the target site blocks standard user agents or readability parser fails to extract meaningful data (e.g. on anti-bot challenge pages). It automatically strips tracking pixels/broken images to preserve privacy and presentation.
 - 📺 **Invidious & YT Bot Redirection:** Detects Invidious instances (alternative YouTube front-ends) by checking page description metadata. If `YT Bot` is present in the chat, the bot extracts the video ID and redirects it to a standard `youtu.be` link to be processed by `YT Bot`, completely bypassing WebPreview generation. It automatically learns detected instance domains and supports manual domain registration/management via admin commands.
 - 🛡️ **Local Network Protection & URL Validation:** Uses hostname syntax checks and standard Python `ipaddress` validation to identify and skip local hosts/IPs (`localhost`, private IP subnets, `.local`/`.lan` domains, etc.) and malformed URLs without valid dot-separated domains (e.g. `https://юрл`), blocking resource-wasting requests and spam.
-- 🔖 **KaraKeep Bookmark Integration (Opt-in):** Save webpages directly to a self-hosted [KaraKeep](https://karakeep.app/) instance via its REST API. The integration is restricted to the bot administrator. When configured, sending `/keep <url>` or replying with `/keep` to a link will archive the page to KaraKeep with optional custom tags.
+- 🔖 **KaraKeep Bookmark Integration (Opt-in):** Save webpages directly to a self-hosted [KaraKeep](https://karakeep.app/) instance via its REST API. The integration is restricted to the bot administrator. When configured, sending `/keep <url>`, replying with `/keep` to a link, or clicking the `/keep_[hash]` dynamic link under web previews will archive the page to KaraKeep with optional custom tags.
 - 🐳 **Docker Ready:** Built with a multi-stage Docker build compiling Rust-based `monolith` and packing it into a slim Python runtime.
 
 ## Setup
@@ -75,7 +75,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/invidious_add <domain/url>` — Register a custom Invidious instance domain (Admin only).
 - `/invidious_rm <domain/url>` — Deregister an Invidious instance domain (Admin only). *(Note: `/invidious_remove` is also supported as an alias)*
 - `/invidious_list` — List registered Invidious instance domains (Admin only).
-- `/keep <url>` — Save URL to KaraKeep (Admin only, conditional on config; also supports quote replies).
+- `/keep <url>` — Save URL to KaraKeep (Admin only, conditional on config; also supports quote replies and `/keep_[hash]` dynamic links).
 
 
 ## Admin Management

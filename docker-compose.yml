@@ -20,6 +20,7 @@ services:
       - KARAKEEP_API_KEY=${KARAKEEP_API_KEY:-}
       - KARAKEEP_TAGS=${KARAKEEP_TAGS:-}
       - JINA_API_KEY=${JINA_API_KEY:-}
+      - JINA_PROXY_URL=${JINA_PROXY_URL:-}
       - PROXY_URL=${PROXY_URL:-}
       - PROXY_DOMAINS=${PROXY_DOMAINS:-}
     deploy:

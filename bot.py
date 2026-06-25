@@ -63,6 +63,7 @@ KARAKEEP_TAGS = [t.strip() for t in os.environ.get("KARAKEEP_TAGS", "").split(",
 
 # Jina AI key (opt-in via env)
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
+JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 
 # Proxy settings (opt-in via env)
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
@@ -77,24 +78,14 @@ def _should_use_proxy(url: str) -> bool:
         domain = parsed.netloc.lower()
         if ":" in domain:
             domain = domain.split(":")[0]
+            
+        # Jina requests are handled separately via JINA_PROXY_URL, never via PROXY_URL
+        if domain == "r.jina.ai":
+            return False
+
         for proxy_domain in PROXY_DOMAINS:
             if domain.endswith(proxy_domain):
                 return True
-                
-        # If Jina Reader, also check nested target URL
-        if domain == "r.jina.ai":
-            path = parsed.path
-            if path.startswith("/"):
-                path = path[1:]
-            nested_url = urllib.parse.unquote(path)
-            if nested_url.startswith("http://") or nested_url.startswith("https://"):
-                nested_parsed = urllib.parse.urlparse(nested_url)
-                nested_domain = nested_parsed.netloc.lower()
-                if ":" in nested_domain:
-                    nested_domain = nested_domain.split(":")[0]
-                for proxy_domain in PROXY_DOMAINS:
-                    if nested_domain.endswith(proxy_domain):
-                        return True
     except Exception:
         pass
     return False
@@ -104,11 +95,31 @@ def _urlopen(req_or_url, timeout=None):
     urlopen wrapper that dynamically routes specific domains through a proxy.
     """
     url = req_or_url.full_url if isinstance(req_or_url, urllib.request.Request) else req_or_url
+    try:
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc.lower()
+        if ":" in domain:
+            domain = domain.split(":")[0]
+    except Exception:
+        domain = ""
+
+    # Jina AI Reader requests
+    if domain == "r.jina.ai":
+        if JINA_PROXY_URL:
+            logger.info(f"Routing Jina request for {url} through Jina proxy: {JINA_PROXY_URL}")
+            proxy_handler = urllib.request.ProxyHandler({'http': JINA_PROXY_URL, 'https': JINA_PROXY_URL})
+            opener = urllib.request.build_opener(proxy_handler)
+            return opener.open(req_or_url, timeout=timeout)
+        else:
+            return urllib.request.urlopen(req_or_url, timeout=timeout)
+
+    # Standard requests matching PROXY_DOMAINS
     if _should_use_proxy(url):
         logger.info(f"Routing request for {url} through proxy: {PROXY_URL}")
         proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
         opener = urllib.request.build_opener(proxy_handler)
         return opener.open(req_or_url, timeout=timeout)
+
     return urllib.request.urlopen(req_or_url, timeout=timeout)
 
 def _karakeep_enabled() -> bool:
@@ -1068,12 +1079,28 @@ def _format_size(size_bytes: int) -> str:
 async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int, str]:
     """Execute monolith process with timeout."""
     env = os.environ.copy()
-    if url and _should_use_proxy(url):
-        env["http_proxy"] = PROXY_URL
-        env["https_proxy"] = PROXY_URL
-        env["HTTP_PROXY"] = PROXY_URL
-        env["HTTPS_PROXY"] = PROXY_URL
-        logger.info(f"Routing monolith subprocess for {url} through proxy: {PROXY_URL}")
+    if url:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            domain = parsed.netloc.lower()
+            if ":" in domain:
+                domain = domain.split(":")[0]
+        except Exception:
+            domain = ""
+
+        if domain == "r.jina.ai":
+            if JINA_PROXY_URL:
+                env["http_proxy"] = JINA_PROXY_URL
+                env["https_proxy"] = JINA_PROXY_URL
+                env["HTTP_PROXY"] = JINA_PROXY_URL
+                env["HTTPS_PROXY"] = JINA_PROXY_URL
+                logger.info(f"Routing monolith subprocess for Jina URL {url} through Jina proxy: {JINA_PROXY_URL}")
+        elif _should_use_proxy(url):
+            env["http_proxy"] = PROXY_URL
+            env["https_proxy"] = PROXY_URL
+            env["HTTP_PROXY"] = PROXY_URL
+            env["HTTPS_PROXY"] = PROXY_URL
+            logger.info(f"Routing monolith subprocess for {url} through proxy: {PROXY_URL}")
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env

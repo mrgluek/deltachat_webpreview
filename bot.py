@@ -1974,8 +1974,6 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
     """Save a URL to KaraKeep via API. Returns (success, bookmark_id_or_error)."""
     endpoint = f"{KARAKEEP_URL}/api/v1/bookmarks"
     payload = {"type": "link", "url": url}
-    if KARAKEEP_TAGS:
-        payload["tags"] = [{"name": tag} for tag in KARAKEEP_TAGS]
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         endpoint,
@@ -1991,7 +1989,8 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             bookmark_id = body.get("id", "")
-            return True, bookmark_id
+            if not bookmark_id:
+                return False, "No ID returned in response"
     except urllib.error.HTTPError as e:
         error_body = ""
         try:
@@ -2003,6 +2002,31 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
     except Exception as e:
         logger.warning(f"KaraKeep API request failed: {e}")
         return False, str(e)
+
+    # Attach tags if configured
+    if KARAKEEP_TAGS:
+        tag_endpoint = f"{KARAKEEP_URL}/api/v1/bookmarks/{bookmark_id}/tags"
+        tag_payload = {"tags": [{"tagName": tag} for tag in KARAKEEP_TAGS]}
+        tag_data = json.dumps(tag_payload).encode("utf-8")
+        tag_req = urllib.request.Request(
+            tag_endpoint,
+            data=tag_data,
+            headers={
+                "Authorization": f"Bearer {KARAKEEP_API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(tag_req, timeout=10) as tag_resp:
+                pass
+        except Exception as e:
+            logger.warning(f"Failed to attach tags to KaraKeep bookmark {bookmark_id}: {e}")
+            # We still return True because the bookmark itself was saved successfully
+            return True, bookmark_id
+
+    return True, bookmark_id
 
 
 def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):

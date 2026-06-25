@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.5"
+VERSION = "2.3.6"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -1516,6 +1516,15 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
     Downloads an image URL and saves it in the persistent cache directory.
     Returns absolute path of the cached file, or None if failed.
     """
+    # Skip SVG images as they are vector format and Pillow cannot process them as raster preview thumbnails
+    try:
+        parsed_url = urllib.parse.urlparse(image_url)
+        if parsed_url.path.lower().endswith(".svg"):
+            logger.info(f"Skipping SVG image as preview: {image_url}")
+            return None
+    except Exception:
+        pass
+
     # Try standard User-Agent first
     response_data = None
     content_type = ""
@@ -1546,6 +1555,10 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
             logger.warning(f"Fallback fetch failed for image {image_url}: {e}")
 
     if response_data is not None:
+        if "svg" in content_type.lower():
+            logger.info(f"Skipping SVG content-type as preview: {image_url}")
+            return None
+
         # Try to compress and resize the image using Pillow (max 800px on the longer side, WebP format)
         try:
             import io

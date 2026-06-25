@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.6] - 2026-06-25
+
+### Fixed
+- **SVG Image Processing:** Fixed a crash/warning when processing SVG preview images. SVG vector files are now ignored during preview generation to prevent Pillow from failing to compress them and sending them as broken image attachments.
+
 ## [2.3.5] - 2026-06-25
 
 ### Added

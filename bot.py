@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.7"
+VERSION = "2.3.8"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -125,6 +125,67 @@ def _urlopen(req_or_url, timeout=None):
 def _karakeep_enabled() -> bool:
     """Return True if KaraKeep integration is configured."""
     return bool(KARAKEEP_URL and KARAKEEP_API_KEY)
+
+def _save_jina_preview_to_cache(url: str, urlhash: str, title: str, jina_markdown: str):
+    """
+    Translates Jina markdown to HTML, inlines images, saves to cache directory, 
+    and registers in previews cache database under readability mode.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        import base64
+        import urllib.parse
+        import datetime
+
+        summary = markdown_to_html(jina_markdown)
+        soup = BeautifulSoup(summary, BS_PARSER)
+        
+        # Inline images with compression
+        for img in list(soup.find_all('img')):
+            img_src = img.get('src')
+            if not img_src:
+                img.decompose()
+                continue
+            if img_src.startswith('data:'):
+                continue
+                
+            absolute_img_url = urllib.parse.urljoin(url, img_src)
+            success = False
+            try:
+                img_bytes = _download_image_bytes(absolute_img_url)
+                if img_bytes:
+                    compressed = compress_image(img_bytes, max_width=800, quality=70)
+                    mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
+                    b64_str = base64.b64encode(compressed).decode('utf-8')
+                    img['src'] = f"data:{mime_type};base64,{b64_str}"
+                    success = True
+            except Exception as img_err:
+                logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
+                
+            if not success:
+                img.decompose()
+
+        downloaded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M GMT")
+        domain = urllib.parse.urlparse(url).netloc or "webpage"
+        final_html = READABILITY_HTML_TEMPLATE.format(
+            title=title,
+            url=url,
+            domain=domain,
+            content=str(soup),
+            downloaded_at=downloaded_at
+        )
+
+        safe_fname = _safe_filename(domain, False)
+        cache_path = os.path.join(CACHE_DIR, safe_fname)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            f.write(final_html)
+            
+        filesize = os.path.getsize(cache_path)
+        cache_key = f"{urlhash}_readability"
+        database.add_cached_preview(cache_key, cache_path, title, filesize)
+        logger.info(f"Successfully cached Jina preview to {cache_path} for {url} under key {cache_key}")
+    except Exception as e:
+        logger.error(f"Failed to save Jina preview to cache for {url}: {e}")
 
 SAFE_FILE_EXTENSIONS = {
     # PDF
@@ -1296,11 +1357,12 @@ def _extract_youtube_id_from_invidious(url: str) -> str | None:
         logger.warning(f"Failed to extract video ID from Invidious URL {url}: {e}")
     return None
 
-def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None]:
+def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, str | None]:
     """
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
-    Returns (title, og_image_url, is_invidious, warning).
+    Returns (title, og_image_url, is_invidious, warning, jina_markdown).
     """
+    jina_markdown = None
     def parse_html(html_content: str) -> tuple[str | None, str | None]:
         # 1. Extract title
         title = None
@@ -1439,12 +1501,12 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None]:
             logger.warning(f"Failed to save Invidious domain {domain} to config: {db_err}")
 
     if hard_failure_code is not None:
-        return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}", is_invidious, None
+        return "__FAILED_BLOCK__", f"HTTP {hard_failure_code}", is_invidious, None, None
 
     if title:
-        return title, image_url, is_invidious, warning
+        return title, image_url, is_invidious, warning, jina_markdown
 
-    return netloc, None, is_invidious, warning
+    return netloc, None, is_invidious, warning, None
 
 def _check_url_headers(url: str) -> tuple[str | None, int | str | None, str | None]:
     """
@@ -1665,18 +1727,37 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                         f"💾 /download_{urlhash}"
                     )
                     _send(bot, accid, chat_id, caption)
-                    return
-                
-                # Verify that if there is a cached image path, the file still exists on disk
+                  # Verify that if there is a cached image path, the file still exists on disk
                 if not cached_image_path or os.path.exists(cached_image_path):
                     logger.info(f"OG Cache hit for group preview: {url}")
                     cached_warning = cached.get("warning")
-                    if cached_warning:
-                        caption = f"🌐 [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                    cached_jina_markdown = cached.get("jina_markdown")
+                    
+                    if cached_jina_markdown:
+                        max_len = 8000
+                        formatted_md = cached_jina_markdown
+                        is_truncated = False
+                        if len(formatted_md) > max_len:
+                            cut_idx = formatted_md.rfind('\n', 0, max_len)
+                            if cut_idx == -1:
+                                cut_idx = max_len
+                            formatted_md = formatted_md[:cut_idx]
+                            is_truncated = True
+                            
+                        caption = f"🌐 [{cached_title}]({url})\n\n"
+                        if cached_warning:
+                            caption += f"Warning: {cached_warning}\n\n"
+                        caption += formatted_md
+                        if is_truncated:
+                            caption += f"\n\n... (preview truncated, [read full page at source]({url}))"
                     else:
-                        caption = f"🌐 [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
-                    if _karakeep_enabled():
-                        caption += f"   🏛️ /keep_{urlhash}"
+                        if cached_warning:
+                            caption = f"🌐 [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                        else:
+                            caption = f"🌐 [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                        if _karakeep_enabled():
+                            caption += f"   🏛️ /keep_{urlhash}"
+
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
                     else:
@@ -1702,8 +1783,8 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             )
             _send(bot, accid, chat_id, caption)
             return
-
-        title, image_url, is_invidious, warning = _get_og_preview_data(url)
+ 
+        title, image_url, is_invidious, warning, jina_markdown = _get_og_preview_data(url)
         
         if is_invidious:
             video_id = _extract_youtube_id_from_invidious(url)
@@ -1722,14 +1803,35 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             logger.warning(f"Suppressing group preview for {url} due to hard failure block: {image_url}")
             return
         
-        # 5. Format caption
-        if warning:
-            caption = f"🌐 [{title}]({url})\n\nWarning: {warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
-        else:
-            caption = f"🌐 [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+        # 5. Format caption and compile readability HTML preview if Jina is used
+        if jina_markdown:
+            _save_jina_preview_to_cache(url, urlhash, title, jina_markdown)
             
-        if _karakeep_enabled():
-            caption += f"   🏛️ /keep_{urlhash}"
+            # Format markdown caption directly
+            max_len = 8000
+            formatted_md = jina_markdown
+            is_truncated = False
+            if len(formatted_md) > max_len:
+                cut_idx = formatted_md.rfind('\n', 0, max_len)
+                if cut_idx == -1:
+                    cut_idx = max_len
+                formatted_md = formatted_md[:cut_idx]
+                is_truncated = True
+                
+            caption = f"🌐 [{title}]({url})\n\n"
+            if warning:
+                caption += f"Warning: {warning}\n\n"
+            caption += formatted_md
+            if is_truncated:
+                caption += f"\n\n... (preview truncated, [read full page at source]({url}))"
+        else:
+            if warning:
+                caption = f"🌐 [{title}]({url})\n\nWarning: {warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+            else:
+                caption = f"🌐 [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
+                
+            if _karakeep_enabled():
+                caption += f"   🏛️ /keep_{urlhash}"
         
         # 6. Download image if exists, saving to persistent cache folder
         img_cache_path = None
@@ -1737,7 +1839,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             img_cache_path = _download_cached_image(image_url, urlhash)
             
         # 7. Add to SQLite cache
-        database.add_cached_og(urlhash, title, img_cache_path, warning)
+        database.add_cached_og(urlhash, title, img_cache_path, warning, jina_markdown)
         
         # 8. Send to group
         if img_cache_path and os.path.exists(img_cache_path):
@@ -1865,7 +1967,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
     # If not in cache, do a fast pre-check to populate the cache and avoid network overhead on blocked sites!
     if not cached_og:
         logger.info(f"Pre-checking URL status for {url}...")
-        og_title, og_image, is_invidious, warning = _get_og_preview_data(url)
+        og_title, og_image, is_invidious, warning, jina_markdown = _get_og_preview_data(url)
         if is_invidious:
             video_id = _extract_youtube_id_from_invidious(url)
             if video_id:
@@ -1876,13 +1978,13 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
                     _send(bot, accid, chat_id, yt_link)
                     _react(bot, accid, req_msg_id, "☑️")
                     return
-                cached_og = {"title": og_title, "image_path": og_image, "warning": warning}
+                cached_og = {"title": og_title, "image_path": og_image, "warning": warning, "jina_markdown": jina_markdown}
         elif og_title == "__FAILED_BLOCK__":
             database.add_cached_og(urlhash, "__FAILED_BLOCK__", og_image)
-            cached_og = {"title": "__FAILED_BLOCK__", "image_path": og_image, "warning": None}
+            cached_og = {"title": "__FAILED_BLOCK__", "image_path": og_image, "warning": None, "jina_markdown": None}
         else:
-            database.add_cached_og(urlhash, og_title, og_image, warning)
-            cached_og = {"title": og_title, "image_path": og_image, "warning": warning}
+            database.add_cached_og(urlhash, og_title, og_image, warning, jina_markdown)
+            cached_og = {"title": og_title, "image_path": og_image, "warning": warning, "jina_markdown": jina_markdown}
             
     if cached_og and cached_og.get("title") == "__FAILED_BLOCK__":
         reason = cached_og.get("image_path") or "HTTP 403 Forbidden"
@@ -1949,7 +2051,64 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
     output_path = os.path.join(tmpdir, "output.html")
 
     if mode == "readability":
-        success, res = _generate_readability_preview(url, output_path)
+        # Check if we already have the Jina markdown cached to avoid hitting network/Jina again
+        cached_jina_markdown = cached_og.get("jina_markdown") if cached_og else None
+        compiled_jina_success = False
+        if cached_jina_markdown:
+            try:
+                from bs4 import BeautifulSoup
+                import base64
+                import datetime
+                
+                summary = markdown_to_html(cached_jina_markdown)
+                soup = BeautifulSoup(summary, BS_PARSER)
+                
+                # Inline images with compression
+                for img in list(soup.find_all('img')):
+                    img_src = img.get('src')
+                    if not img_src:
+                        img.decompose()
+                        continue
+                    if img_src.startswith('data:'):
+                        continue
+                        
+                    absolute_img_url = urllib.parse.urljoin(url, img_src)
+                    img_success = False
+                    try:
+                        img_bytes = _download_image_bytes(absolute_img_url)
+                        if img_bytes:
+                            compressed = compress_image(img_bytes, max_width=800, quality=70)
+                            mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
+                            b64_str = base64.b64encode(compressed).decode('utf-8')
+                            img['src'] = f"data:{mime_type};base64,{b64_str}"
+                            img_success = True
+                    except Exception as img_err:
+                        logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
+                        
+                    if not img_success:
+                        img.decompose()
+
+                downloaded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M GMT")
+                final_html = READABILITY_HTML_TEMPLATE.format(
+                    title=cached_og.get("title") or "Webpage Preview",
+                    url=url,
+                    domain=domain,
+                    content=str(soup),
+                    downloaded_at=downloaded_at
+                )
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(final_html)
+                compiled_jina_success = True
+                res = cached_og.get("title") or "Webpage Preview"
+                logger.info(f"Successfully compiled readability preview from cached Jina markdown for {url}")
+            except Exception as jina_comp_err:
+                logger.warning(f"Failed to compile cached Jina markdown for {url}: {jina_comp_err}")
+                
+        if compiled_jina_success:
+            success = True
+        else:
+            success, res = _generate_readability_preview(url, output_path)
+            
         if not success:
             logger.error(f"Readability failed for URL {url}: {res}")
             _react(bot, accid, req_msg_id, "❌")

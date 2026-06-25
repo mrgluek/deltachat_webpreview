@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.8] - 2026-06-25
+
+### Added
+- **Direct Jina Markdown Preview rendering:** When standard OG extraction fails and Jina AI Reader is triggered, the bot now directly outputs the parsed page content (markdown) inside the group chat message instead of presenting `/preview` and `/archive` buttons.
+- **Cached Jina Compilation:** When Jina markdown is fetched during link preview, it is compiled into a readability HTML file and stored in the database cache. If manual `/preview_[hash]` or private readability previews are requested later, the bot serves the compiled HTML preview instantly from cache, avoiding redundant network queries and saving Jina Reader API calls.
+
 ## [2.3.7] - 2026-06-25
 
 ### Changed

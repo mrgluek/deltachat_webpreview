@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.0] - 2026-06-25
+
+### Added
+- **KaraKeep Bookmark Integration:** Added opt-in integration with self-hosted [KaraKeep](https://karakeep.app/) instances for saving web bookmarks via the bot. Configured through `KARAKEEP_URL`, `KARAKEEP_API_KEY`, and optional `KARAKEEP_TAGS` environment variables. When enabled, the bot administrator can use `/keep <url>` or reply `/keep` to any message containing a link to save it to KaraKeep. The bookmark is saved via the KaraKeep REST API (`POST /api/v1/bookmarks`) with optional tags and the bot reports the result with a direct link to the saved bookmark.
+
 ## [2.2.7] - 2026-06-24
 
 ### Fixed

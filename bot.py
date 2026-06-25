@@ -52,9 +52,18 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.2.5"
+VERSION = "2.3.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
+
+# KaraKeep integration (opt-in via env)
+KARAKEEP_URL = os.environ.get("KARAKEEP_URL", "").rstrip("/")
+KARAKEEP_API_KEY = os.environ.get("KARAKEEP_API_KEY", "")
+KARAKEEP_TAGS = [t.strip() for t in os.environ.get("KARAKEEP_TAGS", "").split(",") if t.strip()]
+
+def _karakeep_enabled() -> bool:
+    """Return True if KaraKeep integration is configured."""
+    return bool(KARAKEEP_URL and KARAKEEP_API_KEY)
 
 SAFE_FILE_EXTENSIONS = {
     # PDF
@@ -1961,6 +1970,108 @@ def _handle_preview_command(bot, accid, event, mode: str):
     t.start()
 
 
+def _save_to_karakeep(url: str) -> tuple[bool, str]:
+    """Save a URL to KaraKeep via API. Returns (success, bookmark_id_or_error)."""
+    endpoint = f"{KARAKEEP_URL}/api/v1/bookmarks"
+    payload = {"type": "link", "url": url}
+    if KARAKEEP_TAGS:
+        payload["tags"] = [{"name": tag} for tag in KARAKEEP_TAGS]
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {KARAKEEP_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            bookmark_id = body.get("id", "")
+            return True, bookmark_id
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        logger.warning(f"KaraKeep API error {e.code}: {error_body}")
+        return False, f"HTTP {e.code}: {e.reason}"
+    except Exception as e:
+        logger.warning(f"KaraKeep API request failed: {e}")
+        return False, str(e)
+
+
+def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
+    """Background worker: save URL to KaraKeep and report result."""
+    success, result = _save_to_karakeep(url)
+    if success:
+        _react(bot, accid, msg_id, "✅")
+        bookmark_url = f"{KARAKEEP_URL}/dashboard/preview/{result}" if result else ""
+        reply = f"🔖 Saved to KaraKeep!\n🔗 {url}"
+        if bookmark_url:
+            reply += f"\n📎 {bookmark_url}"
+        _send(bot, accid, chat_id, reply)
+    else:
+        _react(bot, accid, msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to save to KaraKeep.\nReason: {result}")
+
+
+def _handle_keep_command(bot, accid, event):
+    """Processes /keep command — admin-only, saves URL to KaraKeep."""
+    msg = event.msg
+
+    if _is_duplicate_msg(msg.id, "keep"):
+        return
+
+    if not _karakeep_enabled():
+        _send(bot, accid, msg.chat_id, "❌ KaraKeep integration is not configured.\nSet `KARAKEEP_URL` and `KARAKEEP_API_KEY` environment variables.")
+        return
+
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /keep.")
+        return
+
+    # Extract target URL (same logic as _handle_preview_command)
+    url = ""
+    payload = event.payload.strip() if event.payload else ""
+
+    if payload:
+        url_match = re.search(r'(https?://[^\s<>"]+)', payload)
+        if url_match:
+            url = url_match.group(1).rstrip('.,;:)!?')
+    else:
+        quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
+        if quote:
+            quoted_text = ""
+            if isinstance(quote, dict):
+                quoted_text = quote.get("text", "")
+            else:
+                quoted_text = getattr(quote, "text", "")
+            if quoted_text:
+                url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
+                if url_match:
+                    url = url_match.group(1).rstrip('.,;:)!?')
+
+    if not url:
+        _send(bot, accid, msg.chat_id,
+              "Usage:\n"
+              "• `/keep <url>` — Save URL to KaraKeep\n"
+              "• Reply `/keep` to any message containing a link.")
+        return
+
+    _react(bot, accid, msg.id, "🔖")
+    t = threading.Thread(
+        target=_do_keep,
+        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
+        daemon=True,
+    )
+    t.start()
+
+
 # ── Command Listeners ──
 
 @dc_cli.on(events.NewMessage(command="/preview", is_bot=None))
@@ -1984,6 +2095,17 @@ def archive_command(bot, accid, event):
     if not re.match(r"^/archive(?:\s|$)", text):
         return
     _handle_preview_command(bot, accid, event, mode="archive")
+
+@dc_cli.on(events.NewMessage(command="/keep", is_bot=None))
+def keep_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/keep(?:\s|$)", text):
+        return
+    _handle_keep_command(bot, accid, event)
 
 @dc_cli.on(events.NewMessage(command="/previewjs", is_bot=None))
 def previewjs_command(bot, accid, event):
@@ -2089,6 +2211,9 @@ def get_help_text(bot, accid, from_id):
         help_text += "/invidious_add <domain/url> — Register an Invidious server domain\n"
         help_text += "/invidious_rm <domain/url> — Deregister an Invidious server domain\n"
         help_text += "/invidious_list — List registered Invidious domains\n"
+        if _karakeep_enabled():
+            help_text += "\n**KaraKeep:**\n"
+            help_text += "/keep <url> — Save URL to KaraKeep 🔖\n"
 
     return help_text
 

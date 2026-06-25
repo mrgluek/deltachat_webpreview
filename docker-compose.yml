@@ -16,6 +16,9 @@ services:
       - DB_PATH=/app/data/webpreview.db
       - TZ=UTC
       - ALLOWED_BOT_EMAILS=${ALLOWED_BOT_EMAILS:-}
+      - KARAKEEP_URL=${KARAKEEP_URL:-}
+      - KARAKEEP_API_KEY=${KARAKEEP_API_KEY:-}
+      - KARAKEEP_TAGS=${KARAKEEP_TAGS:-}
     deploy:
       resources:
         limits:

@@ -77,6 +77,11 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/invidious_list` — List registered Invidious instance domains (Admin only).
 - `/keep <url>` — Save URL to KaraKeep (Admin only, conditional on config; also supports quote replies and `/keep_[hash]` dynamic links).
 
+### Target-Specific Commands in Group Chats
+
+In group chats where multiple bots are present, you can address this bot specifically to prevent other bots from responding. Append the `@web` or `@wp` suffix to any command, for example:
+- `/help@web` or `/help@wp`
+- `/stats@web` or `/stats@wp`
 
 ## Admin Management
 

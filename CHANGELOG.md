@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.2] - 2026-06-25
+
+### Added
+- **Target-Specific Command Suffixes:** Added support for addressing this bot specifically in group chats using `/command@web` or `/command@wp` suffixes.
+
 ## [2.3.1] - 2026-06-25
 
 ### Changed

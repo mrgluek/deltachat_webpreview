@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.0"
+VERSION = "2.3.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -3225,9 +3225,59 @@ def on_init(bot, args):
         except Exception as e:
             bot.logger.warning(f"Could not set avatar: {e}")
 
+def setup_custom_command_parser(bot, allowed_prefixes):
+    original_parse_command = bot._parse_command
+
+    def custom_parse_command(accid: int, event) -> None:
+        text = event.msg.text
+        if not text:
+            original_parse_command(accid, event)
+            return
+
+        parts = text.split(maxsplit=1)
+        cmd = parts[0]
+        
+        if "@" in cmd:
+            cmd_name, suffix = cmd.split("@", 1)
+            suffix_lower = suffix.lower()
+            
+            try:
+                self_address = bot.rpc.get_contact(accid, 1).address.lower()
+            except Exception:
+                self_address = ""
+            
+            matched = False
+            for p in allowed_prefixes:
+                if suffix_lower.startswith(p.lower()):
+                    matched = True
+                    break
+            if not matched and self_address and suffix_lower == self_address:
+                matched = True
+            
+            if matched:
+                new_text = cmd_name
+                if len(parts) > 1:
+                    new_text += " " + parts[1]
+                
+                original_text = event.msg.text
+                event.msg["text"] = new_text
+                try:
+                    original_parse_command(accid, event)
+                finally:
+                    event.msg["text"] = original_text
+            else:
+                event.command = ""
+                event.payload = ""
+        else:
+            original_parse_command(accid, event)
+
+    bot._parse_command = custom_parse_command
+
+
 @dc_cli.on_start
 def on_start(bot, args):
     global dc_bot_instance, dc_accid
+    setup_custom_command_parser(bot, ["web", "wp"])
     dc_bot_instance = bot
     
     accounts = bot.rpc.get_all_account_ids()

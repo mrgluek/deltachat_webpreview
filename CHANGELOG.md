@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.17] - 2026-06-26
+
+### Fixed
+- **Image Inlining responsive bypass:** Web browsers were bypassing inlined Base64 image payloads and downloading original files (e.g. from Habr's `habrastorage.org`) because responsive attributes (`srcset` and `sizes`) and lazy loading attributes (`data-src` / `data-srcset`) were left intact on `<img>` tags. Refactored image inlining into a unified `_inline_soup_images()` helper that strips these attributes.
+
 ## [2.3.16] - 2026-06-26
 
 ### Added

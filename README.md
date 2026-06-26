@@ -4,7 +4,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 
 ## Features
 
-- 📄 **Compressed Reader Mode (`/preview <url>`):** Compile webpages into highly compressed, clutter-free reader views using Mozilla's Readability. All images are automatically downloaded, optimized, resized, and inlined as Base64 (recommended default).
+- 📄 **Compressed Reader Mode (`/preview <url>`):** Compile webpages into highly compressed, clutter-free reader views using Mozilla's Readability. All images are automatically downloaded, optimized, resized, and inlined as Base64 (with responsive/lazy-loading attributes like srcset and data-src stripped to guarantee offline/local rendering).
 - ⚡ **Full Page Archiving (`/archive <url>`):** Save complete pages as full interactive archives with JavaScript enabled using `monolith`. Proactively compresses and optimizes heavy base64-encoded image payloads post-generation to keep files tiny.
 - 💬 **Quote Reply Parsing:** Reply with `/preview` or `/archive` (without a URL) to any message containing links, and the bot will automatically extract and capture the first link in the quoted text.
 - ⏱️ **Rate Limiting:** Protects against abuse by rate-limiting regular users (15-second debounce) while allowing admins unlimited generations.

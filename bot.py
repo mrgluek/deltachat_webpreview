@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.16"
+VERSION = "2.3.17"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -172,30 +172,7 @@ def _save_jina_preview_to_cache(url: str, urlhash: str, title: str, jina_markdow
         summary = markdown_to_html(cleaned_md)
         soup = BeautifulSoup(summary, BS_PARSER)
         
-        # Inline images with compression
-        for img in list(soup.find_all('img')):
-            img_src = img.get('src')
-            if not img_src:
-                img.decompose()
-                continue
-            if img_src.startswith('data:'):
-                continue
-                
-            absolute_img_url = urllib.parse.urljoin(url, img_src)
-            success = False
-            try:
-                img_bytes = _download_image_bytes(absolute_img_url)
-                if img_bytes:
-                    compressed = compress_image(img_bytes, max_width=800, quality=70)
-                    mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
-                    b64_str = base64.b64encode(compressed).decode('utf-8')
-                    img['src'] = f"data:{mime_type};base64,{b64_str}"
-                    success = True
-            except Exception as img_err:
-                logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
-                
-            if not success:
-                img.decompose()
+        _inline_soup_images(soup, url)
 
         downloaded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M GMT")
         domain = urllib.parse.urlparse(url).netloc or "webpage"
@@ -554,6 +531,49 @@ def _download_image_bytes(image_url: str) -> bytes | None:
             logger.debug(f"Failed to fetch image {image_url} with UA {ua}: {e}")
     return None
 
+def _inline_soup_images(soup, url: str):
+    """
+    Finds all img tags in soup, downloads, compresses, and inlines them as Base64.
+    Removes responsive attributes (srcset, sizes, lazy-loading data-src) to force browser
+    to render the inlined src data URL.
+    """
+    import base64
+    import urllib.parse
+
+    for img in list(soup.find_all('img')):
+        # Support lazy loading placeholders by checking data-src
+        img_src = img.get('src') or img.get('data-src')
+        if not img_src:
+            img.decompose()
+            continue
+        if img_src.startswith('data:'):
+            # Clean up responsive attributes anyway
+            for attr in ['srcset', 'sizes', 'data-src', 'data-srcset']:
+                if attr in img.attrs:
+                    del img[attr]
+            continue
+            
+        absolute_img_url = urllib.parse.urljoin(url, img_src)
+        success = False
+        try:
+            img_bytes = _download_image_bytes(absolute_img_url)
+            if img_bytes:
+                compressed = compress_image(img_bytes, max_width=800, quality=70)
+                mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
+                b64_str = base64.b64encode(compressed).decode('utf-8')
+                img['src'] = f"data:{mime_type};base64,{b64_str}"
+                success = True
+        except Exception as img_err:
+            logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
+            
+        if success:
+            # Clean up responsive attributes that can bypass/override the inlined src
+            for attr in ['srcset', 'sizes', 'data-src', 'data-srcset']:
+                if attr in img.attrs:
+                    del img[attr]
+        else:
+            img.decompose()
+
 def _download_page_html(url: str) -> tuple[str | None, str | None]:
     """
     Downloads page HTML using standard and fallback User-Agents.
@@ -853,30 +873,7 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
             
         soup = BeautifulSoup(summary, BS_PARSER)
         
-        # Inline images with compression
-        for img in list(soup.find_all('img')):
-            img_src = img.get('src')
-            if not img_src:
-                img.decompose()
-                continue
-            if img_src.startswith('data:'):
-                continue
-                
-            absolute_img_url = urllib.parse.urljoin(url, img_src)
-            success = False
-            try:
-                img_bytes = _download_image_bytes(absolute_img_url)
-                if img_bytes:
-                    compressed = compress_image(img_bytes, max_width=800, quality=70)
-                    mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
-                    b64_str = base64.b64encode(compressed).decode('utf-8')
-                    img['src'] = f"data:{mime_type};base64,{b64_str}"
-                    success = True
-            except Exception as img_err:
-                logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
-                
-            if not success:
-                img.decompose()
+        _inline_soup_images(soup, url)
                 
         # Format templates
         import datetime
@@ -2401,30 +2398,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
                 summary = markdown_to_html(cleaned_md)
                 soup = BeautifulSoup(summary, BS_PARSER)
                 
-                # Inline images with compression
-                for img in list(soup.find_all('img')):
-                    img_src = img.get('src')
-                    if not img_src:
-                        img.decompose()
-                        continue
-                    if img_src.startswith('data:'):
-                        continue
-                        
-                    absolute_img_url = urllib.parse.urljoin(url, img_src)
-                    img_success = False
-                    try:
-                        img_bytes = _download_image_bytes(absolute_img_url)
-                        if img_bytes:
-                            compressed = compress_image(img_bytes, max_width=800, quality=70)
-                            mime_type = "image/webp" if compressed.startswith(b"RIFF") else "image/jpeg"
-                            b64_str = base64.b64encode(compressed).decode('utf-8')
-                            img['src'] = f"data:{mime_type};base64,{b64_str}"
-                            img_success = True
-                    except Exception as img_err:
-                        logger.warning(f"Could not inline/compress image {absolute_img_url}: {img_err}")
-                        
-                    if not img_success:
-                        img.decompose()
+                _inline_soup_images(soup, url)
 
                 downloaded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M GMT")
                 final_html = READABILITY_HTML_TEMPLATE.format(

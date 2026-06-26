@@ -213,6 +213,39 @@ class TestSaveJinaPreviewToCache(unittest.TestCase):
             self.assertEqual(mock_add.call_args[0][2], "My Test Title")
 
 
+class TestInlineSoupImages(unittest.TestCase):
+    """Tests for _inline_soup_images."""
+
+    @patch("bot._download_image_bytes")
+    def test_inlines_and_removes_srcset(self, mock_download):
+        from bs4 import BeautifulSoup
+        mock_download.return_value = b"fake image bytes"
+        
+        html = '<img src="https://example.com/img.png" srcset="https://example.com/img.png 2x" sizes="100vw" data-src="https://example.com/img.png" />'
+        soup = BeautifulSoup(html, "html.parser")
+        
+        bot._inline_soup_images(soup, "https://example.com")
+        
+        img = soup.find("img")
+        self.assertIsNotNone(img)
+        self.assertTrue(img["src"].startswith("data:image/"))
+        self.assertNotIn("srcset", img.attrs)
+        self.assertNotIn("sizes", img.attrs)
+        self.assertNotIn("data-src", img.attrs)
+
+    @patch("bot._download_image_bytes")
+    def test_decomposes_on_failure(self, mock_download):
+        from bs4 import BeautifulSoup
+        mock_download.return_value = None
+        
+        html = '<img src="https://example.com/img.png" />'
+        soup = BeautifulSoup(html, "html.parser")
+        
+        bot._inline_soup_images(soup, "https://example.com")
+        
+        self.assertIsNone(soup.find("img"))
+
+
 class TestGetOgPreviewData(unittest.TestCase):
     """Tests for _get_og_preview_data Jina fallback."""
 

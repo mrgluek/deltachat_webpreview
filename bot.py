@@ -1549,6 +1549,13 @@ def _extract_youtube_id_from_invidious(url: str) -> str | None:
         logger.warning(f"Failed to extract video ID from Invidious URL {url}: {e}")
     return None
 
+def _is_telegram_url(url: str) -> bool:
+    try:
+        host = url.split("//", 1)[-1].split("/")[0].lower().split(":")[0]
+        return host in ("t.me", "www.t.me", "telegram.me")
+    except Exception:
+        return False
+
 def _fetch_telegram_og_data(url: str) -> tuple[str | None, str | None, str | None]:
     """
     Fetch title, preview image and content for a t.me post URL from Telegram's public preview page.
@@ -2047,7 +2054,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     cached_warning = cached.get("warning")
                     cached_jina_markdown = cached.get("jina_markdown")
                     
-                    emoji_prefix = "🤖🌐" if cached_jina_markdown else "🌐"
+                    emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if cached_jina_markdown else "🌐")
                     if cached_warning:
                         caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
                     else:
@@ -2104,7 +2111,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         if jina_markdown:
             _save_jina_preview_to_cache(url, urlhash, title, jina_markdown)
             
-        emoji_prefix = "🤖🌐" if jina_markdown else "🌐"
+        emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if jina_markdown else "🌐")
         if warning:
             caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
         else:

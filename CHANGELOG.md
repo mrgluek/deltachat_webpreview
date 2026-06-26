@@ -2,6 +2,14 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.16] - 2026-06-26
+
+### Added
+- **Telegram Preview Caching Support:** Extracted Telegram post content is now returned as markdown (`jina_markdown`), allowing `/preview` to generate and compile readability HTML previews directly from local cache without making redundant network requests.
+
+### Fixed
+- **Telegram Post Parser:** Switched parsing from the non-functional `t.me/oembed` endpoint (which resolves incorrectly to an `oembed` channel page on Telegram) to the official public preview feed (`t.me/s/...`) using BeautifulSoup, robustly extracting the author name, content text (with preserved line breaks), and media thumbnails.
+
 ## [2.3.15] - 2026-06-26
 
 ### Added

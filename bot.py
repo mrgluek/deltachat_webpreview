@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.8"
+VERSION = "2.3.16"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -1549,20 +1549,20 @@ def _extract_youtube_id_from_invidious(url: str) -> str | None:
         logger.warning(f"Failed to extract video ID from Invidious URL {url}: {e}")
     return None
 
-def _fetch_telegram_og_data(url: str) -> tuple[str | None, str | None]:
+def _fetch_telegram_og_data(url: str) -> tuple[str | None, str | None, str | None]:
     """
-    Fetch title and preview image for a t.me post URL via Telegram's oEmbed API.
+    Fetch title, preview image and content for a t.me post URL from Telegram's public preview page.
 
     Supports:
       https://t.me/channel/123
       https://t.me/s/channel/123
-      https://t.me/c/123456789/123   (private channel numeric id)
+      https://t.me/c/123456789/123   (private channel numeric id - will return None, None, None)
 
-    Returns (title, thumbnail_url) or (None, None) if extraction fails.
+    Returns (title, thumbnail_url, markdown_content) or (None, None, None) if extraction fails.
     The title is composed as "channel_name: post_text_excerpt".
     """
-    import json as _json
-    import html as _html
+    from bs4 import BeautifulSoup
+    import copy
 
     try:
         parsed = urllib.parse.urlparse(url)
@@ -1573,49 +1573,86 @@ def _fetch_telegram_og_data(url: str) -> tuple[str | None, str | None]:
 
         parts = [p for p in path.split("/") if p]
         if len(parts) < 2:
-            return None, None
+            return None, None, None
 
         channel = parts[0]
         post_id = parts[1]
 
-        # Build canonical public URL for oEmbed
-        post_url = f"https://t.me/{channel}/{post_id}"
-        oembed_url = (
-            f"https://t.me/oembed?url={urllib.parse.quote(post_url, safe='')}&format=json"
-        )
+        # Private channels (t.me/c/...) cannot be fetched via public web preview
+        if channel.lower() == "c":
+            return None, None, None
 
-        logger.info(f"Fetching Telegram oEmbed for {post_url}")
+        # Build canonical public preview URL
+        preview_url = f"https://t.me/s/{channel}/{post_id}"
+
+        logger.info(f"Fetching Telegram public preview for {preview_url}")
         req = urllib.request.Request(
-            oembed_url,
+            preview_url,
             headers={"User-Agent": STANDARD_USER_AGENT}
         )
         with _urlopen(req, timeout=8) as response:
-            raw = response.read(256 * 1024)
-            data = _json.loads(raw.decode("utf-8", errors="replace"))
+            html = response.read(512 * 1024).decode("utf-8", errors="replace")
 
-        author = data.get("author_name", channel)
+        soup = BeautifulSoup(html, BS_PARSER)
+        post_attr = f"{channel}/{post_id}".lower()
 
-        # oEmbed returns post content inside an HTML <blockquote>
-        html_snippet = data.get("html", "")
-        text = ""
-        if html_snippet:
-            # Strip HTML tags to get plain text
-            text = re.sub(r"<[^>]+>", " ", _html.unescape(html_snippet))
-            text = re.sub(r"\s+", " ", text).strip()
+        # Find the specific message wrapper
+        msg_div = None
+        for div in soup.find_all(class_="tgme_widget_message"):
+            if div.get("data-post", "").lower() == post_attr:
+                msg_div = div
+                break
 
-        if text:
-            # Truncate to ~200 chars for the preview title
-            excerpt = text[:200] + ("…" if len(text) > 200 else "")
+        if not msg_div:
+            logger.warning(f"Could not find message div for data-post: {post_attr} on page {preview_url}")
+            return None, None, None
+
+        # Extract author name
+        author_span = msg_div.find(class_="tgme_widget_message_owner_name")
+        author = author_span.get_text().strip() if author_span else channel
+
+        # Extract text content (preserving line breaks)
+        text_div = msg_div.find(class_="tgme_widget_message_text")
+        text_content = ""
+        if text_div:
+            text_div_copy = copy.copy(text_div)
+            for br in text_div_copy.find_all("br"):
+                br.replace_with("\n")
+            text_content = text_div_copy.get_text().strip()
+
+        # Build excerpt & title
+        if text_content:
+            clean_title_text = re.sub(r"\s+", " ", text_content).strip()
+            excerpt = clean_title_text[:200] + ("…" if len(clean_title_text) > 200 else "")
             title = f"{author}: {excerpt}"
         else:
             title = author
 
-        thumbnail_url = data.get("thumbnail_url") or None
-        return title, thumbnail_url
+        # Extract media/thumbnail URL from photo/video/roundvideo thumb or link preview image
+        thumb_url = None
+        photo_wrap = msg_div.find(class_=["tgme_widget_message_photo_wrap", "tgme_widget_message_video_thumb", "tgme_widget_message_roundvideo_thumb", "link_preview_image"])
+        if photo_wrap:
+            style = photo_wrap.get("style", "")
+            match = re.search(r"background-image:\s*url\(['\"]?(.*?)['\"]?\)", style)
+            if match:
+                thumb_url = match.group(1)
+
+        # Construct markdown content for caching/readability preview
+        md_lines = []
+        md_lines.append(f"# {author}")
+        md_lines.append("")
+        if text_content:
+            md_lines.append(text_content)
+            md_lines.append("")
+        if thumb_url:
+            md_lines.append(f"![Media]({thumb_url})")
+
+        jina_markdown = "\n".join(md_lines).strip()
+        return title, thumb_url, jina_markdown
 
     except Exception as e:
-        logger.warning(f"Telegram oEmbed fetch failed for {url}: {e}")
-        return None, None
+        logger.warning(f"Telegram preview fetch/parse failed for {url}: {e}")
+        return None, None, None
 
 def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, str | None]:
     """
@@ -1629,9 +1666,9 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, s
         # Extract netloc without touching urllib (shadowed later by local import)
         _tg_host = url.split("//", 1)[-1].split("/")[0].lower().split(":")[0]
         if _tg_host in ("t.me", "www.t.me", "telegram.me"):
-            tg_title, tg_thumb = _fetch_telegram_og_data(url)
+            tg_title, tg_thumb, tg_md = _fetch_telegram_og_data(url)
             if tg_title:
-                return tg_title, tg_thumb, False, None, None
+                return tg_title, tg_thumb, False, None, tg_md
     except Exception as _tg_err:
         logger.warning(f"Telegram early-return failed for {url}: {_tg_err}")
     # ---------------------------------------------------------------------

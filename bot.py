@@ -215,9 +215,9 @@ def _save_jina_preview_to_cache(url: str, urlhash: str, title: str, jina_markdow
         filesize = os.path.getsize(cache_path)
         cache_key = f"{urlhash}_readability"
         database.add_cached_preview(cache_key, cache_path, title, filesize)
-        logger.info(f"Successfully cached Jina preview to {cache_path} for {url} under key {cache_key}")
+        logger.info(f"Successfully cached readability preview to {cache_path} for {url} under key {cache_key}")
     except Exception as e:
-        logger.error(f"Failed to save Jina preview to cache for {url}: {e}")
+        logger.error(f"Failed to save readability preview to cache for {url}: {e}")
 
 SAFE_FILE_EXTENSIONS = {
     # PDF

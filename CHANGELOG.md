@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.14] - 2026-06-26
+
+### Fixed
+- **URL trailing junk stripping:** URLs extracted from natural-language text were not properly cleaned of Unicode closing punctuation. For example, `https://www.kommersant.ru/doc/8765189)»` would propagate the trailing `)»` into fetch requests, causing ASCII encoding errors. Introduced `_strip_url_trailing_junk()` which removes standard ASCII punctuation (`.,;:!?`), Unicode closing quotation marks (`»`, `"`, `'`, `›`, etc.) and unbalanced closing parentheses/brackets, while safely preserving balanced parens (e.g. Wikipedia URLs). All 8 URL extraction call-sites now use this function.
+- **Unit tests:** Added `tests/test_strip_url.py` with 18 tests covering the new helper.
+
 ## [2.3.13] - 2026-06-25
 
 ### Added

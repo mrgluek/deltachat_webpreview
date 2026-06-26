@@ -69,6 +69,37 @@ JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 PROXY_DOMAINS = [d.strip().lower() for d in os.environ.get("PROXY_DOMAINS", ".ru").split(",") if d.strip()]
 
+# Characters that are never legitimate at the end of a URL when extracted from
+# natural-language text.  We also handle unbalanced parentheses separately below.
+_URL_TRAILING_JUNK = set('.,;:!?"\'\u00ab\u00bb\u2018\u2019\u201c\u201d\u2039\u203a\u300c\u300d')
+
+def _strip_url_trailing_junk(url: str) -> str:
+    """
+    Remove trailing punctuation that is never part of a URL when the URL is
+    embedded in natural-language text:
+      - Standard ASCII junk: . , ; : ! ? " '
+      - Unicode quotation marks: « » " " ' ' ‹ ›
+      - Unbalanced closing parentheses/brackets ) ] }
+    Balanced parentheses inside the path (e.g. Wikipedia) are preserved.
+    """
+    while url:
+        ch = url[-1]
+        if ch in _URL_TRAILING_JUNK:
+            url = url[:-1]
+            continue
+        # Strip unbalanced closing bracket/paren/brace
+        pairs = {'(': ')', '[': ']', '{': '}'}
+        matched = False
+        for open_ch, close_ch in pairs.items():
+            if ch == close_ch and url.count(open_ch) < url.count(close_ch):
+                url = url[:-1]
+                matched = True
+                break
+        if not matched:
+            break
+    return url
+
+
 def _should_use_proxy(url: str) -> bool:
     """Return True if the URL should be routed through the proxy."""
     if not PROXY_URL:
@@ -2402,7 +2433,7 @@ def _handle_preview_command(bot, accid, event, mode: str):
     if payload:
         url_match = re.search(r'(https?://[^\s<>"]+)', payload)
         if url_match:
-            url = url_match.group(1).rstrip('.,;:)!?')
+            url = _strip_url_trailing_junk(url_match.group(1))
             
     # 2. Check if this is a quote reply and no explicit payload is given
     else:
@@ -2417,7 +2448,7 @@ def _handle_preview_command(bot, accid, event, mode: str):
             if quoted_text:
                 url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
                 if url_match:
-                    url = url_match.group(1).rstrip('.,;:)!?')
+                    url = _strip_url_trailing_junk(url_match.group(1))
 
     # If no URL resolved
     if not url:
@@ -2533,7 +2564,7 @@ def _handle_keep_command(bot, accid, event):
     if payload:
         url_match = re.search(r'(https?://[^\s<>"]+)', payload)
         if url_match:
-            url = url_match.group(1).rstrip('.,;:)!?')
+            url = _strip_url_trailing_junk(url_match.group(1))
     else:
         quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
         if quote:
@@ -2545,7 +2576,7 @@ def _handle_keep_command(bot, accid, event):
             if quoted_text:
                 url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
                 if url_match:
-                    url = url_match.group(1).rstrip('.,;:)!?')
+                    url = _strip_url_trailing_junk(url_match.group(1))
 
     if not url:
         _send(bot, accid, msg.chat_id,
@@ -2632,7 +2663,7 @@ def download_command(bot, accid, event):
     if payload:
         url_match = re.search(r'(https?://[^\s<>"]+)', payload)
         if url_match:
-            url = url_match.group(1).rstrip('.,;:)!?')
+            url = _strip_url_trailing_junk(url_match.group(1))
     else:
         quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
         if quote:
@@ -2644,7 +2675,7 @@ def download_command(bot, accid, event):
             if quoted_text:
                 url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
                 if url_match:
-                    url = url_match.group(1).rstrip('.,;:)!?')
+                    url = _strip_url_trailing_junk(url_match.group(1))
 
     if not url:
         _send(bot, accid, msg.chat_id, 
@@ -3305,7 +3336,7 @@ def on_new_message(bot, accid, event):
             if not text.startswith("/"):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
-                    url = url_match.group(1).rstrip('.,;:)!?')
+                    url = _strip_url_trailing_junk(url_match.group(1))
                     
                     if _is_internal_or_invalid_url(url):
                         return
@@ -3327,7 +3358,7 @@ def on_new_message(bot, accid, event):
             if not text.startswith("/"):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
-                    url = url_match.group(1).rstrip('.,;:)!?')
+                    url = _strip_url_trailing_junk(url_match.group(1))
                     
                     if _is_internal_or_invalid_url(url):
                         return

@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.15] - 2026-06-26
+
+### Added
+- **Telegram Post Parser (`_fetch_telegram_og_data`):** When a `t.me` link is sent to the bot, it now fetches post metadata via Telegram's oEmbed API (`https://t.me/oembed?url=...&format=json`) instead of trying to scrape the page HTML. Supports standard post URLs (`t.me/channel/123`), stream-prefixed URLs (`t.me/s/channel/123`), and private channel numeric IDs (`t.me/c/123456789/123`). The preview title is formed as `"channel_name: post text excerpt (up to 200 chars)"`, with thumbnail image included if the post has media. The oEmbed path is an early-return in `_get_og_preview_data` before the standard HTML fetch and Jina fallback.
+
 ## [2.3.14] - 2026-06-26
 
 ### Fixed

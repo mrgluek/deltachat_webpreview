@@ -1549,12 +1549,96 @@ def _extract_youtube_id_from_invidious(url: str) -> str | None:
         logger.warning(f"Failed to extract video ID from Invidious URL {url}: {e}")
     return None
 
+def _fetch_telegram_og_data(url: str) -> tuple[str | None, str | None]:
+    """
+    Fetch title and preview image for a t.me post URL via Telegram's oEmbed API.
+
+    Supports:
+      https://t.me/channel/123
+      https://t.me/s/channel/123
+      https://t.me/c/123456789/123   (private channel numeric id)
+
+    Returns (title, thumbnail_url) or (None, None) if extraction fails.
+    The title is composed as "channel_name: post_text_excerpt".
+    """
+    import json as _json
+    import html as _html
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        # Normalise: strip leading slash and 's/' prefix
+        path = parsed.path.lstrip("/")
+        if path.startswith("s/"):
+            path = path[2:]
+
+        parts = [p for p in path.split("/") if p]
+        if len(parts) < 2:
+            return None, None
+
+        channel = parts[0]
+        post_id = parts[1]
+
+        # Build canonical public URL for oEmbed
+        post_url = f"https://t.me/{channel}/{post_id}"
+        oembed_url = (
+            f"https://t.me/oembed?url={urllib.parse.quote(post_url, safe='')}&format=json"
+        )
+
+        logger.info(f"Fetching Telegram oEmbed for {post_url}")
+        req = urllib.request.Request(
+            oembed_url,
+            headers={"User-Agent": STANDARD_USER_AGENT}
+        )
+        with _urlopen(req, timeout=8) as response:
+            raw = response.read(256 * 1024)
+            data = _json.loads(raw.decode("utf-8", errors="replace"))
+
+        author = data.get("author_name", channel)
+
+        # oEmbed returns post content inside an HTML <blockquote>
+        html_snippet = data.get("html", "")
+        text = ""
+        if html_snippet:
+            # Strip HTML tags to get plain text
+            text = re.sub(r"<[^>]+>", " ", _html.unescape(html_snippet))
+            text = re.sub(r"\s+", " ", text).strip()
+
+        if text:
+            # Truncate to ~200 chars for the preview title
+            excerpt = text[:200] + ("…" if len(text) > 200 else "")
+            title = f"{author}: {excerpt}"
+        else:
+            title = author
+
+        thumbnail_url = data.get("thumbnail_url") or None
+        return title, thumbnail_url
+
+    except Exception as e:
+        logger.warning(f"Telegram oEmbed fetch failed for {url}: {e}")
+        return None, None
+
 def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, str | None]:
     """
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
     Returns (title, og_image_url, is_invidious, warning, jina_markdown).
     """
     jina_markdown = None
+
+    # --- Telegram posts: use oEmbed API directly -------------------------
+    try:
+        # Extract netloc without touching urllib (shadowed later by local import)
+        _tg_host = url.split("//", 1)[-1].split("/")[0].lower().split(":")[0]
+        if _tg_host in ("t.me", "www.t.me", "telegram.me"):
+            tg_title, tg_thumb = _fetch_telegram_og_data(url)
+            if tg_title:
+                return tg_title, tg_thumb, False, None, None
+    except Exception as _tg_err:
+        logger.warning(f"Telegram early-return failed for {url}: {_tg_err}")
+    # ---------------------------------------------------------------------
+
+
+
+
     def parse_html(html_content: str) -> tuple[str | None, str | None]:
         # 1. Extract title
         title = None

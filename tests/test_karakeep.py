@@ -150,15 +150,28 @@ class TestDoKeep(unittest.TestCase):
         mock_is_admin.return_value = True
         mock_keep_enabled.return_value = True
         mock_karakeep.return_value = (True, "bm_123")
+        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
+        
+        mock_bot = MagicMock()
+        mock_bot.rpc.create_chat_by_contact_id.return_value = 999
 
-        bot._do_keep(None, 1, 10, 100, 20, "https://example.com")
+        bot._do_keep(mock_bot, 1, 10, 100, 20, "https://example.com")
 
         mock_karakeep.assert_called_once_with("https://example.com")
-        mock_webarchive.assert_not_called()
-        mock_react.assert_called_once_with(None, 1, 100, "✅")
-        # Check that we sent a success reply containing the KaraKeep URL
-        mock_send.assert_called_once()
-        self.assertIn("Saved to KaraKeep", mock_send.call_args[0][3])
+        mock_webarchive.assert_called_once_with("https://example.com")
+        mock_react.assert_called_once_with(mock_bot, 1, 100, "☑️")
+        
+        # Check that we sent a success reply containing the Web Archive URL to the main chat
+        # and KaraKeep link to the private chat 999
+        self.assertEqual(mock_send.call_count, 2)
+        
+        # First send: Web Archive to main chat (10)
+        self.assertEqual(mock_send.call_args_list[0][0][2], 10)
+        self.assertIn("Saved to Web Archive", mock_send.call_args_list[0][0][3])
+        
+        # Second send: KaraKeep to private chat (999)
+        self.assertEqual(mock_send.call_args_list[1][0][2], 999)
+        self.assertIn("Saved to KaraKeep", mock_send.call_args_list[1][0][3])
 
     @patch("bot._is_dc_admin")
     @patch("bot._karakeep_enabled")
@@ -175,8 +188,9 @@ class TestDoKeep(unittest.TestCase):
 
         mock_karakeep.assert_not_called()
         mock_webarchive.assert_called_once_with("https://example.com")
-        mock_react.assert_called_once_with(None, 1, 100, "✅")
+        mock_react.assert_called_once_with(None, 1, 100, "☑️")
         mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args[0][2], 10)
         self.assertIn("Saved to Web Archive", mock_send.call_args[0][3])
 
     @patch("bot._is_dc_admin")
@@ -194,8 +208,9 @@ class TestDoKeep(unittest.TestCase):
 
         mock_karakeep.assert_not_called()
         mock_webarchive.assert_called_once_with("https://example.com")
-        mock_react.assert_called_once_with(None, 1, 100, "✅")
+        mock_react.assert_called_once_with(None, 1, 100, "☑️")
         mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args[0][2], 10)
         self.assertIn("Saved to Web Archive", mock_send.call_args[0][3])
 
 

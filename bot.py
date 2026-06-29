@@ -2649,31 +2649,35 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
 
 
 def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
-    """Background worker: save URL to KaraKeep or Web Archive and report result."""
+    """Background worker: save URL to Web Archive, and optionally to KaraKeep for the admin."""
+    # 1. Always save to Web Archive
+    wa_success, wa_result = _save_to_web_archive(url)
+    if wa_success:
+        _react(bot, accid, msg_id, "☑️")
+        reply = f"🏛️ Saved to Web Archive!\n🔗 {url}"
+        if wa_result:
+            reply += f"\n📎 {wa_result}"
+        _send(bot, accid, chat_id, reply)
+    else:
+        _react(bot, accid, msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to save to Web Archive.\nReason: {wa_result}")
+
+    # 2. If requester is admin and KaraKeep is enabled, save to KaraKeep and send confirmation to their private chat
     is_admin = _is_dc_admin(bot, accid, from_id)
     if is_admin and _karakeep_enabled():
-        success, result = _save_to_karakeep(url)
-        if success:
-            _react(bot, accid, msg_id, "✅")
-            bookmark_url = f"{KARAKEEP_URL}/dashboard/preview/{result}" if result else ""
-            reply = f"🔖 Saved to KaraKeep!\n🔗 {url}"
-            if bookmark_url:
-                reply += f"\n📎 {bookmark_url}"
-            _send(bot, accid, chat_id, reply)
-        else:
-            _react(bot, accid, msg_id, "❌")
-            _send(bot, accid, chat_id, f"❌ Failed to save to KaraKeep.\nReason: {result}")
-    else:
-        success, result = _save_to_web_archive(url)
-        if success:
-            _react(bot, accid, msg_id, "✅")
-            reply = f"🏛️ Saved to Web Archive!\n🔗 {url}"
-            if result:
-                reply += f"\n📎 {result}"
-            _send(bot, accid, chat_id, reply)
-        else:
-            _react(bot, accid, msg_id, "❌")
-            _send(bot, accid, chat_id, f"❌ Failed to save to Web Archive.\nReason: {result}")
+        kk_success, kk_result = _save_to_karakeep(url)
+        try:
+            private_chat_id = bot.rpc.create_chat_by_contact_id(accid, from_id)
+            if kk_success:
+                bookmark_url = f"{KARAKEEP_URL}/dashboard/preview/{kk_result}" if kk_result else ""
+                private_reply = f"🔖 Saved to KaraKeep!\n🔗 {url}"
+                if bookmark_url:
+                    private_reply += f"\n📎 {bookmark_url}"
+                _send(bot, accid, private_chat_id, private_reply)
+            else:
+                _send(bot, accid, private_chat_id, f"❌ Failed to save to KaraKeep.\nReason: {kk_result}")
+        except Exception as e:
+            logger.error(f"Failed to send KaraKeep notification to private chat for admin {from_id}: {e}")
 
 
 def _handle_keep_command(bot, accid, event):

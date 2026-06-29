@@ -5,7 +5,8 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 ## [2.3.18] - 2026-06-29
 
 ### Added
-- **Web Archive fallback for `/keep`**: Overhauled `/keep` command, `/keep_{urlhash}` dynamic command and `/keep` quote replies so they are accessible to all users. Non-admin users, or any users if KaraKeep is not configured, will have their URLs archived to Web Archive (Wayback Machine) via a background HTTP request to `https://web.archive.org/save/` and get the snapshot URL sent back to the chat. If KaraKeep is configured, the bot administrator's requests continue to save directly to KaraKeep.
+- **Web Archive fallback for `/keep`**: Overhauled `/keep` command, `/keep_{urlhash}` dynamic command, and `/keep` quote replies so they are accessible to all users. `/keep` now always saves the target URL to the Web Archive (Wayback Machine) and posts the link back to the current chat, changing the success reaction to `☑️` (matching `/preview` and `/archive`).
+- **Private KaraKeep Notification for Admin**: If KaraKeep is configured and the command is executed by the bot administrator, the bot will additionally save the URL to KaraKeep in the background and send the bookmark link directly to the administrator in a private chat.
 
 ## [2.3.17] - 2026-06-26
 

@@ -108,5 +108,96 @@ class TestSaveToKaraKeep(unittest.TestCase):
         )
 
 
+
+class TestSaveToWebArchive(unittest.TestCase):
+    """Tests for _save_to_web_archive API call logic (mocked HTTP)."""
+
+    @patch("urllib.request.urlopen")
+    def test_success_returns_redirected_url(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.geturl.return_value = "https://web.archive.org/web/20260629/https://example.com/page"
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        success, result = bot._save_to_web_archive("https://example.com/page")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://web.archive.org/web/20260629/https://example.com/page")
+
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.full_url, "https://web.archive.org/save/https://example.com/page")
+        self.assertEqual(req.get_header("User-agent"), bot.STANDARD_USER_AGENT)
+
+    @patch("urllib.request.urlopen")
+    def test_failure_returns_error(self, mock_urlopen):
+        mock_urlopen.side_effect = Exception("HTTP 503 Service Unavailable")
+
+        success, result = bot._save_to_web_archive("https://example.com/page")
+
+        self.assertFalse(success)
+        self.assertIn("HTTP 503", result)
+
+
+class TestDoKeep(unittest.TestCase):
+    """Tests for _do_keep routing logic between KaraKeep and Web Archive."""
+
+    @patch("bot._is_dc_admin")
+    @patch("bot._karakeep_enabled")
+    @patch("bot._save_to_karakeep")
+    @patch("bot._save_to_web_archive")
+    @patch("bot._react")
+    @patch("bot._send")
+    def test_do_keep_admin_karakeep_enabled(self, mock_send, mock_react, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin):
+        mock_is_admin.return_value = True
+        mock_keep_enabled.return_value = True
+        mock_karakeep.return_value = (True, "bm_123")
+
+        bot._do_keep(None, 1, 10, 100, 20, "https://example.com")
+
+        mock_karakeep.assert_called_once_with("https://example.com")
+        mock_webarchive.assert_not_called()
+        mock_react.assert_called_once_with(None, 1, 100, "✅")
+        # Check that we sent a success reply containing the KaraKeep URL
+        mock_send.assert_called_once()
+        self.assertIn("Saved to KaraKeep", mock_send.call_args[0][3])
+
+    @patch("bot._is_dc_admin")
+    @patch("bot._karakeep_enabled")
+    @patch("bot._save_to_karakeep")
+    @patch("bot._save_to_web_archive")
+    @patch("bot._react")
+    @patch("bot._send")
+    def test_do_keep_admin_karakeep_disabled(self, mock_send, mock_react, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin):
+        mock_is_admin.return_value = True
+        mock_keep_enabled.return_value = False
+        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
+
+        bot._do_keep(None, 1, 10, 100, 20, "https://example.com")
+
+        mock_karakeep.assert_not_called()
+        mock_webarchive.assert_called_once_with("https://example.com")
+        mock_react.assert_called_once_with(None, 1, 100, "✅")
+        mock_send.assert_called_once()
+        self.assertIn("Saved to Web Archive", mock_send.call_args[0][3])
+
+    @patch("bot._is_dc_admin")
+    @patch("bot._karakeep_enabled")
+    @patch("bot._save_to_karakeep")
+    @patch("bot._save_to_web_archive")
+    @patch("bot._react")
+    @patch("bot._send")
+    def test_do_keep_regular_user(self, mock_send, mock_react, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin):
+        mock_is_admin.return_value = False
+        mock_keep_enabled.return_value = True
+        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
+
+        bot._do_keep(None, 1, 10, 100, 20, "https://example.com")
+
+        mock_karakeep.assert_not_called()
+        mock_webarchive.assert_called_once_with("https://example.com")
+        mock_react.assert_called_once_with(None, 1, 100, "✅")
+        mock_send.assert_called_once()
+        self.assertIn("Saved to Web Archive", mock_send.call_args[0][3])
+
+
 if __name__ == "__main__":
     unittest.main()

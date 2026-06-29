@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.17"
+VERSION = "2.3.18"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -2056,8 +2056,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                         caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
                     else:
                         caption = f"{emoji_prefix} [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
-                    if _karakeep_enabled():
-                        caption += f"   🏛️ /keep_{urlhash}"
+                    caption += f"   🏛️ /keep_{urlhash}"
 
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
@@ -2114,8 +2113,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         else:
             caption = f"{emoji_prefix} [{title}]({url})\n\n🖥️ /preview_{urlhash}   💾 /archive_{urlhash}"
             
-        if _karakeep_enabled():
-            caption += f"   🏛️ /keep_{urlhash}"
+        caption += f"   🏛️ /keep_{urlhash}"
         
         # 6. Download image if exists, saving to persistent cache folder
         img_cache_path = None
@@ -2629,34 +2627,60 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
     return True, bookmark_id
 
 
+def _save_to_web_archive(url: str) -> tuple[bool, str]:
+    """Save a URL to Web Archive (Wayback Machine). Returns (success, archived_url_or_error)."""
+    save_url = f"https://web.archive.org/save/{url}"
+    try:
+        req = urllib.request.Request(
+            save_url,
+            headers={
+                'User-Agent': STANDARD_USER_AGENT
+            }
+        )
+        with _urlopen(req, timeout=20) as response:
+            redirected_url = response.geturl()
+            # If the response redirected to standard web.archive.org snapshot, we return it
+            if "/web/" in redirected_url or "archive.org" in redirected_url:
+                return True, redirected_url
+            return True, redirected_url
+    except Exception as e:
+        logger.error(f"Failed to save {url} to Web Archive: {e}")
+        return False, str(e)
+
+
 def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
-    """Background worker: save URL to KaraKeep and report result."""
-    success, result = _save_to_karakeep(url)
-    if success:
-        _react(bot, accid, msg_id, "✅")
-        bookmark_url = f"{KARAKEEP_URL}/dashboard/preview/{result}" if result else ""
-        reply = f"🔖 Saved to KaraKeep!\n🔗 {url}"
-        if bookmark_url:
-            reply += f"\n📎 {bookmark_url}"
-        _send(bot, accid, chat_id, reply)
+    """Background worker: save URL to KaraKeep or Web Archive and report result."""
+    is_admin = _is_dc_admin(bot, accid, from_id)
+    if is_admin and _karakeep_enabled():
+        success, result = _save_to_karakeep(url)
+        if success:
+            _react(bot, accid, msg_id, "✅")
+            bookmark_url = f"{KARAKEEP_URL}/dashboard/preview/{result}" if result else ""
+            reply = f"🔖 Saved to KaraKeep!\n🔗 {url}"
+            if bookmark_url:
+                reply += f"\n📎 {bookmark_url}"
+            _send(bot, accid, chat_id, reply)
+        else:
+            _react(bot, accid, msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to save to KaraKeep.\nReason: {result}")
     else:
-        _react(bot, accid, msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to save to KaraKeep.\nReason: {result}")
+        success, result = _save_to_web_archive(url)
+        if success:
+            _react(bot, accid, msg_id, "✅")
+            reply = f"🏛️ Saved to Web Archive!\n🔗 {url}"
+            if result:
+                reply += f"\n📎 {result}"
+            _send(bot, accid, chat_id, reply)
+        else:
+            _react(bot, accid, msg_id, "❌")
+            _send(bot, accid, chat_id, f"❌ Failed to save to Web Archive.\nReason: {result}")
 
 
 def _handle_keep_command(bot, accid, event):
-    """Processes /keep command — admin-only, saves URL to KaraKeep."""
+    """Processes /keep command — saves URL to KaraKeep (admin with config) or Web Archive."""
     msg = event.msg
 
     if _is_duplicate_msg(msg.id, "keep"):
-        return
-
-    if not _karakeep_enabled():
-        _send(bot, accid, msg.chat_id, "❌ KaraKeep integration is not configured.\nSet `KARAKEEP_URL` and `KARAKEEP_API_KEY` environment variables.")
-        return
-
-    if not _is_dc_admin(bot, accid, msg.from_id):
-        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /keep.")
         return
 
     # Extract target URL (same logic as _handle_preview_command)
@@ -2681,13 +2705,15 @@ def _handle_keep_command(bot, accid, event):
                     url = _strip_url_trailing_junk(url_match.group(1))
 
     if not url:
+        is_admin = _is_dc_admin(bot, accid, msg.from_id)
+        target_service = "KaraKeep" if (is_admin and _karakeep_enabled()) else "Web Archive"
         _send(bot, accid, msg.chat_id,
-              "Usage:\n"
-              "• `/keep <url>` — Save URL to KaraKeep\n"
-              "• Reply `/keep` to any message containing a link.")
+              f"Usage:\n"
+              f"• `/keep <url>` — Save URL to {target_service}\n"
+              f"• Reply `/keep` to any message containing a link.")
         return
 
-    _react(bot, accid, msg.id, "🔖")
+    _react(bot, accid, msg.id, "🏛️" if not (_is_dc_admin(bot, accid, msg.from_id) and _karakeep_enabled()) else "🔖")
     t = threading.Thread(
         target=_do_keep,
         args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
@@ -2806,6 +2832,7 @@ def get_help_text(bot, accid, from_id):
         f"/preview <url> — Generate compressed reader-mode page (recommended)\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
+        f"/keep <url> — Save URL to Web Archive 🏛️\n"
         f"/stats — View bot generation statistics\n"
 
         f"/source — Show bot source code link 🔌\n"
@@ -2837,7 +2864,7 @@ def get_help_text(bot, accid, from_id):
         help_text += "/invidious_list — List registered Invidious domains\n"
         if _karakeep_enabled():
             help_text += "\n**KaraKeep:**\n"
-            help_text += "/keep <url> — Save URL to KaraKeep 🔖\n"
+            help_text += "/keep <url> — Save URL to KaraKeep (instead of Web Archive) 🔖\n"
 
     return help_text
 
@@ -3393,13 +3420,7 @@ def on_new_message(bot, accid, event):
             return
 
         if cmd_type == "keep":
-            if not _karakeep_enabled():
-                _send(bot, accid, msg.chat_id, "❌ KaraKeep integration is not configured.\nSet `KARAKEEP_URL` and `KARAKEEP_API_KEY` environment variables.")
-                return
-            if not _is_dc_admin(bot, accid, msg.from_id):
-                _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /keep.")
-                return
-            _react(bot, accid, msg.id, "🔖")
+            _react(bot, accid, msg.id, "🏛️" if not (_is_dc_admin(bot, accid, msg.from_id) and _karakeep_enabled()) else "🔖")
             t = threading.Thread(
                 target=_do_keep,
                 args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),

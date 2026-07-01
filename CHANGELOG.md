@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.19] - 2026-07-01
+
+### Added
+- **Jina AI API Key Token Balance Command (`/jina`)**: Added a new administrative command `/jina` that retrieves token balance statistics for the bot's configured `JINA_API_KEY` or a custom key provided as an argument (e.g., `/jina <api_key>`). Returns total, trial, and regular balances formatted with thousands separators, as well as trial validity dates.
+
 ## [2.3.18] - 2026-06-29
 
 ### Added

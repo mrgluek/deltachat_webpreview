@@ -80,6 +80,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/invidious_add <domain/url>` — Register a custom Invidious instance domain (Admin only).
 - `/invidious_rm <domain/url>` — Deregister an Invidious instance domain (Admin only). *(Note: `/invidious_remove` is also supported as an alias)*
 - `/invidious_list` — List registered Invidious instance domains (Admin only).
+- `/jina <api_key>` — Check Jina AI API key remaining token balance (Admin only; defaults to env-configured key if `<api_key>` is omitted).
 - `/keep <url>` — Save URL to Web Archive (or KaraKeep for the admin if configured; also supports quote replies and `/keep_[hash]` dynamic links).
 
 ### Target-Specific Commands in Group Chats

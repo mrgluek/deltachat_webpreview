@@ -2726,6 +2726,78 @@ def _handle_keep_command(bot, accid, event):
     t.start()
 
 
+def _handle_jina_command(bot, accid, event):
+    """Processes /jina command — checks Jina AI API key remaining tokens."""
+    msg = event.msg
+    
+    if not _is_dc_admin(bot, accid, msg.from_id):
+        _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /jina.")
+        return
+
+    # Extract target API key from payload
+    api_key = event.payload.strip() if event.payload else ""
+    if not api_key:
+        api_key = JINA_API_KEY
+
+    if not api_key:
+        _send(bot, accid, msg.chat_id,
+              "❌ `JINA_API_KEY` is not configured in the bot's environment.\n"
+              "Please check a specific key by passing it as an argument:\n"
+              "• `/jina <your_api_key>`")
+        return
+
+    _react(bot, accid, msg.id, "⏳")
+
+    def _do_jina_check():
+        try:
+            import json
+            import urllib.request
+            
+            check_url = f"https://dash.jina.ai/api/v1/api_key/fe_user?api_key={api_key}"
+            req = urllib.request.Request(
+                check_url,
+                headers={"User-Agent": STANDARD_USER_AGENT}
+            )
+            with _urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            
+            wallet = data.get("wallet", {})
+            total_balance = wallet.get("total_balance", 0)
+            trial_balance = wallet.get("trial_balance", 0)
+            regular_balance = wallet.get("regular_balance", 0)
+            
+            total_str = f"{total_balance:,}"
+            trial_str = f"{trial_balance:,}"
+            reg_str = f"{regular_balance:,}"
+            
+            trial_start = wallet.get("trial_start", "")
+            trial_end = wallet.get("trial_end", "")
+            
+            if trial_start:
+                trial_start = trial_start.split("T")[0]
+            if trial_end:
+                trial_end = trial_end.split("T")[0]
+                
+            reply = (
+                f"🤖 **Jina AI API Key Stats:**\n\n"
+                f"• **Total Balance:** {total_str} tokens\n"
+                f"• **Trial Balance:** {trial_str} tokens\n"
+                f"• **Regular Balance:** {reg_str} tokens\n"
+            )
+            if trial_start or trial_end:
+                reply += f"• **Trial Period:** {trial_start} to {trial_end}\n"
+                
+            _react(bot, accid, msg.id, "☑️")
+            _send(bot, accid, msg.chat_id, reply)
+            
+        except Exception as e:
+            logger.error(f"Failed to check Jina API key balance: {e}")
+            _react(bot, accid, msg.id, "❌")
+            _send(bot, accid, msg.chat_id, f"❌ Failed to check Jina API key balance.\nReason: {e}")
+
+    threading.Thread(target=_do_jina_check, daemon=True).start()
+
+
 # ── Command Listeners ──
 
 @dc_cli.on(events.NewMessage(command="/preview", is_bot=None))
@@ -2760,6 +2832,17 @@ def keep_command(bot, accid, event):
     if not re.match(r"^/keep(?:\s|$)", text):
         return
     _handle_keep_command(bot, accid, event)
+
+@dc_cli.on(events.NewMessage(command="/jina", is_bot=None))
+def jina_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/jina(?:\s|$)", text):
+        return
+    _handle_jina_command(bot, accid, event)
 
 @dc_cli.on(events.NewMessage(command="/previewjs", is_bot=None))
 def previewjs_command(bot, accid, event):
@@ -2866,6 +2949,7 @@ def get_help_text(bot, accid, from_id):
         help_text += "/invidious_add <domain/url> — Register an Invidious server domain\n"
         help_text += "/invidious_rm <domain/url> — Deregister an Invidious server domain\n"
         help_text += "/invidious_list — List registered Invidious domains\n"
+        help_text += "/jina <api_key> — Check Jina AI API key token balance\n"
         if _karakeep_enabled():
             help_text += "\n**KaraKeep:**\n"
             help_text += "/keep <url> — Save URL to KaraKeep (instead of Web Archive) 🔖\n"

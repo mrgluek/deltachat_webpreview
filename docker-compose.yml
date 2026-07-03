@@ -2,6 +2,7 @@ services:
   webpreview_bot:
     container_name: deltachat_webpreview_bot
     build: .
+    init: true
     restart: always
     logging:
       driver: json-file

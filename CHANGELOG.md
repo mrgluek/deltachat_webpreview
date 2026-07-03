@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.20] - 2026-07-03
+
+### Fixed
+- **Zombie Process Reaping:** Enabled `init: true` in Docker Compose to automatically reap zombie processes in the bot container, preventing PID limit exhaustion.
+
 ## [2.3.19] - 2026-07-01
 
 ### Added

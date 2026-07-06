@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.21] - 2026-07-06
+
+### Fixed
+- **Fix Dependency Conflict/NameError:** Pinned `deltachat2[full]<1.0.0` to avoid NameError/ImportError bugs in newer incompatible `deltachat2` versions.
+
 ## [2.3.20] - 2026-07-03
 
 ### Fixed

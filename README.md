@@ -17,6 +17,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - 🛡️ **Local Network Protection & URL Validation:** Uses hostname syntax checks and standard Python `ipaddress` validation to identify and skip local hosts/IPs (`localhost`, private IP subnets, `.local`/`.lan` domains, etc.) and malformed URLs without valid dot-separated domains (e.g. `https://юрл`), blocking resource-wasting requests and spam.
 - 🏛️ **Web Archive / KaraKeep Bookmark Integration:** Save webpages directly to the Web Archive (Wayback Machine) by default. If a self-hosted [KaraKeep](https://karakeep.app/) instance is configured, saving to KaraKeep is enabled exclusively for the bot administrator. Sending `/keep <url>`, replying with `/keep` to a link, or clicking the `/keep_[hash]` dynamic link under web previews will archive the page to the Web Archive (or KaraKeep for the admin).
 - 📱 **Telegram Post Previews (`t.me`):** Detects Telegram post links and scrapes them directly from the static public preview feed (`https://t.me/s/{channel}/{post_id}`), bypassing any JavaScript requirements. Extracts the post author, text content with preserved line breaks, and media/thumbnails. Caches the extracted markdown in the local SQLite database so `/preview` and `/archive` commands run entirely offline/instantaneously.
+- 🔇 **Chat-Specific Toggle (`/webpreview [on|off]`):** Turn off automatic link previews in specific group or private chats. When disabled, the bot reacts only when explicit commands like `/preview`, `/archive`, or `/keep` are run manually (by typing the command or replying to a link).
 - 🐳 **Docker Ready:** Built with a multi-stage Docker build compiling Rust-based `monolith` and packing it into a slim Python runtime.
 
 ## Setup
@@ -84,6 +85,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/invidious_list` — List registered Invidious instance domains (Admin only).
 - `/jina <api_key>` — Check Jina AI API key remaining token balance (Admin only; defaults to env-configured key if `<api_key>` is omitted).
 - `/keep <url>` — Save URL to Web Archive (or KaraKeep for the admin if configured; also supports quote replies and `/keep_[hash]` dynamic links).
+- `/webpreview [on|off]` — Enable or disable automatic link previews in the current chat. Defaults to enabled; accepts `on`/`off`, `1`/`0`, or `true`/`false`.
 
 ### Target-Specific Commands in Group Chats
 
@@ -111,13 +113,14 @@ Although we recommend using `/addtransport` in chat, you can also add a backup r
 
 ## Development & Testing
 
-The repository ships with a `tests/` directory containing 53 unit tests:
+The repository ships with a `tests/` directory containing 56 unit tests:
 
 | File | What it covers |
 |---|---|
 | `tests/test_url_validation.py` | `_is_internal_or_invalid_url` – valid domains, private IPs, blocked TLDs |
 | `tests/test_invidious.py` | `_extract_youtube_id_from_invidious`, `_clean_domain`, Invidious database helpers |
 | `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, SVG skip, octet-stream logic, cache saving, OG fallback |
+| `tests/test_webpreview.py` | `/webpreview` command, DB status checks, and `on_new_message` auto-preview toggling |
 
 To run locally (inside the virtualenv):
 

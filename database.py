@@ -357,5 +357,18 @@ def list_invidious_domains() -> list[str]:
         prefix = "invidious_domain_"
         return [r[0][len(prefix):] for r in rows if r[0].startswith(prefix)]
 
+def is_webpreview_disabled(chat_id: int) -> bool:
+    """Check if webpreview auto-parsing is disabled in a chat."""
+    try:
+        val = get_config(f"webpreview_disabled_{chat_id}")
+        return val == "1"
+    except Exception:
+        return False
+
+def set_webpreview_disabled(chat_id: int, disabled: bool):
+    """Disable or enable webpreview auto-parsing in a chat."""
+    set_config(f"webpreview_disabled_{chat_id}", "1" if disabled else "0")
+
 init_db()
+
 

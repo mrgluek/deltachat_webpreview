@@ -52,7 +52,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.22"
+VERSION = "2.3.23"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -2907,6 +2907,34 @@ def download_command(bot, accid, event):
     )
     t.start()
 
+@dc_cli.on(events.NewMessage(command="/webpreview", is_bot=None))
+def webpreview_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/webpreview(?:\s|$)", text):
+        return
+    
+    msg = event.msg
+    payload = (event.payload or "").strip().lower()
+    
+    if payload in ("off", "0", "false"):
+        database.set_webpreview_disabled(msg.chat_id, True)
+        _send(bot, accid, msg.chat_id, "🔇 WebPreview has been disabled for this chat. I will no longer preview links automatically. You can still use `/preview`, `/archive`, or `/keep` on links manually.")
+    elif payload in ("on", "1", "true"):
+        database.set_webpreview_disabled(msg.chat_id, False)
+        _send(bot, accid, msg.chat_id, "🔊 WebPreview has been enabled for this chat. Links will be parsed automatically.")
+    else:
+        is_disabled = database.is_webpreview_disabled(msg.chat_id)
+        status = "disabled 🔇" if is_disabled else "enabled 🔊"
+        _send(bot, accid, msg.chat_id,
+              f"WebPreview is currently {status} for this chat.\n\n"
+              f"Usage:\n"
+              f"• `/webpreview off` (or `0`, `false`) — Disable automatic link previews\n"
+              f"• `/webpreview on` (or `1`, `true`) — Enable automatic link previews")
+
 
 def get_help_text(bot, accid, from_id):
     contact = bot.rpc.get_contact(accid, from_id)
@@ -2921,6 +2949,7 @@ def get_help_text(bot, accid, from_id):
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/keep <url> — Save URL to Web Archive 🏛️\n"
         f"/stats — View bot generation statistics\n"
+        f"/webpreview [on|off] — Toggle automatic link previews 🔇\n"
 
         f"/source — Show bot source code link 🔌\n"
         f"/donate — Support bot development ❤️\n"
@@ -3544,7 +3573,7 @@ def on_new_message(bot, accid, event):
                 database.set_config(greeted_key, "1")
 
             # 2. Automatically parse URLs sent in private chat (if not starting with a slash command)
-            if not text.startswith("/"):
+            if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
                     url = _strip_url_trailing_junk(url_match.group(1))
@@ -3566,7 +3595,7 @@ def on_new_message(bot, accid, event):
                     t.start()
         else:
             # Automatic preview of links in group chats
-            if not text.startswith("/"):
+            if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
                     url = _strip_url_trailing_junk(url_match.group(1))

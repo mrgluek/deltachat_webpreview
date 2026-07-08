@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.23] - 2026-07-08
+
+### Added
+- **Chat-Specific Toggle (`/webpreview`)**: Added the `/webpreview` command to allow users to disable/enable automatic link previews on a per-chat basis (in private or group chats). By default, previews remain enabled. Supports parameters `off`/`0`/`false` to disable and `on`/`1`/`true` to enable.
+- **Unit Tests**: Added `tests/test_webpreview.py` containing 3 unit tests verifying database state persistence, command parsing, and `on_new_message` behavior when disabled.
+
 ## [2.3.22] - 2026-07-08
 
 ### Added

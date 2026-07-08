@@ -24,6 +24,8 @@ services:
       - JINA_PROXY_URL=${JINA_PROXY_URL:-}
       - PROXY_URL=${PROXY_URL:-}
       - PROXY_DOMAINS=${PROXY_DOMAINS:-}
+      - DELETE_DEVICE_AFTER=${DELETE_DEVICE_AFTER:-3600}
+      - DOWNLOAD_LIMIT=${DOWNLOAD_LIMIT:-1}
     deploy:
       resources:
         limits:

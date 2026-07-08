@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.3.22] - 2026-07-08
+
+### Added
+- **Storage and Bandwidth Optimization**: Configured Delta Chat's `download_limit` option to `"1"` (1 byte) by default on startup to disable automatic downloads of incoming attachments. Added `DOWNLOAD_LIMIT` environment variable.
+- **Auto-Cleanup Configuration**: Configured `delete_device_after` to `"3600"` (1 hour) by default on startup to automatically clean up old messages from the bot's local database. Added `DELETE_DEVICE_AFTER` environment variable.
+
 ## [2.3.21] - 2026-07-06
 
 ### Fixed

@@ -61,6 +61,8 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 | `KARAKEEP_URL` | The base URL of your KaraKeep instance (e.g., `https://keep.gluek.info`). | *(Empty)* |
 | `KARAKEEP_API_KEY` | The API Key for authenticating with your KaraKeep instance. | *(Empty)* |
 | `KARAKEEP_TAGS` | Optional comma-separated list of tags to automatically attach to saved bookmarks (e.g., `deltachat`). | *(Empty)* |
+| `DELETE_DEVICE_AFTER` | Local message retention duration (in seconds) in the bot database. | `3600` (1 hour) |
+| `DOWNLOAD_LIMIT` | Automatic download limit for incoming message attachments (in bytes). | `1` (1 byte) |
 
 ## Commands
 

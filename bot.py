@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import contextlib
+import urllib
 import urllib.request
 import urllib.parse
 import hashlib
@@ -915,7 +916,7 @@ def compress_monolith_html(filepath: str):
         
         for img in soup.find_all('img'):
             img_src = img.get('src', '')
-            if img_src.startswith('data:image/'):
+            if img_src and isinstance(img_src, str) and img_src.startswith('data:image/'):
                 try:
                     # Extract mime type and base64 string
                     if ',' in img_src:
@@ -1205,7 +1206,7 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024:.0f} KB"
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
-async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int, str]:
+async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int | None, str]:
     """Execute monolith process with timeout."""
     env = os.environ.copy()
     if url:
@@ -1230,20 +1231,29 @@ async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int,
             env["HTTP_PROXY"] = PROXY_URL
             env["HTTPS_PROXY"] = PROXY_URL
             logger.info(f"Routing monolith subprocess for {url} through proxy: {PROXY_URL}")
+    proc: asyncio.subprocess.Process | None = None
+    returncode: int = -99  # Default return code for exception
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=35)
-        return proc.returncode, stderr.decode(errors='replace').strip()
+        returncode = proc.returncode if proc is not None else 0
+        return returncode, stderr.decode(errors='replace').strip()
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-            await proc.wait()
-        except: pass
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except: pass
         return -1, "Operation timed out (35 second limit exceeded)"
     except Exception as e:
-        return -99, str(e)
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except: pass
+        return returncode, str(e)
 
 def is_likely_meta(line: str) -> bool:
     line = line.strip()
@@ -1603,9 +1613,17 @@ def _fetch_telegram_og_data(url: str) -> tuple[str | None, str | None, str | Non
         # Find the specific message wrapper
         msg_div = None
         for div in soup.find_all(class_="tgme_widget_message"):
-            if div.get("data-post", "").lower() == post_attr:
-                msg_div = div
-                break
+            data_post = div.get("data-post")
+            if data_post is not None:
+                if isinstance(data_post, str):
+                    if data_post.lower() == post_attr:
+                        msg_div = div
+                        break
+                else:
+                    # data-post is an AttributeValueList
+                    if div.get("data-post") is not None:
+                        msg_div = div
+                        break
 
         if not msg_div:
             logger.warning(f"Could not find message div for data-post: {post_attr} on page {preview_url}")
@@ -2628,24 +2646,77 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
 
 
 def _save_to_web_archive(url: str) -> tuple[bool, str]:
-    """Save a URL to Web Archive (Wayback Machine). Returns (success, archived_url_or_error)."""
+    """
+    Save a URL to Web Archive (Wayback Machine).
+    Uses STANDARD_USER_AGENT first, then falls back to NON_MOZILLA_USER_AGENT if blocked.
+    Routes through proxy if needed, and uses a 60-second timeout to handle slow responses.
+    Returns (success, archived_url_or_error).
+    """
     save_url = f"https://web.archive.org/save/{url}"
+    
+    logger.info(f"Saving URL to Web Archive: {save_url}")
+    
+    # Try STANDARD_USER_AGENT first
+    user_agents = [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]
+    saved_with_ua = None
+    
+    for ua in user_agents:
+        try:
+            req = urllib.request.Request(
+                save_url,
+                headers={
+                    'User-Agent': ua
+                }
+            )
+            
+            # Route through proxy if needed (same logic as _check_url_headers)
+            if _should_use_proxy(save_url):
+                logger.info(f"Routing Web Archive save request for {url} through proxy: {PROXY_URL}")
+                proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
+                opener = urllib.request.build_opener(proxy_handler)
+            else:
+                opener = urllib.request
+            
+            with opener.open(req, timeout=60) as response:
+                logger.info(f"Web Archive save succeeded with User-Agent: {ua}")
+                redirected_url = response.geturl()
+                
+                # If the response redirected to standard web.archive.org snapshot, we return it
+                if "/web/" in redirected_url or "archive.org" in redirected_url:
+                    return True, redirected_url
+                
+                saved_with_ua = ua
+                break  # Success, exit the loop
+        
+        except urllib.error.HTTPError as e:
+            logger.warning(f"Web Archive HTTP error {e.code} for UA '{ua}': {e.reason}. Retrying with next UA...")
+        except Exception as e:
+            logger.warning(f"Web Archive save failed with UA '{ua}': {e}. Retrying with next UA...")
+    
+    # Check if we successfully saved with either User-Agent
+    if saved_with_ua is None:
+        logger.error(f"Failed to save {url} to Web Archive after trying all User-Agents.")
+        return False, "Read operation timed out or failed"
+    
+    # Check for Anubis block (same as _is_anubis_blocked)
     try:
-        req = urllib.request.Request(
-            save_url,
-            headers={
-                'User-Agent': STANDARD_USER_AGENT
-            }
-        )
-        with _urlopen(req, timeout=20) as response:
-            redirected_url = response.geturl()
-            # If the response redirected to standard web.archive.org snapshot, we return it
-            if "/web/" in redirected_url or "archive.org" in redirected_url:
-                return True, redirected_url
-            return True, redirected_url
+        if not os.path.exists(save_url):
+            return False, "Read operation timed out or failed"
+        with open(save_url, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read(128 * 1024)  # Read first 128KB
+            signatures = [
+                "Protected by Anubis",
+                "Testing to determine if you are a bot!",
+                "anubis.techaro.lol"
+            ]
+            if any(sig in content for sig in signatures):
+                logger.warning(f"Web Archive blocked with Anubis protection for {url}.")
+                return False, "Read operation timed out or failed"
     except Exception as e:
-        logger.error(f"Failed to save {url} to Web Archive: {e}")
-        return False, str(e)
+        logger.error(f"Error checking Anubis status: {e}")
+        return False, "Read operation timed out or failed"
+    
+    return True, save_url
 
 
 def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):

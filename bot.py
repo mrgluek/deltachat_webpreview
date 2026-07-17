@@ -2648,8 +2648,8 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
 def _save_to_web_archive(url: str) -> tuple[bool, str]:
     """
     Save a URL to Web Archive (Wayback Machine).
-    Uses STANDARD_USER_AGENT first, then falls back to NON_MOZILLA_USER_AGENT if blocked.
-    Routes through proxy if needed, and uses a 60-second timeout to handle slow responses.
+    Uses STANDARD_USER_AGENT first. If blocked by Anubis protection, retries with
+    NON_MOZILLA_USER_AGENT. Routes through proxy if needed.
     Returns (success, archived_url_or_error).
     """
     save_url = f"https://web.archive.org/save/{url}"
@@ -2657,66 +2657,56 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
     logger.info(f"Saving URL to Web Archive: {save_url}")
     
     # Try STANDARD_USER_AGENT first
-    user_agents = [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]
-    saved_with_ua = None
-    
-    for ua in user_agents:
-        try:
-            req = urllib.request.Request(
-                save_url,
-                headers={
-                    'User-Agent': ua
-                }
-            )
-            
-            # Route through proxy if needed (same logic as _check_url_headers)
-            if _should_use_proxy(save_url):
-                logger.info(f"Routing Web Archive save request for {url} through proxy: {PROXY_URL}")
-                proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
-                opener = urllib.request.build_opener(proxy_handler)
-            else:
-                opener = urllib.request
-            
-            with opener.open(req, timeout=60) as response:
-                logger.info(f"Web Archive save succeeded with User-Agent: {ua}")
-                redirected_url = response.geturl()
-                
-                # If the response redirected to standard web.archive.org snapshot, we return it
-                if "/web/" in redirected_url or "archive.org" in redirected_url:
-                    return True, redirected_url
-                
-                saved_with_ua = ua
-                break  # Success, exit the loop
-        
-        except urllib.error.HTTPError as e:
-            logger.warning(f"Web Archive HTTP error {e.code} for UA '{ua}': {e.reason}. Retrying with next UA...")
-        except Exception as e:
-            logger.warning(f"Web Archive save failed with UA '{ua}': {e}. Retrying with next UA...")
-    
-    # Check if we successfully saved with either User-Agent
-    if saved_with_ua is None:
-        logger.error(f"Failed to save {url} to Web Archive after trying all User-Agents.")
-        return False, "Read operation timed out or failed"
-    
-    # Check for Anubis block (same as _is_anubis_blocked)
     try:
-        if not os.path.exists(save_url):
-            return False, "Read operation timed out or failed"
-        with open(save_url, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read(128 * 1024)  # Read first 128KB
-            signatures = [
-                "Protected by Anubis",
-                "Testing to determine if you are a bot!",
-                "anubis.techaro.lol"
-            ]
-            if any(sig in content for sig in signatures):
-                logger.warning(f"Web Archive blocked with Anubis protection for {url}.")
+        req = urllib.request.Request(
+            save_url,
+            headers={
+                'User-Agent': STANDARD_USER_AGENT
+            }
+        )
+        
+        # Route through proxy if needed (same logic as _check_url_headers)
+        if _should_use_proxy(save_url):
+            logger.info(f"Routing Web Archive save request for {url} through proxy: {PROXY_URL}")
+            proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
+            opener = urllib.request.build_opener(proxy_handler)
+        else:
+            opener = urllib.request
+        
+        with opener.open(req, timeout=60) as response:
+            logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
+            redirected_url = response.geturl()
+            
+            # If the response redirected to standard web.archive.org snapshot, we return it
+            if "/web/" in redirected_url or "archive.org" in redirected_url:
+                return True, redirected_url
+            
+            # Check for Anubis block (same as _is_anubis_blocked)
+            try:
+                if not os.path.exists(save_url):
+                    return False, "Read operation timed out or failed"
+                with open(save_url, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read(128 * 1024)  # Read first 128KB
+                    signatures = [
+                        "Protected by Anubis",
+                        "Testing to determine if you are a bot!",
+                        "anubis.techaro.lol"
+                    ]
+                    if any(sig in content for sig in signatures):
+                        logger.warning(f"Web Archive blocked with Anubis protection for {url}.")
+                        return False, "Read operation timed out or failed"
+            except Exception as e:
+                logger.error(f"Error checking Anubis status: {e}")
                 return False, "Read operation timed out or failed"
+            
+            return True, save_url
+    except urllib.error.HTTPError as e:
+        logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}. Retrying with NON_MOZILLA_USER_AGENT...")
+        # Return HTTP error immediately, don't retry
+        return False, f"HTTP {e.code}: {e.reason}"
     except Exception as e:
-        logger.error(f"Error checking Anubis status: {e}")
+        logger.error(f"Web Archive save with STANDARD_USER_AGENT failed: {e}")
         return False, "Read operation timed out or failed"
-    
-    return True, save_url
 
 
 def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):

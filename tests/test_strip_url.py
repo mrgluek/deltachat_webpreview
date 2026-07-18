@@ -78,5 +78,44 @@ class TestStripUrlTrailingJunk(unittest.TestCase):
         self._check("https://yandex.ru/news", "https://yandex.ru/news")
 
 
+class TestCleanUrlParams(unittest.TestCase):
+    """Tests for _clean_url_params helper."""
+
+    def test_removes_ysclid(self):
+        url = "https://habr.com/ru/articles/1027276/?ysclid=mrosrkhq307474457481"
+        result = bot._clean_url_params(url)
+        self.assertEqual(result, "https://habr.com/ru/articles/1027276/")
+
+    def test_removes_utm_parameters(self):
+        url = "https://example.com/page?utm_source=telegram&utm_medium=social&other=value"
+        result = bot._clean_url_params(url)
+        self.assertEqual(result, "https://example.com/page?other=value")
+
+    def test_removes_fbclid(self):
+        url = "https://example.com/page?fbclid=IwAR1234567890"
+        result = bot._clean_url_params(url)
+        self.assertEqual(result, "https://example.com/page")
+
+    def test_removes_gclid(self):
+        url = "https://example.com/page?gclid=CjwKCAiA123456789"
+        result = bot._clean_url_params(url)
+        self.assertEqual(result, "https://example.com/page")
+
+    def test_preserves_legitimate_query_params(self):
+        url = "https://example.com/search?q=python&sort=date"
+        result = bot._clean_url_params(url)
+        self.assertEqual(result, "https://example.com/search?q=python&sort=date")
+
+    def test_clean_url_without_query(self):
+        url = "https://habr.com/ru/articles/1027276/"
+        result = bot._clean_url_params(url)
+        self.assertEqual(result, "https://habr.com/ru/articles/1027276/")
+
+    def test_removes_multiple_tracking_params(self):
+        url = "https://example.com/page?ysclid=abc123&utm_source=tg&fbclid=xyz789&other=value"
+        result = bot._clean_url_params(url)
+        self.assertEqual(result, "https://example.com/page?other=value")
+
+
 if __name__ == "__main__":
     unittest.main()

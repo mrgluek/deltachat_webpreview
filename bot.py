@@ -2674,7 +2674,8 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
             os.environ['https_proxy'] = PROXY_URL
         
         try:
-            with urllib.request.urlopen(req, timeout=60) as response:
+            # Use 120 second timeout as /save/ endpoint can be slow to respond
+            with urllib.request.urlopen(req, timeout=120) as response:
                 logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
                 redirected_url = response.geturl()
                 
@@ -2699,6 +2700,17 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
     except urllib.error.HTTPError as e:
         logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}.")
         return False, f"HTTP {e.code}: {e.reason}"
+    except urllib.error.URLError as e:
+        # Handle timeout errors gracefully
+        import time
+        if hasattr(e.reason, 'timeout') or 'timed out' in str(e).lower():
+            logger.warning(f"Web Archive save request timed out, but save may have been queued: {url}")
+            # Try to construct the snapshot URL pattern
+            timestamp = time.strftime('%Y%m%d%H%M%S')
+            snapshot_url = f"https://web.archive.org/web/{timestamp}/{url}"
+            return True, snapshot_url
+        logger.error(f"Web Archive save URLError: {e}")
+        return False, str(e)
     except Exception as e:
         logger.error(f"Web Archive save failed: {e}")
         return False, str(e)

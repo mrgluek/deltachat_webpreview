@@ -101,6 +101,61 @@ def _strip_url_trailing_junk(url: str) -> str:
     return url
 
 
+def _clean_url_params(url: str) -> str:
+    """
+    Remove ad and metric parameters from URL query string.
+    Removes parameters like: ysclid=, utm_*, fbclid=, gclid=, gclsrc=, dclid=, srsltid=, etc.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.query:
+            return url
+        
+        # Parse query parameters
+        query_params = urllib.parse.parse_qs(parsed.query)
+        
+        # Parameters to remove
+        params_to_remove = []
+        for param in query_params.keys():
+            param_lower = param.lower()
+            # Remove utm_* parameters
+            if param_lower.startswith('utm_'):
+                params_to_remove.append(param)
+            # Remove yandex metrica
+            elif param_lower in ('ysclid', 'ym_retargeting', 'yz_referer'):
+                params_to_remove.append(param)
+            # Remove Facebook click ID
+            elif param_lower in ('fbclid', 'fbc'):
+                params_to_remove.append(param)
+            # Remove Google ads IDs
+            elif param_lower in ('gclid', 'gclsrc', 'dclid', 'gbraid', 'wbraid'):
+                params_to_remove.append(param)
+            # Remove Shopify referral
+            elif param_lower == 'srsltid':
+                params_to_remove.append(param)
+            # Remove referral/referrer parameters
+            elif param_lower in ('referral', 'referrer', 'source', 'src'):
+                # Only remove if value looks like a tracking ID (not a legitimate source name)
+                values = query_params[param]
+                if any(v and ('click' in v.lower() or 'track' in v.lower() or 
+                             'campaign' in v.lower() or len(v) > 20 for v in values if isinstance(v, str))):
+                    params_to_remove.append(param)
+            # Remove other common tracking patterns
+            elif any(pattern in param_lower for pattern in ['track', 'click', 'campaign', 'medium', 'term']):
+                params_to_remove.append(param)
+        
+        # Rebuild query string without removed parameters
+        remaining_params = {k: v for k, v in query_params.items() if k not in params_to_remove}
+        new_query = urllib.parse.urlencode(remaining_params, doseq=True)
+        
+        # Reconstruct URL
+        new_parsed = parsed._replace(query=new_query if new_query else '')
+        return urllib.parse.urlunparse(new_parsed)
+    except Exception:
+        # Fallback to original URL if parsing fails
+        return url
+
+
 def _should_use_proxy(url: str) -> bool:
     """Return True if the URL should be routed through the proxy."""
     if not PROXY_URL:
@@ -2551,7 +2606,7 @@ def _handle_preview_command(bot, accid, event, mode: str):
     if payload:
         url_match = re.search(r'(https?://[^\s<>"]+)', payload)
         if url_match:
-            url = _strip_url_trailing_junk(url_match.group(1))
+            url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
             
     # 2. Check if this is a quote reply and no explicit payload is given
     else:
@@ -2566,7 +2621,7 @@ def _handle_preview_command(bot, accid, event, mode: str):
             if quoted_text:
                 url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
                 if url_match:
-                    url = _strip_url_trailing_junk(url_match.group(1))
+                    url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
 
     # If no URL resolved
     if not url:
@@ -2762,7 +2817,7 @@ def _handle_keep_command(bot, accid, event):
     if payload:
         url_match = re.search(r'(https?://[^\s<>"]+)', payload)
         if url_match:
-            url = _strip_url_trailing_junk(url_match.group(1))
+            url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
     else:
         quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
         if quote:
@@ -2774,7 +2829,7 @@ def _handle_keep_command(bot, accid, event):
             if quoted_text:
                 url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
                 if url_match:
-                    url = _strip_url_trailing_junk(url_match.group(1))
+                    url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
 
     if not url:
         is_admin = _is_dc_admin(bot, accid, msg.from_id)
@@ -2946,7 +3001,7 @@ def download_command(bot, accid, event):
     if payload:
         url_match = re.search(r'(https?://[^\s<>"]+)', payload)
         if url_match:
-            url = _strip_url_trailing_junk(url_match.group(1))
+            url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
     else:
         quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
         if quote:
@@ -2958,7 +3013,7 @@ def download_command(bot, accid, event):
             if quoted_text:
                 url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
                 if url_match:
-                    url = _strip_url_trailing_junk(url_match.group(1))
+                    url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
 
     if not url:
         _send(bot, accid, msg.chat_id, 

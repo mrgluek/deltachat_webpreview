@@ -114,6 +114,9 @@ def _clean_url_params(url: str) -> str:
         # Parse query parameters
         query_params = urllib.parse.parse_qs(parsed.query)
         
+        # Parse query parameters
+        query_params = urllib.parse.parse_qs(parsed.query)
+        
         # Parameters to remove
         params_to_remove = []
         for param in query_params.keys():
@@ -3699,7 +3702,7 @@ def on_new_message(bot, accid, event):
             if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
-                    url = _strip_url_trailing_junk(url_match.group(1))
+                    url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
                     
                     if _is_internal_or_invalid_url(url):
                         return
@@ -3721,7 +3724,7 @@ def on_new_message(bot, accid, event):
             if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
-                    url = _strip_url_trailing_junk(url_match.group(1))
+                    url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
                     
                     if _is_internal_or_invalid_url(url):
                         return

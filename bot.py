@@ -2648,15 +2648,13 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
 def _save_to_web_archive(url: str) -> tuple[bool, str]:
     """
     Save a URL to Web Archive (Wayback Machine).
-    Uses STANDARD_USER_AGENT first. If blocked by Anubis protection, retries with
-    NON_MOZILLA_USER_AGENT. Routes through proxy if needed.
+    Routes through proxy if needed.
     Returns (success, archived_url_or_error).
     """
     save_url = f"https://web.archive.org/save/{url}"
     
     logger.info(f"Saving URL to Web Archive: {save_url}")
     
-    # Try STANDARD_USER_AGENT first
     try:
         req = urllib.request.Request(
             save_url,
@@ -2668,45 +2666,42 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
         # Route through proxy if needed (same logic as _check_url_headers)
         if _should_use_proxy(save_url):
             logger.info(f"Routing Web Archive save request for {url} through proxy: {PROXY_URL}")
-            proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
-            opener = urllib.request.build_opener(proxy_handler)
-        else:
-            opener = urllib.request
+            # Set proxy environment variables for urlopen
+            import os
+            original_http_proxy = os.environ.get('http_proxy')
+            original_https_proxy = os.environ.get('https_proxy')
+            os.environ['http_proxy'] = PROXY_URL
+            os.environ['https_proxy'] = PROXY_URL
         
-        with opener.open(req, timeout=60) as response:
-            logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
-            redirected_url = response.geturl()
-            
-            # If the response redirected to standard web.archive.org snapshot, we return it
-            if "/web/" in redirected_url or "archive.org" in redirected_url:
-                return True, redirected_url
-            
-            # Check for Anubis block (same as _is_anubis_blocked)
-            try:
-                if not os.path.exists(save_url):
-                    return False, "Read operation timed out or failed"
-                with open(save_url, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read(128 * 1024)  # Read first 128KB
-                    signatures = [
-                        "Protected by Anubis",
-                        "Testing to determine if you are a bot!",
-                        "anubis.techaro.lol"
-                    ]
-                    if any(sig in content for sig in signatures):
-                        logger.warning(f"Web Archive blocked with Anubis protection for {url}.")
-                        return False, "Read operation timed out or failed"
-            except Exception as e:
-                logger.error(f"Error checking Anubis status: {e}")
-                return False, "Read operation timed out or failed"
-            
-            return True, save_url
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
+                redirected_url = response.geturl()
+                
+                # The /save/ endpoint returns a redirect to the snapshot URL
+                if "/web/" in redirected_url or "archive.org" in redirected_url:
+                    return True, redirected_url
+                
+                # Fallback: return the save_url if no redirect to /web/ was received
+                return True, save_url
+        finally:
+            # Restore proxy environment variables if we changed them
+            if _should_use_proxy(save_url):
+                import os
+                if original_http_proxy is not None:
+                    os.environ['http_proxy'] = original_http_proxy
+                elif 'http_proxy' in os.environ:
+                    del os.environ['http_proxy']
+                if original_https_proxy is not None:
+                    os.environ['https_proxy'] = original_https_proxy
+                elif 'https_proxy' in os.environ:
+                    del os.environ['https_proxy']
     except urllib.error.HTTPError as e:
-        logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}. Retrying with NON_MOZILLA_USER_AGENT...")
-        # Return HTTP error immediately, don't retry
+        logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}.")
         return False, f"HTTP {e.code}: {e.reason}"
     except Exception as e:
-        logger.error(f"Web Archive save with STANDARD_USER_AGENT failed: {e}")
-        return False, "Read operation timed out or failed"
+        logger.error(f"Web Archive save failed: {e}")
+        return False, str(e)
 
 
 def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):

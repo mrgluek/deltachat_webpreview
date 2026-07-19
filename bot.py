@@ -287,6 +287,158 @@ def _get_url_file_info_by_ext(url: str) -> tuple[bool, str, str]:
         logger.warning(f"Error parsing URL path for extension: {e}")
     return False, "", ""
 
+# Image extensions to auto-download and convert
+IMAGE_EXTENSIONS = {
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'
+}
+
+IMAGE_CONTENT_TYPES = {
+    'image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/svg+xml'
+}
+
+def _is_image_url(url: str) -> bool:
+    """
+    Check if the URL points to an image file.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path = urllib.parse.unquote(parsed.path).lower()
+        
+        # Check by extension
+        if '.' in path:
+            ext = path.rsplit('.', 1)[-1]
+            if ext in IMAGE_EXTENSIONS:
+                return True
+        
+        # Check by content-type pattern (will be verified via headers)
+        if 'image/' in path or '.jpg' in path or '.jpeg' in path or '.png' in path or '.gif' in path or '.bmp' in path:
+            return True
+    except Exception:
+        pass
+    return False
+
+def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str]:
+    """
+    Download an image from URL, check size (max 10MB), compress to WebP with max 800px on longer side.
+    Returns (success, cached_filepath_or_error, compress_info_string).
+    """
+    max_size = 10 * 1024 * 1024  # 10 MB
+    
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': STANDARD_USER_AGENT})
+        with _urlopen(req, timeout=10) as response:
+            content_type = response.headers.get('Content-Type', '')
+            
+            # Check if it's an image
+            is_image = any(ct in content_type.lower() for ct in IMAGE_CONTENT_TYPES)
+            if not is_image:
+                # Try to detect from URL extension
+                parsed = urllib.parse.urlparse(url)
+                path = urllib.parse.unquote(parsed.path).lower()
+                if not any(path.endswith(f'.{ext}') for ext in IMAGE_EXTENSIONS):
+                    return False, "Not an image", ""
+            
+            # Check Content-Length
+            cl_str = response.headers.get('Content-Length')
+            if cl_str:
+                try:
+                    size = int(cl_str)
+                    if size > max_size:
+                        return False, f"Image size exceeds 10 MB limit ({_format_size(size)})", ""
+                except ValueError:
+                    pass
+            
+            # Download image bytes
+            img_bytes = response.read()
+            if len(img_bytes) > max_size:
+                return False, f"Image size exceeds 10 MB limit ({_format_size(len(img_bytes))})", ""
+            
+        # Compress and convert to WebP
+        try:
+            import io
+            from PIL import Image
+            
+            img = Image.open(io.BytesIO(img_bytes))
+            orig_width, orig_height = img.size
+            orig_size_str = _format_size(len(img_bytes))
+            
+            compress_info = f"Original: {orig_width}x{orig_height} ({orig_size_str})"
+            
+            # Resize if needed (max 800px on longer side)
+            new_width, new_height = orig_width, orig_height
+            if orig_width > 800 or orig_height > 800:
+                if orig_width > orig_height:
+                    new_width = 800
+                    new_height = int(orig_height * (800 / orig_width))
+                else:
+                    new_height = 800
+                    new_width = int(orig_width * (800 / orig_height))
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                compress_info += f" -> {new_width}x{new_height}"
+            
+            # Convert to RGB/RGBA for WebP
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
+            
+            # Save as WebP
+            import tempfile
+            tmpdir = tempfile.mkdtemp(prefix="image_webp_")
+            cached_path = os.path.join(tmpdir, "compressed.webp")
+            img.save(cached_path, format="WEBP", quality=80)
+            
+            comp_size_str = _format_size(os.path.getsize(cached_path))
+            compress_info += f" (Original: {orig_size_str} -> Compressed WebP: {comp_size_str})"
+            
+            return True, cached_path, compress_info
+        except Exception as pillow_err:
+            logger.warning(f"Pillow image compression failed: {pillow_err}. Falling back to original.")
+            # Fallback: save original as is
+            import tempfile
+            tmpdir = tempfile.mkdtemp(prefix="image_orig_")
+            
+            # Determine extension
+            ext = ".jpg"
+            if "png" in content_type.lower() or url.lower().endswith(".png"):
+                ext = ".png"
+            elif "gif" in content_type.lower() or url.lower().endswith(".gif"):
+                ext = ".gif"
+            elif "webp" in content_type.lower() or url.lower().endswith(".webp"):
+                ext = ".webp"
+            elif "bmp" in content_type.lower() or url.lower().endswith(".bmp"):
+                ext = ".bmp"
+            
+            cached_path = os.path.join(tmpdir, f"image{ext}")
+            with open(cached_path, "wb") as f:
+                f.write(img_bytes)
+            
+            orig_size_str = _format_size(len(img_bytes))
+            return True, cached_path, f"Original: saved as-is ({orig_size_str})"
+            
+    except Exception as e:
+        logger.error(f"Failed to download/compress image {url}: {e}")
+        return False, str(e), ""
+
+
+def _send_image_to_chat(bot, accid, chat_id: int, image_path: str, compress_info: str = ""):
+    """
+    Send an image file to chat as attachment.
+    """
+    try:
+        if not os.path.exists(image_path):
+            logger.error(f"Image file not found: {image_path}")
+            return
+        
+        # Send as file/attachment with info
+        msg = "🖼️ Image preview:"
+        if compress_info:
+            msg += f" {compress_info}"
+        
+        _send(bot, accid, chat_id, msg, file=image_path)
+        
+    except Exception as e:
+        logger.error(f"Failed to send image to chat: {e}")
+
+
 def _is_safe_file(filename: str, content_type: str) -> bool:
     """
     Checks if the filename or Content-Type is a safe file.
@@ -3702,7 +3854,8 @@ def on_new_message(bot, accid, event):
             if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
-                    url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
+                    raw_url = _strip_url_trailing_junk(url_match.group(1))
+                    url = _clean_url_params(raw_url)
                     
                     if _is_internal_or_invalid_url(url):
                         return
@@ -3710,6 +3863,21 @@ def on_new_message(bot, accid, event):
                     # Rate limiting check
                     if _is_rate_limited(bot, accid, msg.from_id):
                         _react(bot, accid, msg.id, "⏱")
+                        return
+
+                    # Check if it's a direct image link and process it
+                    if _is_image_url(url):
+                        logger.info(f"Detected direct image URL in private chat: {url}")
+                        success, result_path, compress_info = _download_and_compress_image(url, msg.chat_id)
+                        if success:
+                            t = threading.Thread(
+                                target=_send_image_to_chat,
+                                args=(bot, accid, msg.chat_id, result_path, compress_info),
+                                daemon=True
+                            )
+                            t.start()
+                        else:
+                            logger.warning(f"Failed to download/compress image {url}: {result_path}")
                         return
 
                     # Run readability in background thread by default
@@ -3724,9 +3892,25 @@ def on_new_message(bot, accid, event):
             if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
                 url_match = re.search(r'(https?://[^\s<>"]+)', text)
                 if url_match:
-                    url = _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
+                    raw_url = _strip_url_trailing_junk(url_match.group(1))
+                    url = _clean_url_params(raw_url)
                     
                     if _is_internal_or_invalid_url(url):
+                        return
+
+                    # Check if it's a direct image link and process it
+                    if _is_image_url(url):
+                        logger.info(f"Detected direct image URL in group chat: {url}")
+                        success, result_path, compress_info = _download_and_compress_image(url, msg.chat_id)
+                        if success:
+                            t = threading.Thread(
+                                target=_send_image_to_chat,
+                                args=(bot, accid, msg.chat_id, result_path, compress_info),
+                                daemon=True
+                            )
+                            t.start()
+                        else:
+                            logger.warning(f"Failed to download/compress image {url}: {result_path}")
                         return
 
                     # Skip if the URL is in the exclusions

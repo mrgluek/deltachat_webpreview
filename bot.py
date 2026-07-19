@@ -324,6 +324,12 @@ def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str
     """
     max_size = 10 * 1024 * 1024  # 10 MB
     
+    # Initialize fallback variables
+    orig_width, orig_height = 0, 0
+    orig_size_str = "0 B"
+    filename = "image"
+    ext_format = "JPG"
+    
     try:
         req = urllib.request.Request(url, headers={'User-Agent': STANDARD_USER_AGENT})
         with _urlopen(req, timeout=10) as response:
@@ -362,7 +368,31 @@ def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str
             orig_width, orig_height = img.size
             orig_size_str = _format_size(len(img_bytes))
             
-            compress_info = f"Original: {orig_width}x{orig_height} ({orig_size_str})"
+            # Determine original format
+            content_type_lower = ''
+            try:
+                if 'Content-Type' in response.headers:
+                    content_type_lower = response.headers['Content-Type'].lower()
+                elif 'content-type' in response.headers:
+                    content_type_lower = response.headers['content-type'].lower()
+            except Exception:
+                pass
+            
+            if 'png' in content_type_lower or url.lower().endswith('.png'):
+                ext_format = 'PNG'
+            elif 'gif' in content_type_lower or url.lower().endswith('.gif'):
+                ext_format = 'GIF'
+            elif 'webp' in content_type_lower or url.lower().endswith('.webp'):
+                ext_format = 'WEBP'
+            elif 'bmp' in content_type_lower or url.lower().endswith('.bmp'):
+                ext_format = 'BMP'
+            else:
+                ext_format = 'JPG'
+            
+            # Get filename from URL
+            parsed = urllib.parse.urlparse(url)
+            path = urllib.parse.unquote(parsed.path)
+            filename = os.path.basename(path) or 'image'
             
             # Resize if needed (max 800px on longer side)
             new_width, new_height = orig_width, orig_height
@@ -374,7 +404,6 @@ def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str
                     new_height = 800
                     new_width = int(orig_width * (800 / orig_height))
                 img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                compress_info += f" -> {new_width}x{new_height}"
             
             # Convert to RGB/RGBA for WebP
             if img.mode not in ("RGB", "RGBA"):
@@ -387,7 +416,9 @@ def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str
             img.save(cached_path, format="WEBP", quality=80)
             
             comp_size_str = _format_size(os.path.getsize(cached_path))
-            compress_info += f" (Original: {orig_size_str} -> Compressed WebP: {comp_size_str})"
+            
+            # Build compress info: "file.jpg preview: 952x635 (JPG, 133 KB) -> 800x533 (WebP, 56 KB)"
+            compress_info = f"{filename} preview: {orig_width}x{orig_height} ({ext_format}, {orig_size_str}) -> {new_width}x{new_height} (WebP, {comp_size_str})"
             
             return True, cached_path, compress_info
         except Exception as pillow_err:
@@ -396,30 +427,18 @@ def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str
             import tempfile
             tmpdir = tempfile.mkdtemp(prefix="image_orig_")
             
-            # Determine extension
-            ext = ".jpg"
-            if "png" in content_type.lower() or url.lower().endswith(".png"):
-                ext = ".png"
-            elif "gif" in content_type.lower() or url.lower().endswith(".gif"):
-                ext = ".gif"
-            elif "webp" in content_type.lower() or url.lower().endswith(".webp"):
-                ext = ".webp"
-            elif "bmp" in content_type.lower() or url.lower().endswith(".bmp"):
-                ext = ".bmp"
-            
-            cached_path = os.path.join(tmpdir, f"image{ext}")
+            cached_path = os.path.join(tmpdir, f"image.{ext_format.lower()}")
             with open(cached_path, "wb") as f:
                 f.write(img_bytes)
             
-            orig_size_str = _format_size(len(img_bytes))
-            return True, cached_path, f"Original: saved as-is ({orig_size_str})"
+            return True, cached_path, f"{filename} preview: {orig_width}x{orig_height} ({ext_format}, {orig_size_str}) -> saved as-is"
             
     except Exception as e:
         logger.error(f"Failed to download/compress image {url}: {e}")
         return False, str(e), ""
 
 
-def _send_image_to_chat(bot, accid, chat_id: int, image_path: str, compress_info: str = ""):
+def _send_image_to_chat(bot, accid, chat_id: int, image_path: str, compress_info: str = "", original_url: str = ""):
     """
     Send an image file to chat as attachment.
     """
@@ -429,9 +448,12 @@ def _send_image_to_chat(bot, accid, chat_id: int, image_path: str, compress_info
             return
         
         # Send as file/attachment with info
-        msg = "🖼️ Image preview:"
+        msg = ""
         if compress_info:
-            msg += f" {compress_info}"
+            msg += f"🖼️ {compress_info}"
+        
+        if original_url:
+            msg += f"\n\n🔗 {original_url}"
         
         _send(bot, accid, chat_id, msg, file=image_path)
         
@@ -3872,7 +3894,7 @@ def on_new_message(bot, accid, event):
                         if success:
                             t = threading.Thread(
                                 target=_send_image_to_chat,
-                                args=(bot, accid, msg.chat_id, result_path, compress_info),
+                                args=(bot, accid, msg.chat_id, result_path, compress_info, url),
                                 daemon=True
                             )
                             t.start()
@@ -3905,7 +3927,7 @@ def on_new_message(bot, accid, event):
                         if success:
                             t = threading.Thread(
                                 target=_send_image_to_chat,
-                                args=(bot, accid, msg.chat_id, result_path, compress_info),
+                                args=(bot, accid, msg.chat_id, result_path, compress_info, url),
                                 daemon=True
                             )
                             t.start()

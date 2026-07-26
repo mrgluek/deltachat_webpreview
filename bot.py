@@ -232,6 +232,7 @@ def _save_jina_preview_to_cache(url: str, urlhash: str, title: str, jina_markdow
         soup = BeautifulSoup(summary, BS_PARSER)
         
         _inline_soup_images(soup, url)
+        _process_soup_links(soup)
 
         downloaded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M GMT")
         domain = urllib.parse.urlparse(url).netloc or "webpage"
@@ -807,6 +808,15 @@ def _inline_soup_images(soup, url: str):
         else:
             img.decompose()
 
+def _process_soup_links(soup):
+    """
+    Finds all a tags in soup and sets target='_blank' and rel='noopener noreferrer'
+    so external links open in system browser without triggering WebXDC CSP errors.
+    """
+    for a in soup.find_all('a', href=True):
+        a['target'] = '_blank'
+        a['rel'] = 'noopener noreferrer'
+
 def _download_page_html(url: str) -> tuple[str | None, str | None]:
     """
     Downloads page HTML using standard and fallback User-Agents.
@@ -981,7 +991,7 @@ READABILITY_HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
         <hr style="border: none; border-top: 1px solid var(--border-color); margin-top: 30px; margin-bottom: 20px;">
         <footer style="font-size: 0.85rem; color: var(--muted-color); text-align: center;">
-            Page downloaded at {downloaded_at} by <a href="https://git.gluek.info/gluek/deltachat_webpreview" style="color: var(--link-color); text-decoration: none;">Delta Chat WebPreview Bot</a>.
+            Page downloaded at {downloaded_at} by <a href="https://git.gluek.info/gluek/deltachat_webpreview" target="_blank" rel="noopener noreferrer" style="color: var(--link-color); text-decoration: none;">Delta Chat WebPreview Bot</a>.
         </footer>
     </article>
 </body>
@@ -1107,6 +1117,7 @@ def _generate_readability_preview(url: str, output_path: str) -> tuple[bool, str
         soup = BeautifulSoup(summary, BS_PARSER)
         
         _inline_soup_images(soup, url)
+        _process_soup_links(soup)
                 
         # Format templates
         import datetime
@@ -2731,6 +2742,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
                 soup = BeautifulSoup(summary, BS_PARSER)
                 
                 _inline_soup_images(soup, url)
+                _process_soup_links(soup)
 
                 downloaded_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M GMT")
                 final_html = READABILITY_HTML_TEMPLATE.format(

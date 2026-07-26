@@ -92,5 +92,16 @@ class TestWebXDC(unittest.TestCase):
         self.assertEqual(args[6], "webxdc")
 
 
+    def test_process_soup_links(self):
+        from bs4 import BeautifulSoup
+        html = '<p>Check <a href="https://example.com/foo">link 1</a> and <a href="https://example.com/bar" target="_self">link 2</a></p>'
+        soup = BeautifulSoup(html, "html.parser")
+        bot._process_soup_links(soup)
+        
+        for a in soup.find_all("a"):
+            self.assertEqual(a.get("target"), "_blank")
+            self.assertEqual(a.get("rel"), "noopener noreferrer")
+
+
 if __name__ == "__main__":
     unittest.main()

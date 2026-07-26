@@ -1444,30 +1444,58 @@ def _clean_toml_string(val: str) -> str:
     val = val.replace("\r", " ").replace("\n", " ")
     return val.replace("\\", "\\\\").replace('"', '\\"')
 
-def _package_webxdc(html_filepath: str, xdc_filepath: str, title: str, source_url: str) -> bool:
-    """Packages html_filepath into a .xdc webxdc ZIP package with manifest.toml and icon."""
+def _make_square_icon(image_source_path: str | None, max_dim: int = 128) -> bytes | None:
+    """Helper to crop and resize an image file into a square PNG icon bytes buffer."""
+    if not image_source_path or not os.path.exists(image_source_path):
+        return None
+    try:
+        from PIL import Image
+        import io
+        with Image.open(image_source_path) as img:
+            img = img.convert("RGBA")
+            width, height = img.size
+            min_dim = min(width, height)
+            left = (width - min_dim) // 2
+            top = (height - min_dim) // 2
+            img = img.crop((left, top, left + min_dim, top + min_dim))
+            img = img.resize((max_dim, max_dim), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
+    except Exception as e:
+        logger.warning(f"Failed to generate square icon from {image_source_path}: {e}")
+        return None
+
+def _package_webxdc(html_filepath: str, xdc_filepath: str, title: str, source_url: str, og_image_path: str | None = None) -> bool:
+    """Packages html_filepath into a .xdc webxdc ZIP package with manifest.toml and optimized icon."""
     try:
         import zipfile
-        icon_path = None
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        for icon_candidate in ["icon.png", os.path.join("data", "icon.png"), os.path.join(base_dir, "icon.png")]:
-            if os.path.exists(icon_candidate):
-                icon_path = icon_candidate
-                break
+        icon_bytes = None
+        # 1. Try to generate square icon from OG preview image
+        if og_image_path:
+            icon_bytes = _make_square_icon(og_image_path, max_dim=128)
+
+        # 2. Fallback to default bot icon (resized to 128x128 to keep package small)
+        if not icon_bytes:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            for icon_candidate in ["icon.png", os.path.join("data", "icon.png"), os.path.join(base_dir, "icon.png")]:
+                if os.path.exists(icon_candidate):
+                    icon_bytes = _make_square_icon(icon_candidate, max_dim=128)
+                    break
 
         manifest_lines = [
             f'name = "{_clean_toml_string(title)}"',
             f'source_code_url = "{_clean_toml_string(source_url)}"',
         ]
-        if icon_path:
+        if icon_bytes:
             manifest_lines.append('icon = "icon.png"')
         manifest_content = "\n".join(manifest_lines) + "\n"
 
-        with zipfile.ZipFile(xdc_filepath, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(xdc_filepath, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
             zf.write(html_filepath, arcname="index.html")
             zf.writestr("manifest.toml", manifest_content)
-            if icon_path:
-                zf.write(icon_path, arcname="icon.png")
+            if icon_bytes:
+                zf.writestr("icon.png", icon_bytes)
         return True
     except Exception as e:
         logger.error(f"Failed to package WebXDC file: {e}")
@@ -2771,7 +2799,8 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             if not safe_fname.endswith(".xdc"):
                 safe_fname += ".xdc"
             cache_path = os.path.join(CACHE_DIR, safe_fname)
-            if not _package_webxdc(output_path, cache_path, title, url):
+            og_img_path = cached_og.get("image_path") if cached_og else None
+            if not _package_webxdc(output_path, cache_path, title, url, og_image_path=og_img_path):
                 raise RuntimeError("WebXDC packaging failed")
         else:
             safe_fname = _safe_filename(domain, mode == "archive")

@@ -2339,9 +2339,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     
                     emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if cached_jina_markdown else "🌐")
                     if cached_warning:
-                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️ /preview_{urlhash}   📦 /webxdc_{urlhash}   🏛️ /keep_{urlhash}"
+                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
                     else:
-                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\n🖥️ /preview_{urlhash}   📦 /webxdc_{urlhash}   🏛️ /keep_{urlhash}"
+                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
 
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
@@ -2394,9 +2394,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             
         emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if jina_markdown else "🌐")
         if warning:
-            caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n🖥️ /preview_{urlhash}   📦 /webxdc_{urlhash}   🏛️ /keep_{urlhash}"
+            caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
         else:
-            caption = f"{emoji_prefix} [{title}]({url})\n\n🖥️ /preview_{urlhash}   📦 /webxdc_{urlhash}   🏛️ /keep_{urlhash}"
+            caption = f"{emoji_prefix} [{title}]({url})\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
         
         # 6. Download image if exists, saving to persistent cache folder
         img_cache_path = None

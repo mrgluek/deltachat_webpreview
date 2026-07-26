@@ -1484,6 +1484,23 @@ def _make_square_icon(image_source_path: str | None, max_dim: int = 128, fmt: st
         logger.warning(f"Failed to generate square icon from {image_source_path}: {e}")
         return None, ""
 
+_DEFAULT_BOT_ICON_CACHE: tuple[bytes, str] | None = None
+
+def _get_default_bot_icon_bytes() -> tuple[bytes | None, str]:
+    """Returns cached (bytes, filename) of the default 128x128 bot icon PNG, generating it once if needed."""
+    global _DEFAULT_BOT_ICON_CACHE
+    if _DEFAULT_BOT_ICON_CACHE is not None:
+        return _DEFAULT_BOT_ICON_CACHE
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for icon_candidate in ["icon.png", os.path.join("data", "icon.png"), os.path.join(base_dir, "icon.png")]:
+        if os.path.exists(icon_candidate):
+            b, name = _make_square_icon(icon_candidate, max_dim=128, fmt="PNG")
+            if b:
+                _DEFAULT_BOT_ICON_CACHE = (b, name)
+                return _DEFAULT_BOT_ICON_CACHE
+    return None, ""
+
 def _package_webxdc(html_filepath: str, xdc_filepath: str, title: str, source_url: str, og_image_path: str | None = None) -> bool:
     """Packages html_filepath into a .xdc webxdc ZIP package with manifest.toml and optimized icon."""
     try:
@@ -1493,13 +1510,9 @@ def _package_webxdc(html_filepath: str, xdc_filepath: str, title: str, source_ur
         if og_image_path:
             icon_bytes, icon_name = _make_square_icon(og_image_path, max_dim=128, fmt="JPEG")
 
-        # 2. Fallback to default bot icon (resized to 128x128 to keep package small)
+        # 2. Fallback to cached default bot icon (resized to 128x128 PNG to keep package small and fast)
         if not icon_bytes:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            for icon_candidate in ["icon.png", os.path.join("data", "icon.png"), os.path.join(base_dir, "icon.png")]:
-                if os.path.exists(icon_candidate):
-                    icon_bytes, icon_name = _make_square_icon(icon_candidate, max_dim=128, fmt="JPEG")
-                    break
+            icon_bytes, icon_name = _get_default_bot_icon_bytes()
 
         manifest_lines = [
             f'name = "{_clean_toml_string(title)}"',

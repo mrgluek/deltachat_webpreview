@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.4.0] - 2026-07-26
+
+### Added
+- **WebXDC App Command (`/webxdc`)**: Added the `/webxdc <url>` command and dynamic `/webxdc_<urlhash>` triggers. Compiles a webpage into a standalone WebXDC application (`.xdc` ZIP file with `index.html`, `manifest.toml`, and `icon.png`) and sends it directly to the chat.
+- **Unit Tests**: Added `tests/test_webxdc.py` verifying WebXDC archive creation (`index.html`, `manifest.toml`, `icon.png`), `/webxdc` command trigger, and dynamic `/webxdc_<urlhash>` handling.
+
 ## [2.3.23] - 2026-07-08
 
 ### Added

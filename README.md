@@ -5,6 +5,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 ## Features
 
 - 📄 **Compressed Reader Mode (`/preview <url>`):** Compile webpages into highly compressed, clutter-free reader views using Mozilla's Readability. All images are automatically downloaded, optimized, resized, and inlined as Base64 (with responsive/lazy-loading attributes like srcset and data-src stripped to guarantee offline/local rendering).
+- 📱 **WebXDC App Packaging (`/webxdc <url>`):** Generate a standalone WebXDC application (`.xdc` ZIP container with `index.html`, `manifest.toml`, and `icon.png`) from any web page and send it into the chat for interactive offline viewing.
 - ⚡ **Full Page Archiving (`/archive <url>`):** Save complete pages as full interactive archives with JavaScript enabled using `monolith`. Proactively compresses and optimizes heavy base64-encoded image payloads post-generation to keep files tiny.
 - 💬 **Quote Reply Parsing:** Reply with `/preview` or `/archive` (without a URL) to any message containing links, and the bot will automatically extract and capture the first link in the quoted text.
 - ⏱️ **Rate Limiting:** Protects against abuse by rate-limiting regular users (15-second debounce) while allowing admins unlimited generations.
@@ -68,6 +69,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 ## Commands
 
 - `/preview <url>` — Save page in highly compressed reader-mode format (using Mozilla's Readability).
+- `/webxdc <url>` — Save page as a WebXDC app 📱 (`.xdc` ZIP containing `index.html`, `manifest.toml`, `icon.png`).
 - `/archive <url>` — Save page as a full monolith-based dynamic archive (with JS enabled, optimized images). *(Note: `/previewjs` is also supported as an alias to `/archive`)*
 - `/download <url>` — Download file directly and send as attachment (supported for PDF, office documents, text files).
 - `/stats` — Show generation counters, total traffic size, and disk space (disk space is admin-only).

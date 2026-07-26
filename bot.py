@@ -1438,6 +1438,42 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024:.0f} KB"
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
+def _clean_toml_string(val: str) -> str:
+    if not val:
+        return ""
+    val = val.replace("\r", " ").replace("\n", " ")
+    return val.replace("\\", "\\\\").replace('"', '\\"')
+
+def _package_webxdc(html_filepath: str, xdc_filepath: str, title: str, source_url: str) -> bool:
+    """Packages html_filepath into a .xdc webxdc ZIP package with manifest.toml and icon."""
+    try:
+        import zipfile
+        icon_path = None
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        for icon_candidate in ["icon.png", os.path.join("data", "icon.png"), os.path.join(base_dir, "icon.png")]:
+            if os.path.exists(icon_candidate):
+                icon_path = icon_candidate
+                break
+
+        manifest_lines = [
+            f'name = "{_clean_toml_string(title)}"',
+            f'source_code_url = "{_clean_toml_string(source_url)}"',
+        ]
+        if icon_path:
+            manifest_lines.append('icon = "icon.png"')
+        manifest_content = "\n".join(manifest_lines) + "\n"
+
+        with zipfile.ZipFile(xdc_filepath, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(html_filepath, arcname="index.html")
+            zf.writestr("manifest.toml", manifest_content)
+            if icon_path:
+                zf.write(icon_path, arcname="icon.png")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to package WebXDC file: {e}")
+        return False
+
+
 async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int | None, str]:
     """Execute monolith process with timeout."""
     env = os.environ.copy()
@@ -2596,7 +2632,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             logger.info(f"Cache hit for URL: {url} (mode={mode}). Sending cached preview: {filepath}")
             _react(bot, accid, req_msg_id, "⏳")
             
-            caption = f"{title}\n\n🔗 {url}"
+            caption = f"📱 {title}\n\n🔗 {url}" if mode == "webxdc" else f"{title}\n\n🔗 {url}"
             _send(bot, accid, chat_id, caption, file=filepath)
             _react(bot, accid, req_msg_id, "☑️")
             database.add_preview_log(chat_id, from_id, url, title, filesize, 1 if mode == "archive" else 0)
@@ -2732,19 +2768,26 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         return
 
     try:
-        # 4. Extract clean filename
-        safe_fname = _safe_filename(domain, mode == "archive")
-        cache_path = os.path.join(CACHE_DIR, safe_fname)
-        
-        # 5. Move to persistent cache for transfer
-        shutil.move(output_path, cache_path)
+        # 4. Extract clean filename and package
+        if mode == "webxdc":
+            safe_fname = _safe_filename(domain, False).replace(".html", ".xdc")
+            if not safe_fname.endswith(".xdc"):
+                safe_fname += ".xdc"
+            cache_path = os.path.join(CACHE_DIR, safe_fname)
+            if not _package_webxdc(output_path, cache_path, title, url):
+                raise RuntimeError("WebXDC packaging failed")
+        else:
+            safe_fname = _safe_filename(domain, mode == "archive")
+            cache_path = os.path.join(CACHE_DIR, safe_fname)
+            shutil.move(output_path, cache_path)
+            
         filesize = os.path.getsize(cache_path)
         
         # Cache preview in database
         database.add_cached_preview(cache_key, cache_path, title, filesize)
         
         # 6. Format caption
-        caption = f"{title}\n\n🔗 {url}"
+        caption = f"📱 {title}\n\n🔗 {url}" if mode == "webxdc" else f"{title}\n\n🔗 {url}"
         
         # 7. Send attachment
         _send(bot, accid, chat_id, caption, file=cache_path)
@@ -2764,7 +2807,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
 # ── Preview Trigger Handler ──
 
 def _handle_preview_command(bot, accid, event, mode: str):
-    """Processes `/preview`, `/previewjs` and `/archive` triggers."""
+    """Processes `/preview`, `/previewjs`, `/archive`, and `/webxdc` triggers."""
     msg = event.msg
     
     if _is_duplicate_msg(msg.id, "preview"):
@@ -2805,8 +2848,9 @@ def _handle_preview_command(bot, accid, event, mode: str):
         _send(bot, accid, msg.chat_id, 
               "Usage:\n"
               "• `/preview <url>` — Save page (compressed reader-mode, recommended)\n"
+              "• `/webxdc <url>` — Save page as a WebXDC app 📱\n"
               "• `/archive <url>` — Save page (full monolith with JS enabled)\n"
-              "• Reply `/preview` or `/archive` to another message containing a link.")
+              "• Reply `/preview`, `/webxdc` or `/archive` to another message containing a link.")
         return
 
     # Spawn thread to run in background
@@ -3122,6 +3166,17 @@ def archive_command(bot, accid, event):
         return
     _handle_preview_command(bot, accid, event, mode="archive")
 
+@dc_cli.on(events.NewMessage(command="/webxdc", is_bot=None))
+def webxdc_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/webxdc(?:\s|$)", text):
+        return
+    _handle_preview_command(bot, accid, event, mode="webxdc")
+
 @dc_cli.on(events.NewMessage(command="/keep", is_bot=None))
 def keep_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
@@ -3245,6 +3300,7 @@ def get_help_text(bot, accid, from_id):
         f"I save web pages as single self-contained HTML files and send them back to you.\n\n"
         f"**Commands:**\n"
         f"/preview <url> — Generate compressed reader-mode page (recommended)\n"
+        f"/webxdc <url> — Generate WebXDC app from webpage 📱\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/keep <url> — Save URL to Web Archive 🏛️\n"
@@ -3814,8 +3870,8 @@ def on_new_message(bot, accid, event):
     if not text:
         return
 
-    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash, /download_urlhash or /keep_urlhash
-    m = re.match(r"^/(preview|previewjs|archive|download|keep)_([0-9a-fA-F]{8})(?:@\w+)?", text)
+    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash, /webxdc_urlhash, /download_urlhash or /keep_urlhash
+    m = re.match(r"^/(preview|previewjs|archive|webxdc|download|keep)_([0-9a-fA-F]{8})(?:@\w+)?", text)
     if m:
         cmd_type, urlhash = m.group(1), m.group(2)
         url = database.get_url_by_hash(urlhash)
@@ -3852,7 +3908,12 @@ def on_new_message(bot, accid, event):
             )
             t.start()
         else:
-            mode = "archive" if cmd_type in ("previewjs", "archive") else "readability"
+            if cmd_type == "webxdc":
+                mode = "webxdc"
+            elif cmd_type in ("previewjs", "archive"):
+                mode = "archive"
+            else:
+                mode = "readability"
             t = threading.Thread(
                 target=_do_preview, 
                 args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, mode), 

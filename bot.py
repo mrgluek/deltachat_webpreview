@@ -2270,11 +2270,6 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
         except Exception as e:
             logger.warning(f"Fallback fetch failed for image {image_url}: {e}")
 
-    if response_data is not None:
-        if "svg" in content_type.lower():
-            logger.info(f"Skipping SVG content-type as preview: {image_url}")
-            return None
-
         # Try to compress and resize the image using Pillow (max 800px on the longer side, WebP format)
         try:
             import io
@@ -2553,6 +2548,26 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+
+def _get_og_image_filepath(urlhash: str, cached_og: dict | None) -> str | None:
+    """Returns local downloaded file path of OG preview image, downloading it if necessary."""
+    if not cached_og:
+        return None
+    img_path = cached_og.get("image_path")
+    if not img_path:
+        return None
+    if os.path.exists(img_path):
+        return img_path
+    if img_path.startswith("http://") or img_path.startswith("https://"):
+        downloaded = _download_cached_image(img_path, urlhash)
+        if downloaded and os.path.exists(downloaded):
+            title = cached_og.get("title", "")
+            warning = cached_og.get("warning")
+            jina_md = cached_og.get("jina_markdown")
+            database.add_cached_og(urlhash, title, downloaded, warning, jina_md)
+            return downloaded
+    return None
+
 def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
     """Run preview/archive generation in background thread."""
     if _is_internal_or_invalid_url(url):
@@ -2632,8 +2647,9 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             database.add_cached_og(urlhash, "__FAILED_BLOCK__", og_image)
             cached_og = {"title": "__FAILED_BLOCK__", "image_path": og_image, "warning": None, "jina_markdown": None}
         else:
-            database.add_cached_og(urlhash, og_title, og_image, warning, jina_markdown)
-            cached_og = {"title": og_title, "image_path": og_image, "warning": warning, "jina_markdown": jina_markdown}
+            img_cache_path = _download_cached_image(og_image, urlhash) if og_image else None
+            database.add_cached_og(urlhash, og_title, img_cache_path, warning, jina_markdown)
+            cached_og = {"title": og_title, "image_path": img_cache_path, "warning": warning, "jina_markdown": jina_markdown}
 
         if cached_og and cached_og.get("title") == "__FAILED_BLOCK__":
             reason = cached_og.get("image_path") or "HTTP 403 Forbidden"
@@ -2806,7 +2822,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             if not safe_fname.endswith(".xdc"):
                 safe_fname += ".xdc"
             cache_path = os.path.join(CACHE_DIR, safe_fname)
-            og_img_path = cached_og.get("image_path") if cached_og else None
+            og_img_path = _get_og_image_filepath(urlhash, cached_og)
             if not _package_webxdc(output_path, cache_path, title, url, og_image_path=og_img_path):
                 raise RuntimeError("WebXDC packaging failed")
         else:

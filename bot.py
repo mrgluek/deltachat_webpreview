@@ -1444,15 +1444,19 @@ def _clean_toml_string(val: str) -> str:
     val = val.replace("\r", " ").replace("\n", " ")
     return val.replace("\\", "\\\\").replace('"', '\\"')
 
-def _make_square_icon(image_source_path: str | None, max_dim: int = 128) -> bytes | None:
-    """Helper to crop and resize an image file into a square PNG icon bytes buffer."""
+def _make_square_icon(image_source_path: str | None, max_dim: int = 128, fmt: str = "JPEG") -> tuple[bytes | None, str]:
+    """Helper to crop and resize an image file into a square icon bytes buffer (returns (bytes, filename))."""
     if not image_source_path or not os.path.exists(image_source_path):
-        return None
+        return None, ""
     try:
         from PIL import Image
         import io
         with Image.open(image_source_path) as img:
-            img = img.convert("RGBA")
+            ext = "jpg" if fmt == "JPEG" else "png"
+            if fmt == "JPEG":
+                img = img.convert("RGB")
+            else:
+                img = img.convert("RGBA")
             width, height = img.size
             min_dim = min(width, height)
             left = (width - min_dim) // 2
@@ -1460,42 +1464,45 @@ def _make_square_icon(image_source_path: str | None, max_dim: int = 128) -> byte
             img = img.crop((left, top, left + min_dim, top + min_dim))
             img = img.resize((max_dim, max_dim), Image.Resampling.LANCZOS)
             buf = io.BytesIO()
-            img.save(buf, format="PNG", optimize=True)
-            return buf.getvalue()
+            if fmt == "JPEG":
+                img.save(buf, format="JPEG", quality=85, optimize=True)
+            else:
+                img.save(buf, format="PNG", optimize=True)
+            return buf.getvalue(), f"icon.{ext}"
     except Exception as e:
         logger.warning(f"Failed to generate square icon from {image_source_path}: {e}")
-        return None
+        return None, ""
 
 def _package_webxdc(html_filepath: str, xdc_filepath: str, title: str, source_url: str, og_image_path: str | None = None) -> bool:
     """Packages html_filepath into a .xdc webxdc ZIP package with manifest.toml and optimized icon."""
     try:
         import zipfile
-        icon_bytes = None
+        icon_bytes, icon_name = None, ""
         # 1. Try to generate square icon from OG preview image
         if og_image_path:
-            icon_bytes = _make_square_icon(og_image_path, max_dim=128)
+            icon_bytes, icon_name = _make_square_icon(og_image_path, max_dim=128, fmt="JPEG")
 
         # 2. Fallback to default bot icon (resized to 128x128 to keep package small)
         if not icon_bytes:
             base_dir = os.path.dirname(os.path.abspath(__file__))
             for icon_candidate in ["icon.png", os.path.join("data", "icon.png"), os.path.join(base_dir, "icon.png")]:
                 if os.path.exists(icon_candidate):
-                    icon_bytes = _make_square_icon(icon_candidate, max_dim=128)
+                    icon_bytes, icon_name = _make_square_icon(icon_candidate, max_dim=128, fmt="JPEG")
                     break
 
         manifest_lines = [
             f'name = "{_clean_toml_string(title)}"',
             f'source_code_url = "{_clean_toml_string(source_url)}"',
         ]
-        if icon_bytes:
-            manifest_lines.append('icon = "icon.png"')
+        if icon_bytes and icon_name:
+            manifest_lines.append(f'icon = "{icon_name}"')
         manifest_content = "\n".join(manifest_lines) + "\n"
 
         with zipfile.ZipFile(xdc_filepath, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
             zf.write(html_filepath, arcname="index.html")
             zf.writestr("manifest.toml", manifest_content)
-            if icon_bytes:
-                zf.writestr("icon.png", icon_bytes)
+            if icon_bytes and icon_name:
+                zf.writestr(icon_name, icon_bytes)
         return True
     except Exception as e:
         logger.error(f"Failed to package WebXDC file: {e}")

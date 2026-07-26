@@ -1505,7 +1505,7 @@ async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int 
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=35)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=65)
         returncode = proc.returncode if proc is not None else 0
         return returncode, stderr.decode(errors='replace').strip()
     except asyncio.TimeoutError:
@@ -1514,7 +1514,7 @@ async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int 
                 proc.kill()
                 await proc.wait()
             except: pass
-        return -1, "Operation timed out (35 second limit exceeded)"
+        return -1, "Operation timed out (60 second limit exceeded)"
     except Exception as e:
         if proc is not None:
             try:
@@ -2714,7 +2714,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         title = res
     else:
         # Monolith compilation
-        cmd = ["monolith", "-e", "-t", "30"]
+        cmd = ["monolith", "-e", "-t", "60"]
         # In archive mode, JS is enabled (no -j).
         cmd.extend(["-u", STANDARD_USER_AGENT])
         cmd.extend([url, "-o", output_path])
@@ -2735,7 +2735,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             except Exception as remove_err:
                 logger.warning(f"Error removing Anubis-blocked output: {remove_err}")
                 
-            cmd = ["monolith", "-e", "-t", "30"]
+            cmd = ["monolith", "-e", "-t", "60"]
             cmd.extend(["-u", NON_MOZILLA_USER_AGENT])
             cmd.extend([url, "-o", output_path])
             

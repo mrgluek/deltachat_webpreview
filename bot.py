@@ -2668,7 +2668,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
     tmpdir = tempfile.mkdtemp(prefix="webpreview_")
     output_path = os.path.join(tmpdir, "output.html")
 
-    if mode == "readability":
+    if mode in ("readability", "webxdc"):
         # Check if we already have the Jina markdown cached to avoid hitting network/Jina again
         cached_jina_markdown = cached_og.get("jina_markdown") if cached_og else None
         compiled_jina_success = False

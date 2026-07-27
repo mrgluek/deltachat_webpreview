@@ -3783,7 +3783,25 @@ def stats_command(bot, accid, event):
             pass
 
     if GEMINI_API_KEY:
-        reply += f"Gemini model: {GEMINI_MODEL} (Free Tier)\n"
+        now = time.time()
+        active_model = None
+        for m in GEMINI_MODELS:
+            if _GEMINI_MODEL_COOLDOWNS.get(m, 0) <= now:
+                active_model = m
+                break
+        if not active_model:
+            active_model = GEMINI_MODELS[0]
+
+        reply += f"Gemini active model: {active_model}\n"
+
+        cooldowns = []
+        for m in GEMINI_MODELS:
+            cd_until = _GEMINI_MODEL_COOLDOWNS.get(m, 0)
+            if cd_until > now:
+                mins_left = int((cd_until - now) / 60)
+                cooldowns.append(f"{m} ({mins_left}m left)")
+        if cooldowns:
+            reply += f"Gemini cooling down: {', '.join(cooldowns)}\n"
 
     if is_admin:
         reply += (

@@ -3359,7 +3359,7 @@ def _handle_tldr_command(bot, accid, event):
               "• Reply `/tldr` to any message containing a link.")
         return
 
-    if is_excluded(url):
+    if database.is_excluded(url):
         _send(bot, accid, msg.chat_id, "❌ Summarization skipped: URL domain is excluded by configuration.")
         return
 

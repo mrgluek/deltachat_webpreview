@@ -114,6 +114,15 @@ class TestTldrAndLang(unittest.TestCase):
         )
         self.assertEqual(caption, "🔗 [My Page](https://example.com)")
 
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._send")
+    def test_handle_tldr_command_no_key(self, mock_send):
+        mock_bot = MagicMock()
+        event = MockEvent(chat_id=1, payload="https://example.com/test", text="/tldr https://example.com/test")
+        bot._handle_tldr_command(mock_bot, 1, event)
+        mock_send.assert_called_once()
+        self.assertIn("GEMINI_API_KEY", mock_send.call_args[0][3])
+
     @patch("bot._send")
     def test_lang_command(self, mock_send):
         mock_bot = MagicMock()

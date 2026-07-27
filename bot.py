@@ -68,10 +68,10 @@ JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 
 # Gemini AI key & fallback models (opt-in via env)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
-_raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash,gemma-4-31b")
+_raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b")
 GEMINI_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/") for m in _raw_models.split(",") if m.strip()]
 if not GEMINI_MODELS:
-    GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash", "gemma-4-31b"]
+    GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b"]
 GEMINI_MODEL = GEMINI_MODELS[0]
 
 # Proxy settings (opt-in via env)

@@ -68,10 +68,10 @@ JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 
 # Gemini AI key & fallback models (opt-in via env)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
-_raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b")
+_raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemma-4-31b-it")
 GEMINI_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/") for m in _raw_models.split(",") if m.strip()]
 if not GEMINI_MODELS:
-    GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b"]
+    GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemma-4-31b-it"]
 GEMINI_MODEL = GEMINI_MODELS[0]
 _GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
 
@@ -316,11 +316,16 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
                 logger.warning(f"Gemini API model '{model_name}' rate limited (HTTP 429). Placing on 1-hour cooldown and falling back...")
                 _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 3600
                 continue
+            elif e.code in (503, 500, 502, 504):
+                logger.warning(f"Gemini API model '{model_name}' unavailable or high demand (HTTP {e.code}). Placing on 5-minute cooldown and falling back...")
+                _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
+                continue
             else:
                 logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{model_name}'. Details: {err_body}")
                 continue
         except Exception as e:
-            logger.error(f"Gemini API summarization failed for model '{model_name}': {e}")
+            logger.warning(f"Gemini API call timed out or failed for model '{model_name}': {e}. Placing on 5-minute cooldown and falling back...")
+            _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
             continue
 
     return None

@@ -68,7 +68,7 @@ JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 
 # Gemini AI key (opt-in via env)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip().strip("'\"").removeprefix("models/").strip("/")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash").strip().strip("'\"").removeprefix("models/").strip("/")
 
 # Proxy settings (opt-in via env)
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()

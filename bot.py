@@ -67,8 +67,8 @@ JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
 JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 
 # Gemini AI key (opt-in via env)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip().strip("'\"").removeprefix("models/").strip("/")
 
 # Proxy settings (opt-in via env)
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
@@ -266,7 +266,10 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         req = urllib.request.Request(
             url,
             data=data_bytes,
-            headers={'Content-Type': 'application/json'}
+            headers={
+                'Content-Type': 'application/json',
+                'x-goog-api-key': GEMINI_API_KEY
+            }
         )
         with _urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode('utf-8'))
@@ -277,8 +280,16 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
                     res_text = parts[0]["text"].strip()
                     if res_text:
                         return res_text
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode('utf-8', errors='ignore')
+        except Exception:
+            pass
+        logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{GEMINI_MODEL}'. URL: {url.split('?key=')[0]}. Details: {err_body}")
+        return None
     except Exception as e:
-        logger.error(f"Gemini API summarization failed: {e}")
+        logger.error(f"Gemini API summarization failed for model '{GEMINI_MODEL}': {e}")
         return None
     return None
 

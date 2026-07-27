@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.2"
+VERSION = "2.5.3"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -270,6 +270,7 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
     }
     
     try:
+        database.log_api_call("gemini")
         data_bytes = json.dumps(payload).encode('utf-8')
         req = urllib.request.Request(
             url,
@@ -1871,6 +1872,7 @@ def _fetch_from_jina(url: str, return_html: bool = False) -> tuple[str | None, s
     jina_url = f"https://r.jina.ai/{url}"
     try:
         logger.info(f"Querying Jina AI Reader for URL: {url} (return_html={return_html})")
+        database.log_api_call("jina")
         headers = {
             'User-Agent': 'curl/7.88.1'
         }
@@ -3483,7 +3485,7 @@ def _handle_lang_command(bot, accid, event):
         return
         
     database.set_chat_lang(msg.chat_id, lang_code)
-    _react(bot, accid, msg.id, "👍")
+    _react(bot, accid, msg.id, "☑️")
     _send(bot, accid, msg.chat_id, f"✅ Preferred summary language for this chat set to **{lang_code}**.")
 
 
@@ -3738,6 +3740,7 @@ def donate_command(bot, accid, event):
 @dc_cli.on(events.NewMessage(command="/stats"))
 def stats_command(bot, accid, event):
     s = database.get_stats()
+    api_s = database.get_api_stats()
     usage = shutil.disk_usage(CACHE_DIR)
     free_gb = usage.free / (1024**3)
     total_gb = usage.total / (1024**3)
@@ -3747,10 +3750,26 @@ def stats_command(bot, accid, event):
     
     reply = (
         f"📊 **WebPreview Bot Statistics**\n\n"
-        f"Total previews generated: {s['total']}\n"
-        f"Last 24h: {s['last_24h']}\n"
+        f"Total previews generated (last 24h): {s['total']} ({s['last_24h']})\n"
+        f"JINA AI requests (last 24h): {api_s['jina_total']} ({api_s['jina_24h']})\n"
+        f"Gemini AI requests (last 24h): {api_s['gemini_total']} ({api_s['gemini_24h']})\n"
         f"Total file bandwidth: {_format_size(s['total_size'])}\n"
     )
+
+    if JINA_API_KEY:
+        try:
+            check_url = f"https://dash.jina.ai/api/v1/api_key/fe_user?api_key={JINA_API_KEY}"
+            req = urllib.request.Request(check_url, headers={"User-Agent": STANDARD_USER_AGENT})
+            with _urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            wallet = data.get("wallet", {})
+            tot_bal = wallet.get("total_balance", 0)
+            reply += f"JINA AI token balance: {tot_bal:,}\n"
+        except Exception:
+            pass
+
+    if GEMINI_API_KEY:
+        reply += f"Gemini model: {GEMINI_MODEL} (Free Tier)\n"
 
     if is_admin:
         reply += (

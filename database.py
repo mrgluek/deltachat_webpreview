@@ -97,6 +97,15 @@ def init_db():
                 created_at INTEGER
             )
         ''')
+
+        # API requests log table for Jina and Gemini tracking
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS api_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service TEXT,
+                created_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        ''')
         
         conn.commit()
         conn.close()
@@ -267,6 +276,44 @@ def add_cached_tldr(cache_key: str, summary: str):
         ''', (cache_key, summary))
         conn.commit()
         conn.close()
+
+def log_api_call(service: str):
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO api_log (service, created_at) VALUES (?, CAST(strftime('%s','now') AS INTEGER))",
+            (service,)
+        )
+        conn.commit()
+        conn.close()
+
+def get_api_stats() -> dict:
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        now = int(time.time())
+        h24_ago = now - 86400
+
+        cursor.execute("SELECT COUNT(*) FROM api_log WHERE service = 'jina'")
+        jina_total = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM api_log WHERE service = 'jina' AND created_at >= ?", (h24_ago,))
+        jina_24h = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM api_log WHERE service = 'gemini'")
+        gemini_total = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM api_log WHERE service = 'gemini' AND created_at >= ?", (h24_ago,))
+        gemini_24h = cursor.fetchone()[0]
+
+        conn.close()
+        return {
+            "jina_total": jina_total,
+            "jina_24h": jina_24h,
+            "gemini_total": gemini_total,
+            "gemini_24h": gemini_24h,
+        }
 
 def get_cached_og(url_key: str) -> dict | None:
     with _lock:

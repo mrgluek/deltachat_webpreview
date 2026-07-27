@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.3] - 2026-07-27
+
+### Added
+- **API Requests Tracking & Enhanced `/stats`**: Added SQLite `api_log` table to log Jina AI Reader and Google Gemini API requests. Updated `/stats` to display 24h & total request counts for both Jina and Gemini, Jina API token balance, and Gemini model status.
+- **Reaction UX Improvement**: Changed reaction for `/lang` command from `👍` to checkmark `☑️` for consistency with all other bot commands.
+
 ## [2.5.2] - 2026-07-27
 
 ### Added

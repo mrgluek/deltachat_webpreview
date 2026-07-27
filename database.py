@@ -369,6 +369,18 @@ def set_webpreview_disabled(chat_id: int, disabled: bool):
     """Disable or enable webpreview auto-parsing in a chat."""
     set_config(f"webpreview_disabled_{chat_id}", "1" if disabled else "0")
 
+def get_chat_lang(chat_id: int) -> str:
+    """Get preferred summary language for a chat (defaults to 'EN')."""
+    try:
+        val = get_config(f"chat_lang_{chat_id}")
+        return val.strip().upper() if val and val.strip() else "EN"
+    except Exception:
+        return "EN"
+
+def set_chat_lang(chat_id: int, lang: str):
+    """Set preferred summary language for a chat."""
+    set_config(f"chat_lang_{chat_id}", lang.strip().upper())
+
 init_db()
 
 

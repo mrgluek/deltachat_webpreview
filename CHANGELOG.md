@@ -2,6 +2,15 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.1] - 2026-07-27
+
+### Added
+- **AI Article Summarization (`/tldr`)**: Added `/tldr <url>` command (and reply support) to generate concise 1-2 paragraph article summaries using Google Gemini API (`GEMINI_API_KEY`).
+- **Summary Language Selection (`/lang`)**: Added `/lang <code>` command to configure preferred summary language on a per-chat basis (e.g. `/lang RU`, `/lang EN`, `/lang DE`).
+- **Automatic TL;DR in Previews**: Enhanced `/preview` and `/webxdc` commands to automatically attach a 1-paragraph TL;DR summary above the link when Gemini integration is enabled.
+- **Standalone Offline Readability Fallback**: Added automatic fallback to local `readability-lxml` + `BeautifulSoup` HTML text extraction if Jina Reader (`r.jina.ai`) is unavailable or unconfigured, making Gemini summarization fully functional independently of Jina.
+- **Unit Tests**: Added `tests/test_tldr_and_lang.py` covering Gemini summarization, `/lang` database storage, URL extraction from replies, and caption formatting.
+
 ## [2.4.0] - 2026-07-26
 
 ### Added

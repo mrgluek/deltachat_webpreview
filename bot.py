@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.3.24"
+VERSION = "2.5.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -65,6 +65,9 @@ KARAKEEP_TAGS = [t.strip() for t in os.environ.get("KARAKEEP_TAGS", "").split(",
 # Jina AI key (opt-in via env)
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
 JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
+
+# Gemini AI key (opt-in via env)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 # Proxy settings (opt-in via env)
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
@@ -215,6 +218,116 @@ def _urlopen(req_or_url, timeout=None):
 def _karakeep_enabled() -> bool:
     """Return True if KaraKeep integration is configured."""
     return bool(KARAKEEP_URL and KARAKEEP_API_KEY)
+
+def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang: str = "EN", short_paragraph: bool = False) -> str | None:
+    """Summarizes text using Google Gemini API."""
+    if not GEMINI_API_KEY or not text or not text.strip():
+        return None
+    
+    clean_text = text.strip()
+    if len(clean_text) < 50:
+        return None
+        
+    truncated = clean_text[:20000]
+    lang_str = target_lang.strip().upper()
+    if lang_str in ("AUTO", ""):
+        lang_str = "the language of the article"
+        
+    if short_paragraph:
+        prompt = (
+            f"Summarize the following article text in 1 concise paragraph (maximum 3 sentences) in {lang_str}. "
+            "Do not include introductory words or meta-commentary, just output the summary text directly:\n\n"
+            f"Title: {title or 'Untitled'}\n\n{truncated}"
+        )
+        max_tokens = 250
+    else:
+        prompt = (
+            f"Summarize the following article in 1-2 paragraphs (or 3-5 key bullet points) in {lang_str}. "
+            "Do not include meta-commentary, just output the clean summary text directly:\n\n"
+            f"Title: {title or 'Untitled'}\n\n{truncated}"
+        )
+        max_tokens = 500
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": max_tokens
+        }
+    }
+    
+    try:
+        data_bytes = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            url,
+            data=data_bytes,
+            headers={'Content-Type': 'application/json'}
+        )
+        with _urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode('utf-8'))
+            candidates = body.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts and "text" in parts[0]:
+                    res_text = parts[0]["text"].strip()
+                    if res_text:
+                        return res_text
+    except Exception as e:
+        logger.error(f"Gemini API summarization failed: {e}")
+        return None
+    return None
+
+def _extract_url_from_msg_or_payload(payload: str, msg) -> str | None:
+    """Extract first HTTP/HTTPS URL from payload or quoted message text."""
+    if payload:
+        url_match = re.search(r'(https?://[^\s<>"]+)', payload)
+        if url_match:
+            return _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
+    
+    quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
+    if quote:
+        quoted_text = ""
+        if isinstance(quote, dict):
+            quoted_text = quote.get("text", "")
+        else:
+            quoted_text = getattr(quote, "text", "")
+            
+        if quoted_text:
+            url_match = re.search(r'(https?://[^\s<>"]+)', quoted_text)
+            if url_match:
+                return _clean_url_params(_strip_url_trailing_junk(url_match.group(1)))
+    return None
+
+def _format_preview_caption(title: str, url: str, mode: str, chat_id: int, jina_markdown: str | None = None) -> str:
+    """Format caption for /preview and /webxdc, including 1-paragraph TL;DR if Gemini API is available."""
+    clean_title = (title or "Webpage").replace("[", "(").replace("]", ")")
+    tldr = None
+    if GEMINI_API_KEY:
+        article_text = jina_markdown
+        if not article_text or not article_text.strip():
+            try:
+                html_str, _ = _download_page_html(url)
+                if html_str:
+                    doc = Document(html_str)
+                    soup = BeautifulSoup(doc.summary(), BS_PARSER)
+                    article_text = soup.get_text(separator="\n", strip=True)
+            except Exception:
+                pass
+
+        if article_text and article_text.strip():
+            lang = database.get_chat_lang(chat_id)
+            tldr = _summarize_text_with_gemini(article_text, title=clean_title, target_lang=lang, short_paragraph=True)
+        
+    if tldr:
+        return f"⚡ TL;DR: {tldr}\n\n🔗 [{clean_title}]({url})"
+    
+    if mode == "webxdc":
+        return f"📱 [{clean_title}]({url})"
+    return f"🔗 [{clean_title}]({url})"
 
 def _save_jina_preview_to_cache(url: str, urlhash: str, title: str, jina_markdown: str):
     """
@@ -2714,7 +2827,8 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             logger.info(f"Cache hit for URL: {url} (mode={mode}). Sending cached preview: {filepath}")
             _react(bot, accid, req_msg_id, "⏳")
             
-            caption = f"📱 {title}\n\n🔗 {url}" if mode == "webxdc" else f"{title}\n\n🔗 {url}"
+            jina_md = cached_og.get("jina_markdown") if cached_og else None
+            caption = _format_preview_caption(title, url, mode, chat_id, jina_markdown=jina_md)
             _send(bot, accid, chat_id, caption, file=filepath)
             _react(bot, accid, req_msg_id, "☑️")
             database.add_preview_log(chat_id, from_id, url, title, filesize, 1 if mode == "archive" else 0)
@@ -2871,7 +2985,8 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         database.add_cached_preview(cache_key, cache_path, title, filesize)
         
         # 6. Format caption
-        caption = f"📱 {title}\n\n🔗 {url}" if mode == "webxdc" else f"{title}\n\n🔗 {url}"
+        jina_md = cached_og.get("jina_markdown") if cached_og else None
+        caption = _format_preview_caption(title, url, mode, chat_id, jina_markdown=jina_md)
         
         # 7. Send attachment
         _send(bot, accid, chat_id, caption, file=cache_path)
@@ -3226,7 +3341,144 @@ def _handle_jina_command(bot, accid, event):
     threading.Thread(target=_do_jina_check, daemon=True).start()
 
 
+def _handle_tldr_command(bot, accid, event):
+    """Processes /tldr command to generate AI summary of an article."""
+    msg = event.msg
+    if _is_duplicate_msg(msg.id, "tldr"):
+        return
+    if _is_rate_limited(bot, accid, msg.from_id):
+        return
+
+    payload = (event.payload or "").strip()
+    url = _extract_url_from_msg_or_payload(payload, msg)
+    
+    if not url:
+        _send(bot, accid, msg.chat_id,
+              "Usage:\n"
+              "• `/tldr <url>` — Generate article summary (TL;DR)\n"
+              "• Reply `/tldr` to any message containing a link.")
+        return
+
+    if is_excluded(url):
+        _send(bot, accid, msg.chat_id, "❌ Summarization skipped: URL domain is excluded by configuration.")
+        return
+
+    if not GEMINI_API_KEY:
+        _send(bot, accid, msg.chat_id,
+              "❌ `GEMINI_API_KEY` is not configured.\n"
+              "Please add your Google Gemini API key to `.env` to enable summarization.")
+        return
+
+    _react(bot, accid, msg.id, "⏳")
+
+    def _do_tldr():
+        try:
+            urlhash = database.get_or_create_url_hash(url)
+            cached_og = database.get_cached_og(urlhash)
+            
+            title = None
+            jina_markdown = None
+            
+            if cached_og:
+                title = cached_og.get("title")
+                jina_markdown = cached_og.get("jina_markdown")
+                
+            if not jina_markdown:
+                og_title, _, _, _, fetched_md = _get_og_preview_data(url)
+                title = title or og_title
+                jina_markdown = fetched_md
+
+            if not jina_markdown or not jina_markdown.strip():
+                try:
+                    html_str, _ = _download_page_html(url)
+                    if html_str:
+                        doc = Document(html_str)
+                        title = title or doc.title()
+                        soup = BeautifulSoup(doc.summary(), BS_PARSER)
+                        jina_markdown = soup.get_text(separator="\n", strip=True)
+                except Exception as fallback_err:
+                    logger.warning(f"Local text extraction fallback failed for {url}: {fallback_err}")
+                
+            if not jina_markdown or not jina_markdown.strip():
+                _react(bot, accid, msg.id, "❌")
+                _send(bot, accid, msg.chat_id, "❌ Failed to extract readable text content from the URL for summarization.")
+                return
+                
+            lang = database.get_chat_lang(msg.chat_id)
+            summary = _summarize_text_with_gemini(jina_markdown, title=title, target_lang=lang, short_paragraph=False)
+            
+            if not summary:
+                _react(bot, accid, msg.id, "❌")
+                _send(bot, accid, msg.chat_id, "❌ Failed to generate summary via Gemini API.")
+                return
+                
+            clean_title = (title or "Article").replace("[", "(").replace("]", ")")
+            reply = f"⚡ **TL;DR** ({lang}):\n\n{summary}\n\n🔗 [{clean_title}]({url})"
+            
+            _send(bot, accid, msg.chat_id, reply)
+            _react(bot, accid, msg.id, "☑️")
+            database.add_preview_log(msg.chat_id, msg.from_id, url, title or "TL;DR", len(summary), 0)
+        except Exception as e:
+            logger.error(f"Error in /tldr command for {url}: {e}")
+            _react(bot, accid, msg.id, "❌")
+            _send(bot, accid, msg.chat_id, f"❌ Error generating summary: {e}")
+
+    threading.Thread(target=_do_tldr, daemon=True).start()
+
+def _handle_lang_command(bot, accid, event):
+    """Processes /lang command to view or set preferred summary language for a chat."""
+    msg = event.msg
+    payload = (event.payload or "").strip()
+    
+    if not payload:
+        curr_lang = database.get_chat_lang(msg.chat_id)
+        reply = (
+            f"🌐 **Summary Language Setting**\n\n"
+            f"Current summary language for this chat: **{curr_lang}**\n\n"
+            f"To set a preferred language for article summaries, use:\n"
+            f"• `/lang RU` (Russian)\n"
+            f"• `/lang EN` (English)\n"
+            f"• `/lang DE` (German)\n"
+            f"• `/lang ES` (Spanish)\n"
+            f"• `/lang FR` (French)\n"
+            f"• `/lang AUTO` (Automatic)"
+        )
+        _send(bot, accid, msg.chat_id, reply)
+        return
+        
+    lang_code = payload.split()[0].upper()
+    if not re.match(r"^[A-Z]{2,5}(?:-[A-Z]{2,5})?$", lang_code):
+        _send(bot, accid, msg.chat_id, "❌ Invalid language code format. Example: `/lang RU` or `/lang EN`.")
+        return
+        
+    database.set_chat_lang(msg.chat_id, lang_code)
+    _react(bot, accid, msg.id, "👍")
+    _send(bot, accid, msg.chat_id, f"✅ Preferred summary language for this chat set to **{lang_code}**.")
+
+
 # ── Command Listeners ──
+
+@dc_cli.on(events.NewMessage(command="/tldr", is_bot=None))
+def tldr_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/tldr(?:\s|$)", text):
+        return
+    _handle_tldr_command(bot, accid, event)
+
+@dc_cli.on(events.NewMessage(command="/lang", is_bot=None))
+def lang_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/lang(?:\s|$)", text):
+        return
+    _handle_lang_command(bot, accid, event)
 
 @dc_cli.on(events.NewMessage(command="/preview", is_bot=None))
 def preview_command(bot, accid, event):
@@ -3386,6 +3638,8 @@ def get_help_text(bot, accid, from_id):
         f"/preview <url> — Generate compressed reader-mode page (recommended)\n"
         f"/webxdc <url> — Generate WebXDC app from webpage 📱\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
+        f"/tldr <url> — Generate AI article summary (TL;DR) ⚡\n"
+        f"/lang [code] — Set summary language for this chat (e.g. /lang RU) 🌐\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/keep <url> — Save URL to Web Archive 🏛️\n"
         f"/stats — View bot generation statistics\n"

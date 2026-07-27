@@ -84,6 +84,28 @@ class TestTldrAndLang(unittest.TestCase):
         self.assertEqual(summary, "Sample AI summary of the article.")
 
     @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch("bot._urlopen")
+    def test_tldr_caching(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "Cached AI summary."}]}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        text = "This is a long article text about technology and science. " * 10
+        url_key = "test_url_hash_123"
+
+        # First call: hits _urlopen
+        res1 = bot._summarize_text_with_gemini(text, title="Test", target_lang="RU", short_paragraph=True, url_key=url_key)
+        self.assertEqual(res1, "Cached AI summary.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+        # Second call: served from database cache without calling Gemini API again
+        res2 = bot._summarize_text_with_gemini(text, title="Test", target_lang="RU", short_paragraph=True, url_key=url_key)
+        self.assertEqual(res2, "Cached AI summary.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
     @patch("bot._summarize_text_with_gemini")
     def test_format_preview_caption_with_tldr(self, mock_summarize):
         mock_summarize.return_value = "Brief 1-paragraph summary."

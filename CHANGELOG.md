@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.2] - 2026-07-27
+
+### Added
+- **24-Hour Summary Caching (`tldr_cache`)**: Added SQLite caching table `tldr_cache` to cache Gemini TL;DR summaries for 24 hours per URL, language, and summary mode. Eliminates duplicate Gemini API requests, saves API quota, and speeds up repeated responses from ~2s to <10ms.
+- **Model Endpoint Improvements**: Configured `gemini-flash-latest` as the default model alias (automatically referencing Google's latest free-tier Flash model), sanitized input quotes/prefixes from `.env`, added official `x-goog-api-key` header, and enabled detailed HTTP response logging for easier diagnostics.
+
 ## [2.5.1] - 2026-07-27
 
 ### Added

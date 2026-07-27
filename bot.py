@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.1"
+VERSION = "2.5.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -220,8 +220,8 @@ def _karakeep_enabled() -> bool:
     """Return True if KaraKeep integration is configured."""
     return bool(KARAKEEP_URL and KARAKEEP_API_KEY)
 
-def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang: str = "EN", short_paragraph: bool = False) -> str | None:
-    """Summarizes text using Google Gemini API."""
+def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang: str = "EN", short_paragraph: bool = False, url_key: str | None = None) -> str | None:
+    """Summarizes text using Google Gemini API with 24h caching."""
     if not GEMINI_API_KEY or not text or not text.strip():
         return None
     
@@ -229,8 +229,16 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
     if len(clean_text) < 50:
         return None
         
-    truncated = clean_text[:20000]
     lang_str = target_lang.strip().upper()
+    cache_key = None
+    if url_key:
+        cache_key = f"{url_key}_{lang_str.lower()}_{'short' if short_paragraph else 'full'}"
+        cached = database.get_cached_tldr(cache_key)
+        if cached:
+            logger.info(f"Returning cached TL;DR summary for {cache_key}")
+            return cached
+
+    truncated = clean_text[:20000]
     if lang_str in ("AUTO", ""):
         lang_str = "the language of the article"
         
@@ -279,6 +287,8 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
                 if parts and "text" in parts[0]:
                     res_text = parts[0]["text"].strip()
                     if res_text:
+                        if cache_key:
+                            database.add_cached_tldr(cache_key, res_text)
                         return res_text
     except urllib.error.HTTPError as e:
         err_body = ""
@@ -332,7 +342,8 @@ def _format_preview_caption(title: str, url: str, mode: str, chat_id: int, jina_
 
         if article_text and article_text.strip():
             lang = database.get_chat_lang(chat_id)
-            tldr = _summarize_text_with_gemini(article_text, title=clean_title, target_lang=lang, short_paragraph=True)
+            url_key = database.get_or_create_url_hash(url)
+            tldr = _summarize_text_with_gemini(article_text, title=clean_title, target_lang=lang, short_paragraph=True, url_key=url_key)
         
     if tldr:
         return f"⚡ TL;DR: {tldr}\n\n🔗 [{clean_title}]({url})"
@@ -3417,7 +3428,8 @@ def _handle_tldr_command(bot, accid, event):
                 return
                 
             lang = database.get_chat_lang(msg.chat_id)
-            summary = _summarize_text_with_gemini(jina_markdown, title=title, target_lang=lang, short_paragraph=False)
+            url_key = database.get_or_create_url_hash(url)
+            summary = _summarize_text_with_gemini(jina_markdown, title=title, target_lang=lang, short_paragraph=False, url_key=url_key)
             
             if not summary:
                 _react(bot, accid, msg.id, "❌")

@@ -89,6 +89,15 @@ def init_db():
         except sqlite3.OperationalError:
             pass
         
+        # TLDR Cache table for cached summaries (24h default)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tldr_cache (
+                cache_key TEXT PRIMARY KEY,
+                summary TEXT,
+                created_at INTEGER
+            )
+        ''')
+        
         conn.commit()
         conn.close()
 
@@ -228,6 +237,34 @@ def clear_expired_cache(max_age_seconds: int):
             "DELETE FROM og_cache WHERE created_at < CAST(strftime('%s','now') AS INTEGER) - ?",
             (max_age_seconds,)
         )
+        cursor.execute(
+            "DELETE FROM tldr_cache WHERE created_at < CAST(strftime('%s','now') AS INTEGER) - ?",
+            (max_age_seconds,)
+        )
+        conn.commit()
+        conn.close()
+
+def get_cached_tldr(cache_key: str, max_age_seconds: int = 86400) -> str | None:
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT summary FROM tldr_cache WHERE cache_key = ? AND created_at >= CAST(strftime('%s','now') AS INTEGER) - ?",
+            (cache_key, max_age_seconds)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row["summary"] if row else None
+
+def add_cached_tldr(cache_key: str, summary: str):
+    with _lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO tldr_cache (cache_key, summary, created_at)
+            VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER))
+        ''', (cache_key, summary))
         conn.commit()
         conn.close()
 

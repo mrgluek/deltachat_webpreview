@@ -73,6 +73,7 @@ GEMINI_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/") for m
 if not GEMINI_MODELS:
     GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b"]
 GEMINI_MODEL = GEMINI_MODELS[0]
+_GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
 
 # Proxy settings (opt-in via env)
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
@@ -261,7 +262,12 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         )
         max_tokens = 4096
 
-    for model_name in GEMINI_MODELS:
+    now = time.time()
+    active_models = [m for m in GEMINI_MODELS if _GEMINI_MODEL_COOLDOWNS.get(m, 0) <= now]
+    if not active_models:
+        active_models = list(GEMINI_MODELS)
+
+    for model_name in active_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         
         payload = {
@@ -307,7 +313,8 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
             except Exception:
                 pass
             if e.code == 429:
-                logger.warning(f"Gemini API model '{model_name}' rate limited (HTTP 429). Falling back to next model...")
+                logger.warning(f"Gemini API model '{model_name}' rate limited (HTTP 429). Placing on 1-hour cooldown and falling back...")
+                _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 3600
                 continue
             else:
                 logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{model_name}'. Details: {err_body}")

@@ -23,7 +23,7 @@ services:
       - JINA_API_KEY=${JINA_API_KEY:-}
       - JINA_PROXY_URL=${JINA_PROXY_URL:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
       - PROXY_URL=${PROXY_URL:-}
       - PROXY_DOMAINS=${PROXY_DOMAINS:-}
       - DELETE_DEVICE_AFTER=${DELETE_DEVICE_AFTER:-3600}

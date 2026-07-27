@@ -300,7 +300,10 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
             err_body = e.read().decode('utf-8', errors='ignore')
         except Exception:
             pass
-        logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{GEMINI_MODEL}'. URL: {url.split('?key=')[0]}. Details: {err_body}")
+        if e.code == 429:
+            logger.warning(f"Gemini API rate limit reached (HTTP 429) for model '{GEMINI_MODEL}'. Details: {err_body}")
+        else:
+            logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{GEMINI_MODEL}'. URL: {url.split('?key=')[0]}. Details: {err_body}")
         return None
     except Exception as e:
         logger.error(f"Gemini API summarization failed for model '{GEMINI_MODEL}': {e}")

@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.4] - 2026-07-27
+
+### Added
+- **Multi-Model Dynamic Fallback (`GEMINI_MODELS`)**: Added support for comma-separated Gemini fallback model chains (e.g. `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash,gemma-4-31b`). When a model reaches its daily quota (HTTP 429), the bot automatically fails over to the next model in the chain without interrupting operations, unlocking 15,400+ free daily requests across models.
+- **Unit Tests**: Added `test_multi_model_fallback` in `tests/test_tldr_and_lang.py`.
+
 ## [2.5.3] - 2026-07-27
 
 ### Added

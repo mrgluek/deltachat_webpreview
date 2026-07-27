@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.3"
+VERSION = "2.5.4"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -66,9 +66,13 @@ KARAKEEP_TAGS = [t.strip() for t in os.environ.get("KARAKEEP_TAGS", "").split(",
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
 JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 
-# Gemini AI key (opt-in via env)
+# Gemini AI key & fallback models (opt-in via env)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip().strip("'\"").removeprefix("models/").strip("/")
+_raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash,gemma-4-31b")
+GEMINI_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/") for m in _raw_models.split(",") if m.strip()]
+if not GEMINI_MODELS:
+    GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash", "gemma-4-31b"]
+GEMINI_MODEL = GEMINI_MODELS[0]
 
 # Proxy settings (opt-in via env)
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
@@ -257,58 +261,61 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         )
         max_tokens = 4096
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-    
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": max_tokens
-        }
-    }
-    
-    try:
-        database.log_api_call("gemini")
-        data_bytes = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers={
-                'Content-Type': 'application/json',
-                'x-goog-api-key': GEMINI_API_KEY
+    for model_name in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": max_tokens
             }
-        )
-        with _urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode('utf-8'))
-            candidates = body.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts and "text" in parts[0]:
-                    res_text = parts[0]["text"].strip()
-                    if res_text:
-                        if not res_text.rstrip().endswith(('.', '!', '?', '"', "'", ')', '»', '”')):
-                            last_p = max(res_text.rfind('.'), res_text.rfind('!'), res_text.rfind('?'))
-                            if last_p > 50:
-                                res_text = res_text[:last_p + 1].strip()
-                        if cache_key:
-                            database.add_cached_tldr(cache_key, res_text)
-                        return res_text
-    except urllib.error.HTTPError as e:
-        err_body = ""
+        }
+        
         try:
-            err_body = e.read().decode('utf-8', errors='ignore')
-        except Exception:
-            pass
-        if e.code == 429:
-            logger.warning(f"Gemini API rate limit reached (HTTP 429) for model '{GEMINI_MODEL}'. Details: {err_body}")
-        else:
-            logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{GEMINI_MODEL}'. URL: {url.split('?key=')[0]}. Details: {err_body}")
-        return None
-    except Exception as e:
-        logger.error(f"Gemini API summarization failed for model '{GEMINI_MODEL}': {e}")
-        return None
+            database.log_api_call("gemini")
+            data_bytes = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': GEMINI_API_KEY
+                }
+            )
+            with _urlopen(req, timeout=15) as resp:
+                body = json.loads(resp.read().decode('utf-8'))
+                candidates = body.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        res_text = parts[0]["text"].strip()
+                        if res_text:
+                            if not res_text.rstrip().endswith(('.', '!', '?', '"', "'", ')', '»', '”')):
+                                last_p = max(res_text.rfind('.'), res_text.rfind('!'), res_text.rfind('?'))
+                                if last_p > 50:
+                                    res_text = res_text[:last_p + 1].strip()
+                            if cache_key:
+                                database.add_cached_tldr(cache_key, res_text)
+                            return res_text
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+            if e.code == 429:
+                logger.warning(f"Gemini API model '{model_name}' rate limited (HTTP 429). Falling back to next model...")
+                continue
+            else:
+                logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{model_name}'. Details: {err_body}")
+                continue
+        except Exception as e:
+            logger.error(f"Gemini API summarization failed for model '{model_name}': {e}")
+            continue
+
     return None
 
 def _extract_url_from_msg_or_payload(payload: str, msg) -> str | None:

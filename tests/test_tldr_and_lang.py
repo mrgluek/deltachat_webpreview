@@ -106,6 +106,29 @@ class TestTldrAndLang(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_count, 1)
 
     @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch.object(bot, "GEMINI_MODELS", ["model1", "model2"])
+    @patch("bot._urlopen")
+    def test_multi_model_fallback(self, mock_urlopen):
+        import urllib.error
+        mock_resp_ok = MagicMock()
+        mock_resp_ok.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "Fallback model summary."}]}}]}'
+        )
+        cm_ok = MagicMock()
+        cm_ok.__enter__.return_value = mock_resp_ok
+        
+        err = urllib.error.HTTPError("http://example.com", 429, "Too Many Requests", {}, MagicMock(read=lambda: b"{}"))
+        mock_urlopen.side_effect = [
+            err,
+            cm_ok
+        ]
+
+        text = "This is a long article text about technology and science. " * 10
+        res = bot._summarize_text_with_gemini(text, title="Test", target_lang="EN")
+        self.assertEqual(res, "Fallback model summary.")
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
     @patch("bot._summarize_text_with_gemini")
     def test_format_preview_caption_with_tldr(self, mock_summarize):
         mock_summarize.return_value = "Brief 1-paragraph summary."

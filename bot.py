@@ -244,18 +244,18 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         
     if short_paragraph:
         prompt = (
-            f"Summarize the following article text in 1 concise paragraph (maximum 3 sentences) in {lang_str}. "
-            "Do not include introductory words or meta-commentary, just output the summary text directly:\n\n"
+            f"Summarize the following article text in 1 concise paragraph (2-3 clear sentences) in {lang_str}. "
+            "Cover the main event, key details, and why it matters. Do not include introductory words or meta-commentary, output the summary directly:\n\n"
             f"Title: {title or 'Untitled'}\n\n{truncated}"
         )
-        max_tokens = 250
+        max_tokens = 2048
     else:
         prompt = (
-            f"Summarize the following article in 1-2 paragraphs (or 3-5 key bullet points) in {lang_str}. "
-            "Do not include meta-commentary, just output the clean summary text directly:\n\n"
+            f"Summarize the key points of the following article in 2-3 informative paragraphs (or key bullet points) in {lang_str}. "
+            "Provide a comprehensive overview covering what happened, key people involved, and context. Do not include meta-commentary, output the summary text directly:\n\n"
             f"Title: {title or 'Untitled'}\n\n{truncated}"
         )
-        max_tokens = 500
+        max_tokens = 4096
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     
@@ -287,6 +287,10 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
                 if parts and "text" in parts[0]:
                     res_text = parts[0]["text"].strip()
                     if res_text:
+                        if not res_text.rstrip().endswith(('.', '!', '?', '"', "'", ')', '»', '”')):
+                            last_p = max(res_text.rfind('.'), res_text.rfind('!'), res_text.rfind('?'))
+                            if last_p > 50:
+                                res_text = res_text[:last_p + 1].strip()
                         if cache_key:
                             database.add_cached_tldr(cache_key, res_text)
                         return res_text

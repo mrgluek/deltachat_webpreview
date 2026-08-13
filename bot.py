@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.4"
+VERSION = "2.5.5"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -481,9 +481,74 @@ def _is_image_url(url: str) -> bool:
         pass
     return False
 
+def _save_image_as_webp(img, dest, max_dim: int = 800, quality: int = 80) -> tuple[int, int, bool]:
+    """
+    Resizes (max_dim on longer side) and saves a PIL Image as WebP to dest (filepath or BytesIO).
+    Preserves animation if the source image is an animated GIF/WebP.
+    Returns (new_width, new_height, is_animated).
+    """
+    from PIL import Image, ImageSequence
+
+    orig_width, orig_height = img.size
+    new_width, new_height = orig_width, orig_height
+    if orig_width > max_dim or orig_height > max_dim:
+        if orig_width > orig_height:
+            new_width = max_dim
+            new_height = int(orig_height * (max_dim / orig_width))
+        else:
+            new_height = max_dim
+            new_width = int(orig_width * (max_dim / orig_height))
+
+    is_animated = getattr(img, "is_animated", False) and getattr(img, "n_frames", 1) > 1
+
+    if is_animated:
+        frames = []
+        durations = []
+        for frame in ImageSequence.Iterator(img):
+            dur = frame.info.get("duration", 100)
+            durations.append(dur if isinstance(dur, int) and dur > 0 else 100)
+
+            f = frame.copy()
+            if new_width != orig_width or new_height != orig_height:
+                f = f.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+            has_alpha = "transparency" in f.info or f.mode in ("RGBA", "LA", "P")
+            target_mode = "RGBA" if has_alpha else "RGB"
+            if f.mode != target_mode:
+                f = f.convert(target_mode)
+            frames.append(f)
+
+        loop = img.info.get("loop", 0)
+        loop_val = loop if isinstance(loop, int) else 0
+
+        frames[0].save(
+            dest,
+            format="WEBP",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=loop_val,
+            quality=quality,
+            method=4,
+        )
+    else:
+        f = img.copy() if (new_width != orig_width or new_height != orig_height) else img
+        if new_width != orig_width or new_height != orig_height:
+            f = f.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        has_alpha = "transparency" in f.info or f.mode in ("RGBA", "LA", "P")
+        target_mode = "RGBA" if has_alpha else "RGB"
+        if f.mode != target_mode:
+            f = f.convert(target_mode)
+
+        f.save(dest, format="WEBP", quality=quality)
+
+    return new_width, new_height, is_animated
+
 def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str]:
     """
     Download an image from URL, check size (max 10MB), compress to WebP with max 800px on longer side.
+    Preserves animation for GIFs and animated WebPs.
     Returns (success, cached_filepath_or_error, compress_info_string).
     """
     max_size = 10 * 1024 * 1024  # 10 MB
@@ -558,31 +623,18 @@ def _download_and_compress_image(url: str, chat_id: int) -> tuple[bool, str, str
             path = urllib.parse.unquote(parsed.path)
             filename = os.path.basename(path) or 'image'
             
-            # Resize if needed (max 800px on longer side)
-            new_width, new_height = orig_width, orig_height
-            if orig_width > 800 or orig_height > 800:
-                if orig_width > orig_height:
-                    new_width = 800
-                    new_height = int(orig_height * (800 / orig_width))
-                else:
-                    new_height = 800
-                    new_width = int(orig_width * (800 / orig_height))
-                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Convert to RGB/RGBA for WebP
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGB")
-            
-            # Save as WebP
+            # Save as WebP (preserving animation if animated)
             import tempfile
             tmpdir = tempfile.mkdtemp(prefix="image_webp_")
             cached_path = os.path.join(tmpdir, "compressed.webp")
-            img.save(cached_path, format="WEBP", quality=80)
+            
+            new_width, new_height, is_anim = _save_image_as_webp(img, cached_path, max_dim=800, quality=80)
             
             comp_size_str = _format_size(os.path.getsize(cached_path))
+            anim_tag = " Animated" if is_anim else ""
             
             # Build compress info: "file.jpg preview: 952x635 (JPG, 133 KB) -> 800x533 (WebP, 56 KB)"
-            compress_info = f"{filename} preview: {orig_width}x{orig_height} ({ext_format}, {orig_size_str}) -> {new_width}x{new_height} (WebP, {comp_size_str})"
+            compress_info = f"{filename} preview: {orig_width}x{orig_height} ({ext_format}, {orig_size_str}) -> {new_width}x{new_height} (WebP{anim_tag}, {comp_size_str})"
             
             return True, cached_path, compress_info
         except Exception as pillow_err:
@@ -888,28 +940,13 @@ def _decode_html(html_bytes: bytes, response_headers=None) -> str:
             return html_bytes.decode('latin-1', errors='ignore')
 
 def compress_image(image_bytes: bytes, max_width=800, quality=70) -> bytes:
-    """Compresses an image to WebP or JPEG, resizing if wider than max_width."""
+    """Compresses an image to WebP, resizing if wider than max_width, preserving animation if present."""
     try:
         from PIL import Image
         import io
         img = Image.open(io.BytesIO(image_bytes))
-        
-        # Determine output format and convert if necessary
-        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-            img_format = "WEBP"
-        else:
-            img_format = "JPEG"
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-        
-        # Resize if width exceeds max_width
-        if img.width > max_width:
-            ratio = max_width / float(img.width)
-            new_height = int(float(img.height) * ratio)
-            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
-            
         out_io = io.BytesIO()
-        img.save(out_io, format=img_format, quality=quality, optimize=True)
+        _save_image_as_webp(img, out_io, max_dim=max_width, quality=quality)
         return out_io.getvalue()
     except Exception as e:
         logger.warning(f"Failed to compress image: {e}")
@@ -2475,25 +2512,13 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
         img = Image.open(io.BytesIO(response_data))
         width, height = img.size
         
-        if width > 800 or height > 800:
-            if width > height:
-                new_width = 800
-                new_height = int(height * (800 / width))
-            else:
-                new_height = 800
-                new_width = int(width * (800 / height))
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        # Convert palette or grayscale images to RGB/RGBA for clean WebP conversion
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGB")
-            
         cached_filename = f"og_{urlhash}.webp"
         cached_path = os.path.join(CACHE_DIR, cached_filename)
-        img.save(cached_path, format="WEBP", quality=80)
+        new_w, new_h, is_anim = _save_image_as_webp(img, cached_path, max_dim=800, quality=80)
+        
         orig_size_str = _format_size(len(response_data))
         comp_size_str = _format_size(os.path.getsize(cached_path))
-        logger.info(f"Compressed OG image to WebP: {width}x{height} -> {img.width}x{img.height} ({orig_size_str} -> {comp_size_str})")
+        logger.info(f"Compressed OG image to WebP (animated={is_anim}): {width}x{height} -> {new_w}x{new_h} ({orig_size_str} -> {comp_size_str})")
         return cached_path
     except Exception as pillow_err:
         logger.warning(f"Pillow image compression failed: {pillow_err}. Falling back to original bytes.")

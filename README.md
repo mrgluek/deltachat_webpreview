@@ -4,6 +4,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 
 ## Features
 
+- 🖼️ **Animated WebP Support:** Automatically preserves multi-frame animation when downloading, converting, and resizing GIF images or animated WebP files, converting them into featherweight Animated WebP files (maintaining frame rate, loops, and transparency).
 - 📄 **Compressed Reader Mode (`/preview <url>`):** Compile webpages into highly compressed, clutter-free reader views using Mozilla's Readability. All images are automatically downloaded, optimized, resized, and inlined as Base64 (with responsive/lazy-loading attributes like srcset and data-src stripped to guarantee offline/local rendering).
 - ⚡ **AI Article Summarization (`/tldr <url>` & Previews):** Generate 1-2 paragraph AI summaries (or key bullet points) of articles using Google Gemini API (`GEMINI_API_KEY`). Previews generated with `/preview` or `/webxdc` automatically include a concise 1-paragraph TL;DR above the link. Summaries are automatically cached in SQLite for 24 hours per URL, language, and mode to conserve API quota and provide instant (<10ms) responses.
 - 🌐 **Per-Chat Summary Language (`/lang <code>`):** Set target summary language for each chat (e.g. `/lang RU`, `/lang EN`, `/lang DE`).
@@ -128,6 +129,7 @@ The repository ships with a `tests/` directory containing 56 unit tests:
 | `tests/test_invidious.py` | `_extract_youtube_id_from_invidious`, `_clean_domain`, Invidious database helpers |
 | `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, SVG skip, octet-stream logic, cache saving, OG fallback |
 | `tests/test_webpreview.py` | `/webpreview` command, DB status checks, and `on_new_message` auto-preview toggling |
+| `tests/test_image_compression.py` | Animated GIF / WebP frame iteration, animation preservation, and image resizing |
 
 To run locally (inside the virtualenv):
 

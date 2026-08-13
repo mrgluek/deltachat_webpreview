@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.5] - 2026-08-13
+
+### Added
+- **Animated WebP Preservation**: Direct GIF links, animated WebP files, and OpenGraph preview images now retain multi-frame animation when converted/compressed to WebP format. `_save_image_as_webp` iterates through frames (`PIL.ImageSequence.Iterator`), resizes each frame preserving aspect ratio, preserves alpha/transparency channels, and saves using `save_all=True` with original frame durations and loops.
+- **Unit Tests**: Added `tests/test_image_compression.py` verifying animated GIF to animated WebP conversion, frame counts, loop preservation, and static image handling.
+
 ## [2.5.4] - 2026-07-27
 
 ### Added

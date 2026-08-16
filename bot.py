@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.8"
+VERSION = "2.5.9"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -245,20 +245,21 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
 
     truncated = clean_text[:20000]
     if lang_str in ("AUTO", ""):
-        lang_str = "the language of the article"
+        lang_str = "the language of the text"
         
+    title_prefix = f"Title: {title}\n\n" if title else ""
     if short_paragraph:
         prompt = (
-            f"Summarize the following article text in 1 concise paragraph (2-3 clear sentences) in {lang_str}. "
+            f"Summarize the following text in 1 concise paragraph (2-3 clear sentences) in {lang_str}. "
             "Cover the main event, key details, and why it matters. Do not include introductory words or meta-commentary, output the summary directly:\n\n"
-            f"Title: {title or 'Untitled'}\n\n{truncated}"
+            f"{title_prefix}{truncated}"
         )
         max_tokens = 2048
     else:
         prompt = (
-            f"Summarize the key points of the following article in 2-3 informative paragraphs (or key bullet points) in {lang_str}. "
-            "Provide a comprehensive overview covering what happened, key people involved, and context. Do not include meta-commentary, output the summary text directly:\n\n"
-            f"Title: {title or 'Untitled'}\n\n{truncated}"
+            f"Summarize the key points of the following text in 2-3 informative paragraphs (or key bullet points) in {lang_str}. "
+            "Provide a comprehensive overview covering what happened, key points, and context. Do not include meta-commentary, output the summary text directly:\n\n"
+            f"{title_prefix}{truncated}"
         )
         max_tokens = 4096
 
@@ -3503,8 +3504,41 @@ def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
         _send(bot, accid, chat_id, f"❌ Error generating summary: {e}")
 
 
+def _do_tldr_text(bot, accid, chat_id, req_msg_id, from_id, text: str):
+    """Processes TL;DR summarization for plain or quoted message text in background thread."""
+    if not GEMINI_API_KEY:
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id,
+              "❌ `GEMINI_API_KEY` is not configured.\n"
+              "Please add your Google Gemini API key to `.env` to enable summarization.")
+        return
+
+    _react(bot, accid, req_msg_id, "⏳")
+
+    try:
+        lang = database.get_chat_lang(chat_id)
+        text_hash = f"msg_{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
+        summary = _summarize_text_with_gemini(text, title=None, target_lang=lang, short_paragraph=False, url_key=text_hash)
+
+        if not summary:
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, "❌ Failed to generate summary via Gemini API.")
+            return
+
+        lang_suffix = f" ({lang})" if lang != "AUTO" else ""
+        reply = f"⚡ **TL;DR**{lang_suffix}:\n\n{summary}"
+
+        _send(bot, accid, chat_id, reply)
+        _react(bot, accid, req_msg_id, "☑️")
+        database.add_preview_log(chat_id, from_id, "text_message", "Quoted Message", len(summary), 0)
+    except Exception as e:
+        logger.error(f"Error in text /tldr summarization: {e}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Error generating summary: {e}")
+
+
 def _handle_tldr_command(bot, accid, event):
-    """Processes /tldr command to generate AI summary of an article."""
+    """Processes /tldr command to generate AI summary of an article or message."""
     msg = event.msg
     if _is_duplicate_msg(msg.id, "tldr"):
         return
@@ -3515,19 +3549,46 @@ def _handle_tldr_command(bot, accid, event):
     payload = (event.payload or "").strip()
     url = _extract_url_from_msg_or_payload(payload, msg)
     
-    if not url:
-        _send(bot, accid, msg.chat_id,
-              "Usage:\n"
-              "• `/tldr <url>` — Generate article summary (TL;DR)\n"
-              "• Reply `/tldr` to any message containing a link.")
+    if url:
+        t = threading.Thread(
+            target=_do_tldr,
+            args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
+            daemon=True
+        )
+        t.start()
         return
 
-    t = threading.Thread(
-        target=_do_tldr,
-        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
-        daemon=True
-    )
-    t.start()
+    # No URL found: check for quoted text or text payload to summarize directly
+    quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
+    text_to_summarize = ""
+    if quote:
+        if isinstance(quote, dict):
+            text_to_summarize = quote.get("text", "")
+        else:
+            text_to_summarize = getattr(quote, "text", "")
+
+    if not text_to_summarize and payload:
+        text_to_summarize = payload
+
+    if text_to_summarize and text_to_summarize.strip():
+        clean_text = text_to_summarize.strip()
+        if len(clean_text) < 50:
+            _react(bot, accid, msg.id, "❌")
+            _send(bot, accid, msg.chat_id, "❌ Message is too short to summarize (minimum 50 characters).")
+            return
+
+        t = threading.Thread(
+            target=_do_tldr_text,
+            args=(bot, accid, msg.chat_id, msg.id, msg.from_id, clean_text),
+            daemon=True
+        )
+        t.start()
+        return
+
+    _send(bot, accid, msg.chat_id,
+          "Usage:\n"
+          "• `/tldr <url>` — Generate article summary (TL;DR)\n"
+          "• Reply `/tldr` to any message or link to summarize it.")
 
 def _handle_lang_command(bot, accid, event):
     """Processes /lang command to view or set preferred summary language for a chat."""
@@ -3742,7 +3803,7 @@ def get_help_text(bot, accid, from_id):
         f"/preview <url> — Generate compressed reader-mode page (recommended)\n"
         f"/webxdc <url> — Generate WebXDC app from webpage 📱\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
-        f"/tldr <url> — Generate AI article summary (TL;DR) ⚡\n"
+        f"/tldr [url] — Generate AI summary of article or quoted message ⚡\n"
         f"/lang [code] — Set summary language for this chat (e.g. /lang RU) 🌐\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/stats — View bot generation statistics\n"

@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.9] - 2026-08-16
+
+### Added
+- **Direct & Quoted Message Summarization (`/tldr`)**: Added support for summarizing plain text and quoted messages without links. Replying `/tldr` to any text message or passing text directly via `/tldr <text>` generates a concise 1-2 paragraph AI summary using the chat's target language (or `AUTO`). Summaries are cached in SQLite for 24 hours.
+- **Unit Tests**: Added test cases for quoted message summarization, direct text summarization, and short text validation in `tests/test_tldr_and_lang.py`.
+
 ## [2.5.8] - 2026-08-16
 
 ### Changed

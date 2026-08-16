@@ -226,7 +226,7 @@ class TestTldrAndLang(unittest.TestCase):
         # Regular user help text
         mock_is_admin.return_value = False
         help_user = bot.get_help_text(mock_bot, 1, 10)
-        self.assertIn("/tldr <url>", help_user)
+        self.assertIn("/tldr", help_user)
         self.assertIn("/preview <url>", help_user)
         self.assertIn("/webxdc <url>", help_user)
         self.assertNotIn("/keep <url>", help_user)
@@ -235,6 +235,43 @@ class TestTldrAndLang(unittest.TestCase):
         mock_is_admin.return_value = True
         help_admin = bot.get_help_text(mock_bot, 1, 10)
         self.assertIn("/keep <url>", help_admin)
+
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_tldr_text")
+    def test_tldr_quoted_text_without_link(self, mock_do_tldr_text, mock_rate_limit):
+        mock_bot = MagicMock()
+        quoted_msg = MagicMock()
+        quoted_msg.quote = {"text": "This is a very long text message without any links inside it, providing background and detailed instructions for everyone in the group."}
+        
+        event = MockEvent(chat_id=1, text="/tldr", quote=quoted_msg.quote)
+        bot._handle_tldr_command(mock_bot, 1, event)
+
+        mock_do_tldr_text.assert_called_once()
+        args, kwargs = mock_do_tldr_text.call_args
+        self.assertEqual(args[5], quoted_msg.quote["text"])
+
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_tldr_text")
+    def test_tldr_direct_plain_text(self, mock_do_tldr_text, mock_rate_limit):
+        mock_bot = MagicMock()
+        long_text = "This is a direct long text provided as payload without any HTTP links, describing the situation in great detail."
+        
+        event = MockEvent(chat_id=1, payload=long_text, text=f"/tldr {long_text}")
+        bot._handle_tldr_command(mock_bot, 1, event)
+
+        mock_do_tldr_text.assert_called_once()
+        args, kwargs = mock_do_tldr_text.call_args
+        self.assertEqual(args[5], long_text)
+
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._send")
+    def test_tldr_plain_text_too_short(self, mock_send, mock_rate_limit):
+        mock_bot = MagicMock()
+        event = MockEvent(chat_id=1, payload="short", text="/tldr short")
+        bot._handle_tldr_command(mock_bot, 1, event)
+
+        mock_send.assert_called_once()
+        self.assertIn("too short", mock_send.call_args[0][3])
 
 
 if __name__ == "__main__":

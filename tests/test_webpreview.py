@@ -35,17 +35,20 @@ class TestWebPreviewToggle(unittest.TestCase):
     """Tests for the /webpreview toggle command and logic."""
 
     def setUp(self):
-        # Ensure database is initialized since tearDown might delete it
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp_db.close()
+        database.DB_PATH = self.tmp_db.name
         database.init_db()
         # Reset DB state for chat_id=1 and chat_id=2
         database.set_webpreview_disabled(1, False)
         database.set_webpreview_disabled(2, False)
         database.set_config("greeted_10", "1")
         bot.dc_accid = 1
+        bot._processed_msg_ids.clear()
 
     def tearDown(self):
         try:
-            os.remove(_TEST_DB)
+            os.remove(self.tmp_db.name)
         except Exception:
             pass
 

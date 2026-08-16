@@ -33,12 +33,16 @@ class MockEvent:
 
 class TestWebXDC(unittest.TestCase):
     def setUp(self):
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp_db.close()
+        database.DB_PATH = self.tmp_db.name
         database.init_db()
         bot.dc_accid = 1
+        bot._processed_msg_ids.clear()
 
     def tearDown(self):
         try:
-            os.remove(_TEST_DB)
+            os.remove(self.tmp_db.name)
         except Exception:
             pass
 

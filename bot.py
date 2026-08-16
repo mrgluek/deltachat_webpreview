@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.5"
+VERSION = "2.5.6"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -2544,6 +2544,14 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
             
     return None
 
+def _format_preview_buttons(bot, accid, from_id, urlhash: str) -> str:
+    """Format action buttons shown below preview cards."""
+    buttons = f"⚡\u00a0/tldr_{urlhash}   🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}"
+    if _is_dc_admin(bot, accid, from_id):
+        buttons += f"   🏛️\u00a0/keep_{urlhash}"
+    return buttons
+
+
 def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
     """Fetches OG data, downloads banner image, and sends preview options to group (with 1h cache)."""
     try:
@@ -2591,10 +2599,11 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     cached_jina_markdown = cached.get("jina_markdown")
                     
                     emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if cached_jina_markdown else "🌐")
+                    buttons = _format_preview_buttons(bot, accid, from_id, urlhash)
                     if cached_warning:
-                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
+                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n{buttons}"
                     else:
-                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
+                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\n{buttons}"
 
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
@@ -2646,10 +2655,11 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
             _save_jina_preview_to_cache(url, urlhash, title, jina_markdown)
             
         emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if jina_markdown else "🌐")
+        buttons = _format_preview_buttons(bot, accid, from_id, urlhash)
         if warning:
-            caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
+            caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n{buttons}"
         else:
-            caption = f"{emoji_prefix} [{title}]({url})\n\n🖥️\u00a0/preview_{urlhash}   📦\u00a0/webxdc_{urlhash}   🏛️\u00a0/keep_{urlhash}"
+            caption = f"{emoji_prefix} [{title}]({url})\n\n{buttons}"
         
         # 6. Download image if exists, saving to persistent cache folder
         img_cache_path = None
@@ -3417,12 +3427,88 @@ def _handle_jina_command(bot, accid, event):
     threading.Thread(target=_do_jina_check, daemon=True).start()
 
 
+def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
+    """Processes TL;DR summarization for a URL in background thread."""
+    if not GEMINI_API_KEY:
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id,
+              "❌ `GEMINI_API_KEY` is not configured.\n"
+              "Please add your Google Gemini API key to `.env` to enable summarization.")
+        return
+
+    if _is_internal_or_invalid_url(url):
+        logger.info(f"Local or invalid URL check hit for tldr: {url} in chat {chat_id}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Failed to process URL.\nReason: Local, internal, or invalid host/IP address.")
+        return
+
+    if database.is_excluded(url):
+        _react(bot, accid, req_msg_id, "⚠️")
+        _send(bot, accid, chat_id, "❌ Summarization skipped: URL domain is excluded by configuration.")
+        return
+
+    _react(bot, accid, req_msg_id, "⏳")
+
+    try:
+        urlhash = database.get_or_create_url_hash(url)
+        cached_og = database.get_cached_og(urlhash)
+        
+        title = None
+        jina_markdown = None
+        
+        if cached_og:
+            title = cached_og.get("title")
+            jina_markdown = cached_og.get("jina_markdown")
+            
+        if not jina_markdown:
+            og_title, _, _, _, fetched_md = _get_og_preview_data(url)
+            title = title or og_title
+            jina_markdown = fetched_md
+
+        if not jina_markdown or not jina_markdown.strip():
+            try:
+                html_str, _ = _download_page_html(url)
+                if html_str:
+                    doc = Document(html_str)
+                    title = title or doc.title()
+                    soup = BeautifulSoup(doc.summary(), BS_PARSER)
+                    jina_markdown = soup.get_text(separator="\n", strip=True)
+            except Exception as fallback_err:
+                logger.warning(f"Local text extraction fallback failed for {url}: {fallback_err}")
+            
+        if not jina_markdown or not jina_markdown.strip():
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, "❌ Failed to extract readable text content from the URL for summarization.")
+            return
+            
+        lang = database.get_chat_lang(chat_id)
+        url_key = database.get_or_create_url_hash(url)
+        summary = _summarize_text_with_gemini(jina_markdown, title=title, target_lang=lang, short_paragraph=False, url_key=url_key)
+        
+        if not summary:
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, "❌ Failed to generate summary via Gemini API.")
+            return
+            
+        clean_title = (title or "Article").replace("[", "(").replace("]", ")")
+        reply = f"⚡ **TL;DR** ({lang}):\n\n{summary}\n\n🔗 [{clean_title}]({url})"
+        
+        _send(bot, accid, chat_id, reply)
+        _react(bot, accid, req_msg_id, "☑️")
+        database.add_preview_log(chat_id, from_id, url, title or "TL;DR", len(summary), 0)
+    except Exception as e:
+        logger.error(f"Error in /tldr command for {url}: {e}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Error generating summary: {e}")
+
+
 def _handle_tldr_command(bot, accid, event):
     """Processes /tldr command to generate AI summary of an article."""
     msg = event.msg
     if _is_duplicate_msg(msg.id, "tldr"):
         return
     if _is_rate_limited(bot, accid, msg.from_id):
+        _react(bot, accid, msg.id, "⏱")
         return
 
     payload = (event.payload or "").strip()
@@ -3435,72 +3521,12 @@ def _handle_tldr_command(bot, accid, event):
               "• Reply `/tldr` to any message containing a link.")
         return
 
-    if database.is_excluded(url):
-        _send(bot, accid, msg.chat_id, "❌ Summarization skipped: URL domain is excluded by configuration.")
-        return
-
-    if not GEMINI_API_KEY:
-        _send(bot, accid, msg.chat_id,
-              "❌ `GEMINI_API_KEY` is not configured.\n"
-              "Please add your Google Gemini API key to `.env` to enable summarization.")
-        return
-
-    _react(bot, accid, msg.id, "⏳")
-
-    def _do_tldr():
-        try:
-            urlhash = database.get_or_create_url_hash(url)
-            cached_og = database.get_cached_og(urlhash)
-            
-            title = None
-            jina_markdown = None
-            
-            if cached_og:
-                title = cached_og.get("title")
-                jina_markdown = cached_og.get("jina_markdown")
-                
-            if not jina_markdown:
-                og_title, _, _, _, fetched_md = _get_og_preview_data(url)
-                title = title or og_title
-                jina_markdown = fetched_md
-
-            if not jina_markdown or not jina_markdown.strip():
-                try:
-                    html_str, _ = _download_page_html(url)
-                    if html_str:
-                        doc = Document(html_str)
-                        title = title or doc.title()
-                        soup = BeautifulSoup(doc.summary(), BS_PARSER)
-                        jina_markdown = soup.get_text(separator="\n", strip=True)
-                except Exception as fallback_err:
-                    logger.warning(f"Local text extraction fallback failed for {url}: {fallback_err}")
-                
-            if not jina_markdown or not jina_markdown.strip():
-                _react(bot, accid, msg.id, "❌")
-                _send(bot, accid, msg.chat_id, "❌ Failed to extract readable text content from the URL for summarization.")
-                return
-                
-            lang = database.get_chat_lang(msg.chat_id)
-            url_key = database.get_or_create_url_hash(url)
-            summary = _summarize_text_with_gemini(jina_markdown, title=title, target_lang=lang, short_paragraph=False, url_key=url_key)
-            
-            if not summary:
-                _react(bot, accid, msg.id, "❌")
-                _send(bot, accid, msg.chat_id, "❌ Failed to generate summary via Gemini API.")
-                return
-                
-            clean_title = (title or "Article").replace("[", "(").replace("]", ")")
-            reply = f"⚡ **TL;DR** ({lang}):\n\n{summary}\n\n🔗 [{clean_title}]({url})"
-            
-            _send(bot, accid, msg.chat_id, reply)
-            _react(bot, accid, msg.id, "☑️")
-            database.add_preview_log(msg.chat_id, msg.from_id, url, title or "TL;DR", len(summary), 0)
-        except Exception as e:
-            logger.error(f"Error in /tldr command for {url}: {e}")
-            _react(bot, accid, msg.id, "❌")
-            _send(bot, accid, msg.chat_id, f"❌ Error generating summary: {e}")
-
-    threading.Thread(target=_do_tldr, daemon=True).start()
+    t = threading.Thread(
+        target=_do_tldr,
+        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
+        daemon=True
+    )
+    t.start()
 
 def _handle_lang_command(bot, accid, event):
     """Processes /lang command to view or set preferred summary language for a chat."""
@@ -3718,7 +3744,6 @@ def get_help_text(bot, accid, from_id):
         f"/tldr <url> — Generate AI article summary (TL;DR) ⚡\n"
         f"/lang [code] — Set summary language for this chat (e.g. /lang RU) 🌐\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
-        f"/keep <url> — Save URL to Web Archive 🏛️\n"
         f"/stats — View bot generation statistics\n"
         f"/webpreview [on|off] — Toggle automatic link previews 🔇\n"
 
@@ -3753,6 +3778,8 @@ def get_help_text(bot, accid, from_id):
         if _karakeep_enabled():
             help_text += "\n**KaraKeep:**\n"
             help_text += "/keep <url> — Save URL to KaraKeep (instead of Web Archive) 🔖\n"
+        else:
+            help_text += "/keep <url> — Save URL to Web Archive 🏛️\n"
 
     return help_text
 
@@ -4320,8 +4347,8 @@ def on_new_message(bot, accid, event):
     if not text:
         return
 
-    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash, /webxdc_urlhash, /download_urlhash or /keep_urlhash
-    m = re.match(r"^/(preview|previewjs|archive|webxdc|download|keep)_([0-9a-fA-F]{8})(?:@\w+)?", text)
+    # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash, /webxdc_urlhash, /download_urlhash, /keep_urlhash or /tldr_urlhash
+    m = re.match(r"^/(preview|previewjs|archive|webxdc|download|keep|tldr)_([0-9a-fA-F]{8})(?:@\w+)?", text)
     if m:
         cmd_type, urlhash = m.group(1), m.group(2)
         url = database.get_url_by_hash(urlhash)
@@ -4346,6 +4373,13 @@ def on_new_message(bot, accid, event):
             _react(bot, accid, msg.id, "🏛️" if not (_is_dc_admin(bot, accid, msg.from_id) and _karakeep_enabled()) else "🔖")
             t = threading.Thread(
                 target=_do_keep,
+                args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
+                daemon=True
+            )
+            t.start()
+        elif cmd_type == "tldr":
+            t = threading.Thread(
+                target=_do_tldr,
                 args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url),
                 daemon=True
             )

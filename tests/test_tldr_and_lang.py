@@ -34,17 +34,20 @@ class MockEvent:
 class TestTldrAndLang(unittest.TestCase):
 
     def setUp(self):
+        self.old_db_path = database.DB_PATH
         self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.tmp_db.close()
         database.DB_PATH = self.tmp_db.name
         database.init_db()
         bot.dc_accid = 1
+        bot._processed_msg_ids.clear()
 
     def tearDown(self):
         try:
             os.remove(self.tmp_db.name)
         except Exception:
             pass
+        database.DB_PATH = self.old_db_path
 
     def test_database_chat_lang(self):
         # Default should be EN
@@ -180,6 +183,58 @@ class TestTldrAndLang(unittest.TestCase):
         self.assertEqual(database.get_chat_lang(50), "RU")
         mock_send.assert_called_once()
         self.assertIn("Preferred summary language for this chat set to **RU**", mock_send.call_args[0][3])
+
+    @patch("bot._do_tldr")
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._is_bot_blocked", return_value=False)
+    def test_dynamic_tldr_trigger(self, mock_blocked, mock_rate_limit, mock_do_tldr):
+        urlhash = database.get_or_create_url_hash("https://news.org/dynamic")
+        mock_bot = MagicMock()
+
+        event = MockEvent(chat_id=1, text=f"/tldr_{urlhash}")
+        bot.on_new_message(mock_bot, 1, event)
+
+        mock_do_tldr.assert_called_once()
+        args, kwargs = mock_do_tldr.call_args
+        self.assertEqual(args[5], "https://news.org/dynamic")
+
+    @patch("bot._is_dc_admin")
+    def test_format_preview_buttons(self, mock_is_admin):
+        mock_bot = MagicMock()
+        urlhash = "1234abcd"
+
+        # Regular user: /tldr, /preview, /webxdc
+        mock_is_admin.return_value = False
+        buttons_user = bot._format_preview_buttons(mock_bot, 1, 10, urlhash)
+        self.assertEqual(buttons_user, "⚡\u00a0/tldr_1234abcd   🖥️\u00a0/preview_1234abcd   📦\u00a0/webxdc_1234abcd")
+        self.assertNotIn("/keep", buttons_user)
+
+        # Admin user: /tldr, /preview, /webxdc, /keep
+        mock_is_admin.return_value = True
+        buttons_admin = bot._format_preview_buttons(mock_bot, 1, 10, urlhash)
+        self.assertEqual(buttons_admin, "⚡\u00a0/tldr_1234abcd   🖥️\u00a0/preview_1234abcd   📦\u00a0/webxdc_1234abcd   🏛️\u00a0/keep_1234abcd")
+        self.assertIn("/keep_1234abcd", buttons_admin)
+
+    @patch("bot._is_dc_admin")
+    def test_help_text_keep_visibility(self, mock_is_admin):
+        mock_bot = MagicMock()
+        mock_contact = MagicMock()
+        mock_contact.address = "user@example.com"
+        mock_bot.rpc.get_contact.return_value = mock_contact
+        database.set_config("admin_dc_email", "admin@example.com")
+
+        # Regular user help text
+        mock_is_admin.return_value = False
+        help_user = bot.get_help_text(mock_bot, 1, 10)
+        self.assertIn("/tldr <url>", help_user)
+        self.assertIn("/preview <url>", help_user)
+        self.assertIn("/webxdc <url>", help_user)
+        self.assertNotIn("/keep <url>", help_user)
+
+        # Admin user help text
+        mock_is_admin.return_value = True
+        help_admin = bot.get_help_text(mock_bot, 1, 10)
+        self.assertIn("/keep <url>", help_admin)
 
 
 if __name__ == "__main__":

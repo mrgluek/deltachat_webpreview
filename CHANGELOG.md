@@ -2,6 +2,16 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.6] - 2026-08-16
+
+### Changed
+- **Preview Card Action Buttons**: Replaced `/keep` in standard preview card action buttons with `/tldr`. Default action buttons for all users are now `⚡ /tldr`, `🖥️ /preview`, and `📦 /webxdc`.
+- **Admin-Only `/keep` Visibility**: The `🏛️ /keep` button under preview cards and in `/help` is now hidden for regular users and displayed only for the bot administrator.
+
+### Added
+- **Dynamic TL;DR Trigger (`/tldr_[hash]`)**: Added dynamic command `/tldr_{urlhash}` link handling so clicking `⚡ /tldr` under any link preview instantly generates an AI summary of that article.
+- **Unit Tests**: Added unit tests in `tests/test_tldr_and_lang.py` for `/tldr_[hash]` dynamic command trigger, preview button formatting (admin vs regular user), and `/help` command keep visibility.
+
 ## [2.5.5] - 2026-08-13
 
 ### Added

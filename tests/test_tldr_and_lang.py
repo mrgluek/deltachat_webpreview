@@ -50,8 +50,8 @@ class TestTldrAndLang(unittest.TestCase):
         database.DB_PATH = self.old_db_path
 
     def test_database_chat_lang(self):
-        # Default should be EN
-        self.assertEqual(database.get_chat_lang(123), "EN")
+        # Default should be AUTO
+        self.assertEqual(database.get_chat_lang(123), "AUTO")
 
         # Set to RU
         database.set_chat_lang(123, "RU")

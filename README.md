@@ -7,7 +7,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - 🖼️ **Animated WebP Support:** Automatically preserves multi-frame animation when downloading, converting, and resizing GIF images or animated WebP files, converting them into featherweight Animated WebP files (maintaining frame rate, loops, and transparency).
 - 📄 **Compressed Reader Mode (`/preview <url>`):** Compile webpages into highly compressed, clutter-free reader views using Mozilla's Readability. All images are automatically downloaded, optimized, resized, and inlined as Base64 (with responsive/lazy-loading attributes like srcset and data-src stripped to guarantee offline/local rendering).
 - ⚡ **AI Article Summarization (`/tldr <url>` & Previews):** Generate 1-2 paragraph AI summaries (or key bullet points) of articles using Google Gemini API (`GEMINI_API_KEY`). Previews generated with `/preview` or `/webxdc` automatically include a concise 1-paragraph TL;DR above the link. Summaries are automatically cached in SQLite for 24 hours per URL, language, and mode to conserve API quota and provide instant (<10ms) responses.
-- 🌐 **Per-Chat Summary Language (`/lang <code>`):** Set target summary language for each chat (e.g. `/lang RU`, `/lang EN`, `/lang DE`).
+- 🌐 **Per-Chat Summary Language (`/lang <code>`):** Set target summary language for each chat (e.g. `/lang AUTO` (default, matches article language), `/lang RU`, `/lang EN`, `/lang DE`).
 - 📱 **WebXDC App Packaging (`/webxdc <url>`):** Generate a standalone WebXDC application (`.xdc` ZIP container with `index.html`, `manifest.toml`, and `icon.png`) from any web page and send it into the chat for interactive offline viewing.
 - ⚡ **Full Page Archiving (`/archive <url>`):** Save complete pages as full interactive archives with JavaScript enabled using `monolith`. Proactively compresses and optimizes heavy base64-encoded image payloads post-generation to keep files tiny.
 - 💬 **Quote Reply Parsing:** Reply with `/preview` or `/archive` (without a URL) to any message containing links, and the bot will automatically extract and capture the first link in the quoted text.
@@ -76,7 +76,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/webxdc <url>` — Save page as a WebXDC app 📱 (`.xdc` ZIP containing `index.html`, `manifest.toml`, `icon.png`).
 - `/archive <url>` — Save page as a full monolith-based dynamic archive (with JS enabled, optimized images). *(Note: `/previewjs` is also supported as an alias to `/archive`)*
 - `/tldr <url>` — Generate AI article summary (TL;DR) ⚡ (supports quote replies and dynamic `/tldr_[hash]` links).
-- `/lang [code]` — Set preferred summary language for current chat (e.g. `/lang RU`, `/lang EN`, `/lang DE`).
+- `/lang [code]` — Set preferred summary language for current chat (e.g. `/lang AUTO` (default), `/lang RU`, `/lang EN`, `/lang DE`).
 - `/download <url>` — Download file directly and send as attachment (supported for PDF, office documents, text files).
 - `/stats` — Show generation counters, total traffic size, and disk space (disk space is admin-only).
 - `/source` — Show primary and backup source code links 🔌.

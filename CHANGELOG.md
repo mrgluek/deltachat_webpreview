@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.7] - 2026-08-16
+
+### Changed
+- **Default Summary Language (`AUTO`)**: Changed the default summary language for chats from `EN` to `AUTO`. The bot now automatically summarizes articles in their original language by default (e.g. Russian articles in Russian, German in German, English in English).
+- **Clean TL;DR Header**: Omitted the language code suffix in `/tldr` responses when using `AUTO` (`⚡ **TL;DR**:` instead of `⚡ **TL;DR** (AUTO):`), displaying language tags only when explicitly configured via `/lang`.
+
 ## [2.5.6] - 2026-08-16
 
 ### Changed

@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.6"
+VERSION = "2.5.7"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -3491,7 +3491,8 @@ def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
             return
             
         clean_title = (title or "Article").replace("[", "(").replace("]", ")")
-        reply = f"⚡ **TL;DR** ({lang}):\n\n{summary}\n\n🔗 [{clean_title}]({url})"
+        lang_suffix = f" ({lang})" if lang != "AUTO" else ""
+        reply = f"⚡ **TL;DR**{lang_suffix}:\n\n{summary}\n\n🔗 [{clean_title}]({url})"
         
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")
@@ -3539,12 +3540,12 @@ def _handle_lang_command(bot, accid, event):
             f"🌐 **Summary Language Setting**\n\n"
             f"Current summary language for this chat: **{curr_lang}**\n\n"
             f"To set a preferred language for article summaries, use:\n"
+            f"• `/lang AUTO` (Automatic - match article language, default)\n"
             f"• `/lang RU` (Russian)\n"
             f"• `/lang EN` (English)\n"
             f"• `/lang DE` (German)\n"
             f"• `/lang ES` (Spanish)\n"
-            f"• `/lang FR` (French)\n"
-            f"• `/lang AUTO` (Automatic)"
+            f"• `/lang FR` (French)"
         )
         _send(bot, accid, msg.chat_id, reply)
         return

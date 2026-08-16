@@ -455,12 +455,12 @@ def set_webpreview_disabled(chat_id: int, disabled: bool):
     set_config(f"webpreview_disabled_{chat_id}", "1" if disabled else "0")
 
 def get_chat_lang(chat_id: int) -> str:
-    """Get preferred summary language for a chat (defaults to 'EN')."""
+    """Get preferred summary language for a chat (defaults to 'AUTO')."""
     try:
         val = get_config(f"chat_lang_{chat_id}")
-        return val.strip().upper() if val and val.strip() else "EN"
+        return val.strip().upper() if val and val.strip() else "AUTO"
     except Exception:
-        return "EN"
+        return "AUTO"
 
 def set_chat_lang(chat_id: int, lang: str):
     """Set preferred summary language for a chat."""

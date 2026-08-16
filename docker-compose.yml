@@ -24,7 +24,7 @@ services:
       - JINA_PROXY_URL=${JINA_PROXY_URL:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-}
-      - GEMINI_MODELS=${GEMINI_MODELS:-gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemma-4-31b-it}
+      - GEMINI_MODELS=${GEMINI_MODELS:-gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemma-4-31b-it}
       - PROXY_URL=${PROXY_URL:-}
       - PROXY_DOMAINS=${PROXY_DOMAINS:-}
       - DELETE_DEVICE_AFTER=${DELETE_DEVICE_AFTER:-3600}

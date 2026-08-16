@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.5.8] - 2026-08-16
+
+### Changed
+- **Gemini Models Fallback Chain**: Updated default `GEMINI_MODELS` list to include `gemini-3.7-flash` as the primary model: `gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemma-4-31b-it`.
+
 ## [2.5.7] - 2026-08-16
 
 ### Changed

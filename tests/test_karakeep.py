@@ -148,49 +148,200 @@ class TestSaveToWebArchive(unittest.TestCase):
         self.assertIn("HTTP 503", result)
 
 
+class TestSaveToArchiveToday(unittest.TestCase):
+    """Tests for _save_to_archive_today API call logic and mirror fallbacks."""
+
+    @patch("bot._urlopen")
+    def test_success_returns_redirected_url(self, mock_urlopen):
+        """Test successful save returning redirected snapshot URL."""
+        mock_get_resp = MagicMock()
+        mock_get_resp.read.return_value = b'<html><form><input type="hidden" name="submitid" value="sid123"></form></html>'
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.geturl.return_value = "https://archive.ph/snap123"
+        mock_post_resp.read.return_value = b""
+
+        mock_urlopen.side_effect = [
+            MagicMock(__enter__=MagicMock(return_value=mock_get_resp)),
+            MagicMock(__enter__=MagicMock(return_value=mock_post_resp)),
+        ]
+
+        with patch("bot.ARCHIVE_TODAY_MIRRORS", ["https://archive.ph"]):
+            success, result = bot._save_to_archive_today("https://example.com/page")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://archive.ph/snap123")
+
+    @patch("bot._urlopen")
+    def test_success_meta_refresh(self, mock_urlopen):
+        """Test successful save via meta refresh in response body."""
+        mock_get_resp = MagicMock()
+        mock_get_resp.read.return_value = b'<html></html>'
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.geturl.return_value = "https://archive.ph/submit/"
+        mock_post_resp.read.return_value = b'<html><head><meta http-equiv="refresh" content="0;url=https://archive.ph/wip/456"></head></html>'
+
+        mock_urlopen.side_effect = [
+            MagicMock(__enter__=MagicMock(return_value=mock_get_resp)),
+            MagicMock(__enter__=MagicMock(return_value=mock_post_resp)),
+        ]
+
+        with patch("bot.ARCHIVE_TODAY_MIRRORS", ["https://archive.ph"]):
+            success, result = bot._save_to_archive_today("https://example.com/page")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://archive.ph/wip/456")
+
+    @patch("bot._urlopen")
+    def test_success_js_redirect(self, mock_urlopen):
+        """Test successful save via JavaScript redirection."""
+        mock_get_resp = MagicMock()
+        mock_get_resp.read.return_value = b'<html></html>'
+
+        mock_post_resp = MagicMock()
+        mock_post_resp.geturl.return_value = "https://archive.ph/submit/"
+        mock_post_resp.read.return_value = b'<script>location.replace("https://archive.ph/789xyz");</script>'
+
+        mock_urlopen.side_effect = [
+            MagicMock(__enter__=MagicMock(return_value=mock_get_resp)),
+            MagicMock(__enter__=MagicMock(return_value=mock_post_resp)),
+        ]
+
+        with patch("bot.ARCHIVE_TODAY_MIRRORS", ["https://archive.ph"]):
+            success, result = bot._save_to_archive_today("https://example.com/page")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://archive.ph/789xyz")
+
+    @patch("bot._urlopen")
+    def test_mirror_fallback_sequence(self, mock_urlopen):
+        """Test that failure on the first mirror falls back to the next mirror."""
+        from urllib.error import HTTPError
+        from http.client import HTTPMessage
+
+        # Mirror 1 (archive.ph) GET fails with 503
+        err503 = HTTPError("https://archive.ph/", 503, "Service Unavailable", HTTPMessage(), None)
+
+        # Mirror 2 (archive.is) GET succeeds, POST succeeds
+        mock_get_resp2 = MagicMock()
+        mock_get_resp2.read.return_value = b'<input name="submitid" value="sid999">'
+        mock_post_resp2 = MagicMock()
+        mock_post_resp2.geturl.return_value = "https://archive.is/fallback_ok"
+
+        mock_urlopen.side_effect = [
+            err503,
+            MagicMock(__enter__=MagicMock(return_value=mock_get_resp2)),
+            MagicMock(__enter__=MagicMock(return_value=mock_post_resp2)),
+        ]
+
+        with patch("bot.ARCHIVE_TODAY_MIRRORS", ["https://archive.ph", "https://archive.is"]):
+            success, result = bot._save_to_archive_today("https://example.com/page")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://archive.is/fallback_ok")
+
+    @patch("bot._urlopen")
+    def test_all_mirrors_fail(self, mock_urlopen):
+        """Test failure when all configured mirrors fail."""
+        mock_urlopen.side_effect = Exception("Connection refused")
+
+        with patch("bot.ARCHIVE_TODAY_MIRRORS", ["https://archive.ph", "https://archive.is"]):
+            success, result = bot._save_to_archive_today("https://example.com/page")
+
+        self.assertFalse(success)
+        self.assertIn("Connection refused", result)
+
+
 class TestDoKeep(unittest.TestCase):
-    """Tests for _do_keep routing logic between KaraKeep and Web Archive."""
+    """Tests for _do_keep sequential flow (KaraKeep -> Web Archive -> Archive.today)."""
 
     @patch("bot._is_dc_admin")
     @patch("bot._karakeep_enabled")
     @patch("bot._save_to_karakeep")
     @patch("bot._save_to_web_archive")
+    @patch("bot._save_to_archive_today")
     @patch("bot._react")
     @patch("bot._send")
-    def test_do_keep_admin_karakeep_enabled(self, mock_send, mock_react, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin):
+    def test_do_keep_admin_karakeep_and_webarchive_success(
+        self, mock_send, mock_react, mock_archivetoday, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin
+    ):
         mock_is_admin.return_value = True
         mock_keep_enabled.return_value = True
         mock_karakeep.return_value = (True, "bm_123")
         mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
+
+        mock_bot = MagicMock()
+        mock_bot.rpc.create_chat_by_contact_id.return_value = 99
+
+        bot._do_keep(mock_bot, 1, 10, 100, 5, "https://example.com")
+
+        # KaraKeep called first
+        mock_karakeep.assert_called_once_with("https://example.com")
+        # Private message sent to admin chat (chat 99)
+        mock_send.assert_any_call(mock_bot, 1, 99, "🔖 Saved to KaraKeep!\n🔗 https://example.com\n📎 https://keep.example.com/dashboard/preview/bm_123")
+        # WebArchive called second
+        mock_webarchive.assert_called_once_with("https://example.com")
+        # Public confirmation sent to source chat (chat 10)
+        mock_send.assert_any_call(mock_bot, 1, 10, "🏛️ Saved to Web Archive!\n🔗 https://example.com\n📎 https://web.archive.org/web/123/https://example.com")
+        # Success reaction
+        mock_react.assert_called_once_with(mock_bot, 1, 100, "☑️")
+        # Archive.today fallback not called
+        mock_archivetoday.assert_not_called()
+
+    @patch("bot._is_dc_admin")
+    @patch("bot._karakeep_enabled")
+    @patch("bot._save_to_karakeep")
+    @patch("bot._save_to_web_archive")
+    @patch("bot._save_to_archive_today")
+    @patch("bot._react")
+    @patch("bot._send")
+    def test_do_keep_webarchive_fails_falls_back_to_archive_today(
+        self, mock_send, mock_react, mock_archivetoday, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin
+    ):
+        mock_is_admin.return_value = False
+        mock_keep_enabled.return_value = False
+        mock_webarchive.return_value = (False, "HTTP 503 Service Unavailable")
+        mock_archivetoday.return_value = (True, "https://archive.ph/abc12")
+
+        mock_bot = MagicMock()
+
+        bot._do_keep(mock_bot, 1, 10, 100, 5, "https://example.com")
+
+        # KaraKeep not called for regular user
+        mock_karakeep.assert_not_called()
+        # WebArchive called
+        mock_webarchive.assert_called_once_with("https://example.com")
+        # Archive.today called as fallback
+        mock_archivetoday.assert_called_once_with("https://example.com")
+        # Public confirmation with Archive.today sent to chat
+        mock_send.assert_called_once_with(mock_bot, 1, 10, "🏛️ Saved to Archive.today!\n🔗 https://example.com\n📎 https://archive.ph/abc12")
+        mock_react.assert_called_once_with(mock_bot, 1, 100, "☑️")
+
+    @patch("bot._is_dc_admin")
+    @patch("bot._karakeep_enabled")
+    @patch("bot._save_to_karakeep")
+    @patch("bot._save_to_web_archive")
+    @patch("bot._save_to_archive_today")
+    @patch("bot._react")
+    @patch("bot._send")
+    def test_do_keep_both_fail_reports_error(
+        self, mock_send, mock_react, mock_archivetoday, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin
+    ):
+        mock_is_admin.return_value = False
+        mock_keep_enabled.return_value = False
+        mock_webarchive.return_value = (False, "timed out")
+        mock_archivetoday.return_value = (False, "All archive.today mirrors failed")
+
+        mock_bot = MagicMock()
+
+        bot._do_keep(mock_bot, 1, 10, 100, 5, "https://example.com")
+
+        mock_react.assert_called_once_with(mock_bot, 1, 100, "❌")
+        mock_send.assert_called_once_with(
+            mock_bot, 1, 10,
+            "❌ Failed to archive URL.\n• Web Archive: timed out\n• Archive.today: All archive.today mirrors failed"
+        )
 
 
 if __name__ == "__main__":

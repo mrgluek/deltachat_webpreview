@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.5.9"
+VERSION = "2.6.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -61,6 +61,20 @@ NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.
 KARAKEEP_URL = os.environ.get("KARAKEEP_URL", "").rstrip("/")
 KARAKEEP_API_KEY = os.environ.get("KARAKEEP_API_KEY", "")
 KARAKEEP_TAGS = [t.strip() for t in os.environ.get("KARAKEEP_TAGS", "").split(",") if t.strip()]
+
+# Archive.today mirrors (fallback for Web Archive)
+ARCHIVE_TODAY_DEFAULT_MIRRORS = [
+    "https://archive.ph",
+    "https://archive.is",
+    "https://archive.today",
+    "https://archive.li",
+    "https://archive.vn",
+    "https://archive.md",
+]
+_raw_archive_today_mirrors = os.environ.get("ARCHIVE_TODAY_MIRRORS", "")
+ARCHIVE_TODAY_MIRRORS = [
+    m.strip().rstrip("/") for m in _raw_archive_today_mirrors.split(",") if m.strip()
+] if _raw_archive_today_mirrors else ARCHIVE_TODAY_DEFAULT_MIRRORS
 
 # Jina AI key (opt-in via env)
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
@@ -3236,8 +3250,8 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
             os.environ['https_proxy'] = PROXY_URL
         
         try:
-            # Use 120 second timeout as /save/ endpoint can be slow to respond
-            with urllib.request.urlopen(req, timeout=120) as response:
+            # Use 45 second timeout as /save/ endpoint can be slow or down
+            with urllib.request.urlopen(req, timeout=45) as response:
                 logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
                 redirected_url = response.geturl()
                 
@@ -3263,36 +3277,139 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
         logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}.")
         return False, f"HTTP {e.code}: {e.reason}"
     except urllib.error.URLError as e:
-        # Handle timeout errors gracefully
-        import time
-        if hasattr(e.reason, 'timeout') or 'timed out' in str(e).lower():
-            logger.warning(f"Web Archive save request timed out, but save may have been queued: {url}")
-            # Try to construct the snapshot URL pattern
-            timestamp = time.strftime('%Y%m%d%H%M%S')
-            snapshot_url = f"https://web.archive.org/web/{timestamp}/{url}"
-            return True, snapshot_url
-        logger.error(f"Web Archive save URLError: {e}")
+        logger.warning(f"Web Archive save URLError: {e}")
         return False, str(e)
     except Exception as e:
         logger.error(f"Web Archive save failed: {e}")
         return False, str(e)
 
 
-def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
-    """Background worker: save URL to Web Archive, and optionally to KaraKeep for the admin."""
-    # 1. Always save to Web Archive
-    wa_success, wa_result = _save_to_web_archive(url)
-    if wa_success:
-        _react(bot, accid, msg_id, "☑️")
-        reply = f"🏛️ Saved to Web Archive!\n🔗 {url}"
-        if wa_result:
-            reply += f"\n📎 {wa_result}"
-        _send(bot, accid, chat_id, reply)
-    else:
-        _react(bot, accid, msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Failed to save to Web Archive.\nReason: {wa_result}")
+def _save_to_archive_today(url: str) -> tuple[bool, str]:
+    """
+    Save a URL to archive.today (or its active mirror).
+    Tries configured/default mirrors sequentially until one succeeds.
+    Returns (success, archived_url_or_error).
+    """
+    errors = []
+    mirrors_to_try = ARCHIVE_TODAY_MIRRORS if ARCHIVE_TODAY_MIRRORS else ARCHIVE_TODAY_DEFAULT_MIRRORS
+    for mirror in mirrors_to_try:
+        mirror_clean = mirror.rstrip("/")
+        logger.info(f"Attempting to archive {url} via Archive.today mirror: {mirror_clean}")
+        try:
+            # 1. Fetch homepage to verify mirror availability and extract submitid
+            submitid = None
+            try:
+                get_req = urllib.request.Request(
+                    f"{mirror_clean}/",
+                    headers={
+                        "User-Agent": STANDARD_USER_AGENT,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    }
+                )
+                with _urlopen(get_req, timeout=10) as resp:
+                    html = resp.read().decode("utf-8", errors="replace")
+                    match = re.search(r'name=["\']submitid["\']\s+value=["\']([^"\']+)["\']', html) or \
+                            re.search(r'value=["\']([^"\']+)["\']\s+name=["\']submitid["\']', html)
+                    if match:
+                        submitid = match.group(1)
+            except urllib.error.HTTPError as e:
+                err_msg = f"{mirror_clean} (GET): HTTP {e.code} {e.reason}"
+                logger.warning(f"Archive.today mirror unavailable: {err_msg}")
+                errors.append(err_msg)
+                continue
+            except Exception as e:
+                err_msg = f"{mirror_clean} (GET): {str(e)}"
+                logger.warning(f"Archive.today mirror check failed: {err_msg}")
+                errors.append(err_msg)
+                continue
 
-    # 2. If requester is admin and KaraKeep is enabled, save to KaraKeep and send confirmation to their private chat
+            # 2. Submit URL via POST
+            submit_url = f"{mirror_clean}/submit/"
+            form_fields = {"url": url, "anyway": "1"}
+            if submitid:
+                form_fields["submitid"] = submitid
+
+            data = urllib.parse.urlencode(form_fields).encode("utf-8")
+            post_req = urllib.request.Request(
+                submit_url,
+                data=data,
+                headers={
+                    "User-Agent": STANDARD_USER_AGENT,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": f"{mirror_clean}/",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+                method="POST",
+            )
+
+            with _urlopen(post_req, timeout=45) as resp:
+                final_url = resp.geturl()
+
+                # Check if final redirected URL is a valid snapshot or wip page
+                if mirror_clean in final_url and final_url.rstrip("/") != submit_url.rstrip("/") and final_url.rstrip("/") != mirror_clean:
+                    logger.info(f"Archive.today successfully saved {url} -> {final_url} via {mirror_clean}")
+                    return True, final_url
+
+                # Check response body for location or refresh or wip links
+                body = resp.read().decode("utf-8", errors="replace")
+
+                # Look for meta refresh
+                meta_match = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^"\']*url=([^"\'>\s]+)', body, re.IGNORECASE)
+                if meta_match:
+                    target = meta_match.group(1).strip()
+                    target_url = urllib.parse.urljoin(mirror_clean + "/", target)
+                    return True, target_url
+
+                # Look for JS redirection
+                js_match = re.search(r'(?:location\.replace\s*\(\s*|location(?:\.href)?\s*=\s*)["\']([^"\']+)["\']', body, re.IGNORECASE)
+                if js_match:
+                    target = js_match.group(1).strip()
+                    target_url = urllib.parse.urljoin(mirror_clean + "/", target)
+                    return True, target_url
+
+                # Look for wip link
+                wip_match = re.search(r'href=["\']((?:https?://[^"\'>\s]+|/)?wip/[a-zA-Z0-9]+)["\']', body, re.IGNORECASE)
+                if wip_match:
+                    target = wip_match.group(1).strip()
+                    target_url = urllib.parse.urljoin(mirror_clean + "/", target)
+                    return True, target_url
+
+                # Look for direct snapshot link
+                link_match = re.search(r'href=["\']((?:https?://[^"\'>\s]+|/)[a-zA-Z0-9]{5,10})["\']', body, re.IGNORECASE)
+                if link_match:
+                    target = link_match.group(1).strip()
+                    target_url = urllib.parse.urljoin(mirror_clean + "/", target)
+                    return True, target_url
+
+                # Fallback snapshot lookup link on this mirror
+                fallback_url = f"{mirror_clean}/{url}"
+                return True, fallback_url
+
+        except urllib.error.HTTPError as e:
+            # If server returned 301/302/303/307/308 redirect, check Location header
+            if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
+                loc = e.headers.get("Location")
+                target_url = urllib.parse.urljoin(mirror_clean + "/", loc)
+                return True, target_url
+            err_msg = f"{mirror_clean}: HTTP {e.code} {e.reason}"
+            logger.warning(f"Archive.today mirror error: {err_msg}")
+            errors.append(err_msg)
+        except Exception as e:
+            err_msg = f"{mirror_clean}: {str(e)}"
+            logger.warning(f"Archive.today mirror request failed: {err_msg}")
+            errors.append(err_msg)
+
+    return False, "; ".join(errors) if errors else "No accessible mirrors"
+
+
+def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
+    """
+    Background worker:
+    1. First, save URL to KaraKeep (if configured and requester is admin).
+    2. Then, attempt to save URL to Web Archive.
+    3. If Web Archive fails/unavailable, fall back to Archive.today (trying mirrors sequentially).
+    """
+    # 1. If requester is admin and KaraKeep is enabled, save to KaraKeep first and send confirmation to their private chat
     is_admin = _is_dc_admin(bot, accid, from_id)
     if is_admin and _karakeep_enabled():
         kk_success, kk_result = _save_to_karakeep(url)
@@ -3308,6 +3425,32 @@ def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
                 _send(bot, accid, private_chat_id, f"❌ Failed to save to KaraKeep.\nReason: {kk_result}")
         except Exception as e:
             logger.error(f"Failed to send KaraKeep notification to private chat for admin {from_id}: {e}")
+
+    # 2. Try saving to Web Archive
+    wa_success, wa_result = _save_to_web_archive(url)
+    if wa_success:
+        _react(bot, accid, msg_id, "☑️")
+        reply = f"🏛️ Saved to Web Archive!\n🔗 {url}"
+        if wa_result:
+            reply += f"\n📎 {wa_result}"
+        _send(bot, accid, chat_id, reply)
+        return
+
+    # 3. Fallback: Web Archive failed or is down, try Archive.today multi-mirror
+    logger.warning(f"Web Archive save failed ({wa_result}). Falling back to Archive.today for URL: {url}")
+    at_success, at_result = _save_to_archive_today(url)
+    if at_success:
+        _react(bot, accid, msg_id, "☑️")
+        reply = f"🏛️ Saved to Archive.today!\n🔗 {url}"
+        if at_result:
+            reply += f"\n📎 {at_result}"
+        _send(bot, accid, chat_id, reply)
+    else:
+        _react(bot, accid, msg_id, "❌")
+        _send(bot, accid, chat_id,
+              f"❌ Failed to archive URL.\n"
+              f"• Web Archive: {wa_result}\n"
+              f"• Archive.today: {at_result}")
 
 
 def _handle_keep_command(bot, accid, event):
@@ -3838,10 +3981,10 @@ def get_help_text(bot, accid, from_id):
         help_text += "/invidious_list — List registered Invidious domains\n"
         help_text += "/jina <api_key> — Check Jina AI API key token balance\n"
         if _karakeep_enabled():
-            help_text += "\n**KaraKeep:**\n"
-            help_text += "/keep <url> — Save URL to KaraKeep (instead of Web Archive) 🔖\n"
+            help_text += "\n**KaraKeep & Archiving:**\n"
+            help_text += "/keep <url> — Save to KaraKeep (private), Web Archive & Archive.today 🔖🏛️\n"
         else:
-            help_text += "/keep <url> — Save URL to Web Archive 🏛️\n"
+            help_text += "/keep <url> — Save URL to Web Archive & Archive.today fallback 🏛️\n"
 
     return help_text
 

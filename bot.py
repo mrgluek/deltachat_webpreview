@@ -3551,8 +3551,8 @@ def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
     """
     Background worker:
     1. First, save URL to KaraKeep (if configured and requester is admin).
-    2. Concurrently save URL to Web Archive, Archive.today, and Ghostarchive.
-    3. Consolidate and stream results to chat.
+    2. Try saving to Web Archive (Wayback Machine).
+    3. If Web Archive fails or is unavailable, fall back to Archive.today and Ghostarchive.
     """
     import concurrent.futures
 
@@ -3573,79 +3573,104 @@ def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
         except Exception as e:
             logger.error(f"Failed to send KaraKeep notification to private chat for admin {from_id}: {e}")
 
-    # 2. Concurrently archive to Web Archive, Archive.today, and Ghostarchive
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            "Web Archive": executor.submit(_save_to_web_archive, url),
-            "Archive.today": executor.submit(_save_to_archive_today, url),
-            "Ghostarchive": executor.submit(_save_to_ghostarchive, url),
-        }
+    # 2. Try saving to Web Archive first
+    wa_success, wa_result = _save_to_web_archive(url)
+    if wa_success:
+        _react(bot, accid, msg_id, "☑️")
+        reply = f"🏛️ Saved to Web Archive!\n🔗 {url}"
+        if wa_result:
+            reply += f"\n📎 {wa_result}"
+        _send(bot, accid, chat_id, reply)
+        return
 
-        # Wait up to 15s for initial completion
-        done, not_done = concurrent.futures.wait(futures.values(), timeout=15)
+    # 3. Fallback: Web Archive failed or is down, try Archive.today and Ghostarchive concurrently
+    logger.warning(f"Web Archive save failed ({wa_result}). Falling back to Archive.today and Ghostarchive for URL: {url}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_at = executor.submit(_save_to_archive_today, url)
+        future_ga = executor.submit(_save_to_ghostarchive, url)
 
-        sent_services = set()
-        succeeded = {}
-        failed = {}
+        done, not_done = concurrent.futures.wait([future_at, future_ga], timeout=15)
 
-        if not not_done:
-            # All tasks finished within initial 15s window
-            for name, fut in futures.items():
-                ok, res = fut.result()
-                if ok:
-                    succeeded[name] = res
-                else:
-                    failed[name] = res
+        at_success = False
+        at_result = ""
+        ga_success = False
+        ga_result = ""
 
-            if succeeded:
+        if future_at in done and future_ga in done:
+            at_success, at_result = future_at.result()
+            ga_success, ga_result = future_ga.result()
+
+            if at_success and ga_success:
                 _react(bot, accid, msg_id, "☑️")
-                if len(succeeded) == 1:
-                    name, res = next(iter(succeeded.items()))
-                    _send(bot, accid, chat_id, f"🏛️ Saved to {name}!\n🔗 {url}\n📎 {res}")
-                else:
-                    lines = [f"• {name}: {res}" for name, res in succeeded.items()]
-                    _send(bot, accid, chat_id, f"🏛️ Saved to Web Archives!\n🔗 {url}\n\n" + "\n".join(lines))
+                reply = (
+                    f"🏛️ Saved to Web Archives!\n"
+                    f"🔗 {url}\n\n"
+                    f"• Archive.today: {at_result}\n"
+                    f"• Ghostarchive: {ga_result}"
+                )
+                _send(bot, accid, chat_id, reply)
+                return
+            elif at_success:
+                _react(bot, accid, msg_id, "☑️")
+                _send(bot, accid, chat_id, f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}")
+                return
+            elif ga_success:
+                _react(bot, accid, msg_id, "☑️")
+                _send(bot, accid, chat_id, f"🏛️ Saved to Ghostarchive!\n🔗 {url}\n📎 {ga_result}")
                 return
             else:
                 _react(bot, accid, msg_id, "❌")
-                err_lines = [f"• {name}: {res}" for name, res in failed.items()]
-                _send(bot, accid, chat_id, f"❌ Failed to archive URL.\n" + "\n".join(err_lines))
+                _send(bot, accid, chat_id,
+                      f"❌ Failed to archive URL.\n"
+                      f"• Web Archive: {wa_result}\n"
+                      f"• Archive.today: {at_result}\n"
+                      f"• Ghostarchive: {ga_result}")
                 return
 
-        # At least one task is taking longer than 15s (e.g. slow Web Archive)
-        # Check finished tasks
-        for name, fut in futures.items():
-            if fut in done:
-                ok, res = fut.result()
-                if ok:
-                    succeeded[name] = res
+        # If one completed in 15s and succeeded, send it right away
+        sent = False
+        if future_at in done:
+            at_success, at_result = future_at.result()
+            if at_success:
+                _react(bot, accid, msg_id, "☑️")
+                _send(bot, accid, chat_id, f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}")
+                sent = True
+
+        if future_ga in done:
+            ga_success, ga_result = future_ga.result()
+            if ga_success:
+                _react(bot, accid, msg_id, "☑️")
+                _send(bot, accid, chat_id, f"🏛️ Saved to Ghostarchive!\n🔗 {url}\n📎 {ga_result}")
+                sent = True
+
+        # Wait for remaining tasks to complete
+        if future_at in not_done:
+            try:
+                at_success, at_result = future_at.result()
+                if at_success and not sent:
                     _react(bot, accid, msg_id, "☑️")
-                    _send(bot, accid, chat_id, f"🏛️ Saved to {name}!\n🔗 {url}\n📎 {res}")
-                    sent_services.add(name)
-                else:
-                    failed[name] = res
+                    _send(bot, accid, chat_id, f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}")
+                    sent = True
+            except Exception as e:
+                at_result = str(e)
 
-        # Wait for remaining tasks to finish
-        for name, fut in futures.items():
-            if fut in not_done:
-                try:
-                    ok, res = fut.result()
-                    if ok:
-                        succeeded[name] = res
-                        if name not in sent_services:
-                            _react(bot, accid, msg_id, "☑️")
-                            _send(bot, accid, chat_id, f"🏛️ Saved to {name}!\n🔗 {url}\n📎 {res}")
-                            sent_services.add(name)
-                    else:
-                        failed[name] = res
-                except Exception as e:
-                    failed[name] = str(e)
+        if future_ga in not_done:
+            try:
+                ga_success, ga_result = future_ga.result()
+                if ga_success and not sent:
+                    _react(bot, accid, msg_id, "☑️")
+                    _send(bot, accid, chat_id, f"🏛️ Saved to Ghostarchive!\n🔗 {url}\n📎 {ga_result}")
+                    sent = True
+            except Exception as e:
+                ga_result = str(e)
 
-        # If none succeeded at all and nothing was sent
-        if not sent_services and not succeeded:
+        if not sent and not at_success and not ga_success:
             _react(bot, accid, msg_id, "❌")
-            err_lines = [f"• {name}: {failed.get(name, 'Timed out')}" for name in futures]
-            _send(bot, accid, chat_id, f"❌ Failed to archive URL.\n" + "\n".join(err_lines))
+            _send(bot, accid, chat_id,
+                  f"❌ Failed to archive URL.\n"
+                  f"• Web Archive: {wa_result}\n"
+                  f"• Archive.today: {at_result or 'Timed out'}\n"
+                  f"• Ghostarchive: {ga_result or 'Timed out'}")
 
 
 def _handle_keep_command(bot, accid, event):

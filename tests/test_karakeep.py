@@ -359,7 +359,7 @@ class TestArchiveTodayProxyRouting(unittest.TestCase):
 
 
 class TestDoKeep(unittest.TestCase):
-    """Tests for _do_keep concurrent flow (KaraKeep -> Web Archive, Archive.today, Ghostarchive)."""
+    """Tests for _do_keep flow (KaraKeep -> Web Archive primary -> Archive.today & Ghostarchive fallback on error)."""
 
     @patch("bot._is_dc_admin")
     @patch("bot._karakeep_enabled")
@@ -369,15 +369,13 @@ class TestDoKeep(unittest.TestCase):
     @patch("bot._save_to_ghostarchive")
     @patch("bot._react")
     @patch("bot._send")
-    def test_do_keep_admin_karakeep_and_all_archives_success(
+    def test_do_keep_admin_karakeep_and_webarchive_success(
         self, mock_send, mock_react, mock_ghostarchive, mock_archivetoday, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin
     ):
         mock_is_admin.return_value = True
         mock_keep_enabled.return_value = True
         mock_karakeep.return_value = (True, "bm_123")
         mock_webarchive.return_value = (True, "https://web.archive.org/web/123/https://example.com")
-        mock_archivetoday.return_value = (True, "https://archive.ph/today123")
-        mock_ghostarchive.return_value = (True, "https://ghostarchive.org/archive/ghost456")
 
         mock_bot = MagicMock()
         mock_bot.rpc.create_chat_by_contact_id.return_value = 99
@@ -388,20 +386,49 @@ class TestDoKeep(unittest.TestCase):
         mock_karakeep.assert_called_once_with("https://example.com")
         # Private message sent to admin chat (chat 99)
         mock_send.assert_any_call(mock_bot, 1, 99, "🔖 Saved to KaraKeep!\n🔗 https://example.com\n📎 https://keep.example.com/dashboard/preview/bm_123")
-        # All archives called concurrently
+        # WebArchive called primary
+        mock_webarchive.assert_called_once_with("https://example.com")
+        # Public confirmation sent to source chat (chat 10)
+        mock_send.assert_any_call(mock_bot, 1, 10, "🏛️ Saved to Web Archive!\n🔗 https://example.com\n📎 https://web.archive.org/web/123/https://example.com")
+        # Success reaction
+        mock_react.assert_called_once_with(mock_bot, 1, 100, "☑️")
+        # Fallbacks not called when Web Archive succeeds
+        mock_archivetoday.assert_not_called()
+        mock_ghostarchive.assert_not_called()
+
+    @patch("bot._is_dc_admin")
+    @patch("bot._karakeep_enabled")
+    @patch("bot._save_to_karakeep")
+    @patch("bot._save_to_web_archive")
+    @patch("bot._save_to_archive_today")
+    @patch("bot._save_to_ghostarchive")
+    @patch("bot._react")
+    @patch("bot._send")
+    def test_do_keep_webarchive_fails_both_fallbacks_succeed(
+        self, mock_send, mock_react, mock_ghostarchive, mock_archivetoday, mock_webarchive, mock_karakeep, mock_keep_enabled, mock_is_admin
+    ):
+        mock_is_admin.return_value = False
+        mock_keep_enabled.return_value = False
+        mock_webarchive.return_value = (False, "HTTP 503 Service Unavailable")
+        mock_archivetoday.return_value = (True, "https://archive.ph/today123")
+        mock_ghostarchive.return_value = (True, "https://ghostarchive.org/archive/ghost456")
+
+        mock_bot = MagicMock()
+
+        bot._do_keep(mock_bot, 1, 10, 100, 5, "https://example.com")
+
+        mock_karakeep.assert_not_called()
         mock_webarchive.assert_called_once_with("https://example.com")
         mock_archivetoday.assert_called_once_with("https://example.com")
         mock_ghostarchive.assert_called_once_with("https://example.com")
-        # Combined message sent to source chat (chat 10)
+
         expected_reply = (
             "🏛️ Saved to Web Archives!\n"
             "🔗 https://example.com\n\n"
-            "• Web Archive: https://web.archive.org/web/123/https://example.com\n"
             "• Archive.today: https://archive.ph/today123\n"
             "• Ghostarchive: https://ghostarchive.org/archive/ghost456"
         )
-        mock_send.assert_any_call(mock_bot, 1, 10, expected_reply)
-        # Success reaction
+        mock_send.assert_called_once_with(mock_bot, 1, 10, expected_reply)
         mock_react.assert_called_once_with(mock_bot, 1, 100, "☑️")
 
     @patch("bot._is_dc_admin")

@@ -2,6 +2,19 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.7.0] - 2026-08-20
+
+### Added
+- **AI Question & Topic Answering (`/ai <text>`)**: Added support for answering questions and providing concise 2-3 paragraph topic explanations using Google Gemini API (`_ask_gemini_ai`).
+  - **Direct Query**: `/ai <question or topic>` directly generates an informative overview.
+  - **Reply to Message**: Replying `/ai` to any text message answers or explains the quoted content.
+  - **Contextual Query**: Replying `/ai <question>` to a message answers the question taking the quoted message as context.
+  - **URL & Article Context**: Providing or quoting a URL with `/ai` automatically fetches the article text and generates an AI answer/overview with the source link attached.
+  - **Language Preference Support**: Seamlessly respects the chat's `/lang` setting (`AUTO` matches query language, or explicitly configured languages such as `RU`, `EN`, `DE`).
+  - **SQLite Response Caching**: Responses are cached for 24 hours to conserve API quotas.
+- **Unified Gemini API Helper (`_call_gemini_api`)**: Refactored Gemini API calls to a centralized helper with automatic multi-model failover (`GEMINI_MODELS`), rate limit cooldowns (HTTP 429/500/503), and API logging.
+- **Unit Tests**: Added test suite covering direct AI queries, contextual queries with quoted messages, 24-hour response caching, command handlers, and help text in `tests/test_tldr_and_lang.py`.
+
 ## [2.6.1] - 2026-08-20
 
 ### Added

@@ -60,7 +60,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 | `ALLOWED_BOT_EMAILS` | Comma-separated list of allowed bot emails. | *(Empty)* |
 | `JINA_API_KEY` | Optional API Key for Jina Reader (`r.jina.ai`) to raise rate limits (from 20 req/min to 500+). | *(Empty)* |
 | `JINA_PROXY_URL` | Optional dedicated proxy server URL for routing Jina Reader requests (if unset, Jina queries run directly). | *(Empty)* |
-| `GEMINI_API_KEY` | Optional Google Gemini API Key for enabling article TL;DR summarization (`/tldr`) and automatic short summaries in previews. | *(Empty)* |
+| `GEMINI_API_KEY` | Optional Google Gemini API Key for enabling article TL;DR summarization (`/tldr`), AI question answering (`/ai`), and automatic short summaries in previews. | *(Empty)* |
 | `PROXY_URL` | Optional proxy server URL to route matching domains through (e.g. `http://127.0.0.1:8118` or `socks5://127.0.0.1:9050`). This proxy is also passed to Jina Reader via `X-Proxy-Url` to route Jina's crawler for matching domains. | *(Empty)* |
 | `PROXY_DOMAINS` | Comma-separated list of domain suffixes to route via `PROXY_URL`. | `.ru` |
 | `KARAKEEP_URL` | The base URL of your KaraKeep instance (e.g., `https://keep.gluek.info`). | *(Empty)* |
@@ -83,6 +83,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/webxdc <url>` — Save page as a WebXDC app 📱 (`.xdc` ZIP containing `index.html`, `manifest.toml`, `icon.png`).
 - `/archive <url>` — Save page as a full monolith-based dynamic archive (with JS enabled, optimized images). *(Note: `/previewjs` is also supported as an alias to `/archive`)*
 - `/tldr [url]` — Generate AI summary (TL;DR) ⚡ for an article, long text, or quoted message (supports reply and dynamic `/tldr_[hash]` links).
+- `/ai <text>` — Ask AI a question or request a short, informative 2-3 paragraph answer/overview on any topic, URL, or quoted message 🤖.
 - `/lang [code]` — Set preferred summary language for current chat (e.g. `/lang AUTO` (default), `/lang RU`, `/lang EN`, `/lang DE`).
 - `/download <url>` — Download file directly and send as attachment (supported for PDF, office documents, text files).
 - `/keep <url>` — Asynchronously save webpage to [KaraKeep](https://karakeep.app/) (admin private notification), [Web Archive](https://web.archive.org/) (120s timeout), [Archive.today](https://archive.today/) (multi-mirror with optional proxy), and [Ghostarchive](https://ghostarchive.org/). Also supports dynamic `/keep_[hash]` links.

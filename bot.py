@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.6.1"
+VERSION = "2.7.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -254,6 +254,77 @@ def _karakeep_enabled() -> bool:
     """Return True if KaraKeep integration is configured."""
     return bool(KARAKEEP_URL and KARAKEEP_API_KEY)
 
+def _call_gemini_api(prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str | None:
+    """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging."""
+    if not GEMINI_API_KEY or not prompt:
+        return None
+
+    now = time.time()
+    active_models = [m for m in GEMINI_MODELS if _GEMINI_MODEL_COOLDOWNS.get(m, 0) <= now]
+    if not active_models:
+        active_models = list(GEMINI_MODELS)
+
+    for model_name in active_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens
+            }
+        }
+        
+        try:
+            database.log_api_call("gemini")
+            data_bytes = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': GEMINI_API_KEY
+                }
+            )
+            with _urlopen(req, timeout=15) as resp:
+                body = json.loads(resp.read().decode('utf-8'))
+                candidates = body.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        res_text = parts[0]["text"].strip()
+                        if res_text:
+                            if not res_text.rstrip().endswith(('.', '!', '?', '"', "'", ')', '»', '”')):
+                                last_p = max(res_text.rfind('.'), res_text.rfind('!'), res_text.rfind('?'))
+                                if last_p > 50:
+                                    res_text = res_text[:last_p + 1].strip()
+                            return res_text
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+            if e.code == 429:
+                logger.warning(f"Gemini API model '{model_name}' rate limited (HTTP 429). Placing on 1-hour cooldown and falling back...")
+                _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 3600
+                continue
+            elif e.code in (503, 500, 502, 504):
+                logger.warning(f"Gemini API model '{model_name}' unavailable or high demand (HTTP {e.code}). Placing on 5-minute cooldown and falling back...")
+                _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
+                continue
+            else:
+                logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{model_name}'. Details: {err_body}")
+                continue
+        except Exception as e:
+            logger.warning(f"Gemini API call timed out or failed for model '{model_name}': {e}. Placing on 5-minute cooldown and falling back...")
+            _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
+            continue
+
+    return None
+
 def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang: str = "EN", short_paragraph: bool = False, url_key: str | None = None) -> str | None:
     """Summarizes text using Google Gemini API with 24h caching."""
     if not GEMINI_API_KEY or not text or not text.strip():
@@ -292,73 +363,52 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         )
         max_tokens = 4096
 
-    now = time.time()
-    active_models = [m for m in GEMINI_MODELS if _GEMINI_MODEL_COOLDOWNS.get(m, 0) <= now]
-    if not active_models:
-        active_models = list(GEMINI_MODELS)
+    res_text = _call_gemini_api(prompt, max_tokens=max_tokens, temperature=0.3)
+    if res_text and cache_key:
+        database.add_cached_tldr(cache_key, res_text)
+    return res_text
 
-    for model_name in active_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": max_tokens
-            }
-        }
-        
-        try:
-            database.log_api_call("gemini")
-            data_bytes = json.dumps(payload).encode('utf-8')
-            req = urllib.request.Request(
-                url,
-                data=data_bytes,
-                headers={
-                    'Content-Type': 'application/json',
-                    'x-goog-api-key': GEMINI_API_KEY
-                }
-            )
-            with _urlopen(req, timeout=15) as resp:
-                body = json.loads(resp.read().decode('utf-8'))
-                candidates = body.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts and "text" in parts[0]:
-                        res_text = parts[0]["text"].strip()
-                        if res_text:
-                            if not res_text.rstrip().endswith(('.', '!', '?', '"', "'", ')', '»', '”')):
-                                last_p = max(res_text.rfind('.'), res_text.rfind('!'), res_text.rfind('?'))
-                                if last_p > 50:
-                                    res_text = res_text[:last_p + 1].strip()
-                            if cache_key:
-                                database.add_cached_tldr(cache_key, res_text)
-                            return res_text
-        except urllib.error.HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode('utf-8', errors='ignore')
-            except Exception:
-                pass
-            if e.code == 429:
-                logger.warning(f"Gemini API model '{model_name}' rate limited (HTTP 429). Placing on 1-hour cooldown and falling back...")
-                _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 3600
-                continue
-            elif e.code in (503, 500, 502, 504):
-                logger.warning(f"Gemini API model '{model_name}' unavailable or high demand (HTTP {e.code}). Placing on 5-minute cooldown and falling back...")
-                _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
-                continue
-            else:
-                logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{model_name}'. Details: {err_body}")
-                continue
-        except Exception as e:
-            logger.warning(f"Gemini API call timed out or failed for model '{model_name}': {e}. Placing on 5-minute cooldown and falling back...")
-            _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
-            continue
+def _ask_gemini_ai(query: str, context: str | None = None, target_lang: str = "AUTO", query_key: str | None = None) -> str | None:
+    """Answers a question or provides topic overview using Google Gemini API in 2-3 paragraphs with 24h caching."""
+    if not GEMINI_API_KEY or not query or not query.strip():
+        return None
 
-    return None
+    clean_query = query.strip()
+    clean_context = context.strip() if context and context.strip() else None
+
+    lang_str = target_lang.strip().upper()
+    cache_key = None
+    if query_key:
+        cache_key = f"ai_{query_key}_{lang_str.lower()}"
+        cached = database.get_cached_tldr(cache_key)
+        if cached:
+            logger.info(f"Returning cached AI answer for {cache_key}")
+            return cached
+
+    if lang_str in ("AUTO", ""):
+        lang_instruction = "the language of the question/topic"
+    else:
+        lang_instruction = lang_str
+
+    if clean_context:
+        truncated_ctx = clean_context[:16000]
+        prompt = (
+            f"Answer the following question or explain the topic based on the provided context in 2-3 informative paragraphs in {lang_instruction}.\n"
+            "Provide a direct, accurate, and comprehensive explanation without meta-commentary, introductory filler (such as 'Here is...', 'Sure', etc.), or conversational preamble. Output the answer directly:\n\n"
+            f"Context:\n{truncated_ctx}\n\n"
+            f"Question / Topic:\n{clean_query}"
+        )
+    else:
+        prompt = (
+            f"Answer the following question or provide a concise overview of the topic in 2-3 informative paragraphs in {lang_instruction}.\n"
+            "Provide a direct, accurate, and comprehensive explanation covering key details and context without meta-commentary, introductory filler (such as 'Here is...', 'Sure', etc.), or conversational preamble. Output the answer directly:\n\n"
+            f"Question / Topic:\n{clean_query}"
+        )
+
+    res_text = _call_gemini_api(prompt, max_tokens=4096, temperature=0.4)
+    if res_text and cache_key:
+        database.add_cached_tldr(cache_key, res_text)
+    return res_text
 
 def _extract_url_from_msg_or_payload(payload: str, msg) -> str | None:
     """Extract first HTTP/HTTPS URL from payload or quoted message text."""
@@ -4003,6 +4053,150 @@ def _handle_tldr_command(bot, accid, event):
           "• `/tldr <url>` — Generate article summary (TL;DR)\n"
           "• Reply `/tldr` to any message or link to summarize it.")
 
+def _do_ai_query(bot, accid, chat_id, req_msg_id, from_id, prompt: str, context: str | None = None, url: str | None = None, title: str | None = None):
+    """Processes AI query in background thread."""
+    if not GEMINI_API_KEY:
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id,
+              "❌ `GEMINI_API_KEY` is not configured.\n"
+              "Please add your Google Gemini API key to `.env` to enable AI queries.")
+        return
+
+    _react(bot, accid, req_msg_id, "⏳")
+
+    try:
+        lang = database.get_chat_lang(chat_id)
+        raw_key = f"{prompt}:{context or ''}:{url or ''}"
+        query_key = hashlib.sha256(raw_key.encode('utf-8')).hexdigest()[:16]
+
+        answer = _ask_gemini_ai(prompt, context=context, target_lang=lang, query_key=query_key)
+
+        if not answer:
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, "❌ Failed to generate AI response via Gemini API.")
+            return
+
+        lang_suffix = f" ({lang})" if lang != "AUTO" else ""
+        if url:
+            clean_title = (title or "Link").replace("[", "(").replace("]", ")")
+            reply = f"🤖 **AI**{lang_suffix}:\n\n{answer}\n\n🔗 [{clean_title}]({url})"
+        else:
+            reply = f"🤖 **AI**{lang_suffix}:\n\n{answer}"
+
+        _send(bot, accid, chat_id, reply)
+        _react(bot, accid, req_msg_id, "☑️")
+        database.add_preview_log(chat_id, from_id, url or "ai_query", title or "AI Query", len(answer), 0)
+    except Exception as e:
+        logger.error(f"Error in /ai query: {e}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Error generating AI answer: {e}")
+
+
+def _handle_ai_command(bot, accid, event):
+    """Processes /ai command to answer a question or provide topic overview."""
+    msg = event.msg
+    if _is_duplicate_msg(msg.id, "ai"):
+        return
+    if _is_rate_limited(bot, accid, msg.from_id):
+        _react(bot, accid, msg.id, "⏱")
+        return
+
+    payload = (event.payload or "").strip()
+
+    # Check for quoted text
+    quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
+    quote_text = ""
+    if quote:
+        if isinstance(quote, dict):
+            quote_text = quote.get("text", "")
+        else:
+            quote_text = getattr(quote, "text", "")
+        quote_text = (quote_text or "").strip()
+
+    url = _extract_url_from_msg_or_payload(payload, msg)
+
+    if url:
+        if _is_internal_or_invalid_url(url):
+            logger.info(f"Local or invalid URL check hit for /ai: {url} in chat {msg.chat_id}")
+            _react(bot, accid, msg.id, "❌")
+            _send(bot, accid, msg.chat_id, "❌ Failed to process URL.\nReason: Local, internal, or invalid host/IP address.")
+            return
+
+        if database.is_excluded(url):
+            _react(bot, accid, msg.id, "⚠️")
+            _send(bot, accid, msg.chat_id, "❌ AI request skipped: URL domain is excluded by configuration.")
+            return
+
+        clean_payload_no_url = payload.replace(url, "").strip()
+        if not clean_payload_no_url and not quote_text:
+            prompt = "Provide a concise overview and key insights of this webpage/article in 2-3 paragraphs."
+        elif clean_payload_no_url:
+            prompt = clean_payload_no_url
+        else:
+            prompt = quote_text or "Provide a concise overview and key insights of this webpage/article in 2-3 paragraphs."
+
+        def _do_ai_with_url():
+            try:
+                urlhash = database.get_or_create_url_hash(url)
+                cached_og = database.get_cached_og(urlhash)
+                title = cached_og.get("title") if cached_og else None
+                jina_markdown = cached_og.get("jina_markdown") if cached_og else None
+
+                if not jina_markdown:
+                    og_title, _, _, _, fetched_md = _get_og_preview_data(url)
+                    title = title or og_title
+                    jina_markdown = fetched_md
+
+                if not jina_markdown or not jina_markdown.strip():
+                    try:
+                        html_str, _ = _download_page_html(url)
+                        if html_str:
+                            doc = Document(html_str)
+                            title = title or doc.title()
+                            soup = BeautifulSoup(doc.summary(), BS_PARSER)
+                            jina_markdown = soup.get_text(separator="\n", strip=True)
+                    except Exception as fallback_err:
+                        logger.warning(f"Local text extraction fallback failed for {url}: {fallback_err}")
+
+                ctx = (jina_markdown or "").strip()
+                if quote_text:
+                    ctx = f"{quote_text}\n\n{ctx}" if ctx else quote_text
+
+                _do_ai_query(bot, accid, msg.chat_id, msg.id, msg.from_id, prompt=prompt, context=ctx, url=url, title=title)
+            except Exception as err:
+                logger.error(f"Error in URL handling for /ai: {err}")
+                _do_ai_query(bot, accid, msg.chat_id, msg.id, msg.from_id, prompt=prompt, context=quote_text or None, url=url)
+
+        threading.Thread(target=_do_ai_with_url, daemon=True).start()
+        return
+
+    # No URL: determine prompt and context from payload and quote
+    if payload and quote_text:
+        prompt = payload
+        context = quote_text
+    elif payload:
+        prompt = payload
+        context = None
+    elif quote_text:
+        prompt = quote_text
+        context = None
+    else:
+        _send(bot, accid, msg.chat_id,
+              "Usage:\n"
+              "• `/ai <question or topic>` — Ask AI a question or request a short answer (2-3 paragraphs) 🤖\n"
+              "• Reply `/ai` to any message or link to answer or explain it.")
+        return
+
+    if len(prompt.strip()) < 2:
+        _send(bot, accid, msg.chat_id, "❌ Please provide a question or topic to ask AI.")
+        return
+
+    threading.Thread(
+        target=_do_ai_query,
+        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, prompt, context),
+        daemon=True
+    ).start()
+
 def _handle_lang_command(bot, accid, event):
     """Processes /lang command to view or set preferred summary language for a chat."""
     msg = event.msg
@@ -4035,6 +4229,17 @@ def _handle_lang_command(bot, accid, event):
 
 
 # ── Command Listeners ──
+
+@dc_cli.on(events.NewMessage(command="/ai", is_bot=None))
+def ai_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/ai(?:@\w+)?(?:\s|$)", text):
+        return
+    _handle_ai_command(bot, accid, event)
 
 @dc_cli.on(events.NewMessage(command="/tldr", is_bot=None))
 def tldr_command(bot, accid, event):
@@ -4217,6 +4422,7 @@ def get_help_text(bot, accid, from_id):
         f"/webxdc <url> — Generate WebXDC app from webpage 📱\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
         f"/tldr [url] — Generate AI summary of article or quoted message ⚡\n"
+        f"/ai <text> — Ask AI a question or request topic overview (2-3 paragraphs) 🤖\n"
         f"/lang [code] — Set summary language for this chat (e.g. /lang RU) 🌐\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/stats — View bot generation statistics\n"

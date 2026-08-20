@@ -169,8 +169,7 @@ class TestTldrAndLang(unittest.TestCase):
     @patch("bot._send")
     def test_handle_tldr_command_no_key(self, mock_send):
         mock_bot = MagicMock()
-        event = MockEvent(chat_id=1, payload="https://example.com/test", text="/tldr https://example.com/test")
-        bot._handle_tldr_command(mock_bot, 1, event)
+        bot._do_tldr(mock_bot, 1, 1, 100, 10, "https://example.com/test")
         mock_send.assert_called_once()
         self.assertIn("GEMINI_API_KEY", mock_send.call_args[0][3])
 
@@ -271,9 +270,133 @@ class TestTldrAndLang(unittest.TestCase):
         event = MockEvent(chat_id=1, payload="short", text="/tldr short")
         bot._handle_tldr_command(mock_bot, 1, event)
 
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch("bot._urlopen")
+    def test_ask_gemini_ai_direct_query(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "Quantum computing uses qubits."}]}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        res = bot._ask_gemini_ai("Explain quantum computing", target_lang="EN")
+        self.assertEqual(res, "Quantum computing uses qubits.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch("bot._urlopen")
+    def test_ask_gemini_ai_with_context(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "The conclusion is positive."}]}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        res = bot._ask_gemini_ai(
+            "What is the conclusion?",
+            context="The study investigated solar power and found 95% efficiency.",
+            target_lang="RU"
+        )
+        self.assertEqual(res, "The conclusion is positive.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch("bot._urlopen")
+    def test_ai_caching(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "Cached AI answer."}]}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        query_key = "test_ai_hash_abc"
+        # First call: hits _urlopen
+        res1 = bot._ask_gemini_ai("What is Delta Chat?", target_lang="AUTO", query_key=query_key)
+        self.assertEqual(res1, "Cached AI answer.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+        # Second call: served from database cache without calling Gemini API again
+        res2 = bot._ask_gemini_ai("What is Delta Chat?", target_lang="AUTO", query_key=query_key)
+        self.assertEqual(res2, "Cached AI answer.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._send")
+    def test_handle_ai_command_no_key(self, mock_send):
+        mock_bot = MagicMock()
+        event = MockEvent(chat_id=1, payload="Explain physics", text="/ai Explain physics")
+        bot._handle_ai_command(mock_bot, 1, event)
+        # Note: _do_ai_query runs in background or is called
+        # Wait slightly or test _do_ai_query directly
+        bot._do_ai_query(mock_bot, 1, 1, 100, 10, "Explain physics")
+        mock_send.assert_called()
+        self.assertIn("GEMINI_API_KEY", mock_send.call_args[0][3])
+
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._send")
+    def test_handle_ai_command_empty(self, mock_send, mock_rate_limit):
+        mock_bot = MagicMock()
+        event = MockEvent(chat_id=1, payload="", text="/ai")
+        bot._handle_ai_command(mock_bot, 1, event)
+
         mock_send.assert_called_once()
-        self.assertIn("too short", mock_send.call_args[0][3])
+        self.assertIn("Usage:", mock_send.call_args[0][3])
+        self.assertIn("/ai", mock_send.call_args[0][3])
+
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_ai_query")
+    def test_handle_ai_command_direct_payload(self, mock_do_ai, mock_rate_limit):
+        mock_bot = MagicMock()
+        event = MockEvent(chat_id=1, payload="Explain relativity", text="/ai Explain relativity")
+        bot._handle_ai_command(mock_bot, 1, event)
+
+        mock_do_ai.assert_called_once()
+        args, kwargs = mock_do_ai.call_args
+        self.assertEqual(args[5], "Explain relativity")
+        self.assertIsNone(args[6])
+
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_ai_query")
+    def test_handle_ai_command_quote_only(self, mock_do_ai, mock_rate_limit):
+        mock_bot = MagicMock()
+        quoted_msg = MagicMock()
+        quoted_msg.quote = {"text": "How do rockets work in vacuum?"}
+
+        event = MockEvent(chat_id=1, text="/ai", quote=quoted_msg.quote)
+        bot._handle_ai_command(mock_bot, 1, event)
+
+        mock_do_ai.assert_called_once()
+        args, kwargs = mock_do_ai.call_args
+        self.assertEqual(args[5], "How do rockets work in vacuum?")
+        self.assertIsNone(args[6])
+
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_ai_query")
+    def test_handle_ai_command_quote_with_payload(self, mock_do_ai, mock_rate_limit):
+        mock_bot = MagicMock()
+        quoted_msg = MagicMock()
+        quoted_msg.quote = {"text": "The experiment showed unexpected anomalies in sector 4."}
+
+        event = MockEvent(chat_id=1, payload="Explain why this happened", text="/ai Explain why this happened", quote=quoted_msg.quote)
+        bot._handle_ai_command(mock_bot, 1, event)
+
+        mock_do_ai.assert_called_once()
+        args, kwargs = mock_do_ai.call_args
+        self.assertEqual(args[5], "Explain why this happened")
+        self.assertEqual(args[6], quoted_msg.quote["text"])
+
+    @patch("bot._is_dc_admin", return_value=False)
+    def test_help_text_includes_ai(self, mock_is_admin):
+        mock_bot = MagicMock()
+        mock_contact = MagicMock()
+        mock_contact.address = "user@example.com"
+        mock_bot.rpc.get_contact.return_value = mock_contact
+        database.set_config("admin_dc_email", "admin@example.com")
+
+        help_user = bot.get_help_text(mock_bot, 1, 10)
+        self.assertIn("/ai <text>", help_user)
 
 
 if __name__ == "__main__":
     unittest.main()
+

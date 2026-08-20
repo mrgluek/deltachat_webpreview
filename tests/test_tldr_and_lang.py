@@ -3,6 +3,7 @@ Tests for /tldr command, /lang command, Gemini API summarization, and caption fo
 """
 import os
 import sys
+import json
 import unittest
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -25,6 +26,7 @@ class MockEvent:
         self.msg.chat_id = chat_id
         self.msg.id = msg_id
         self.msg.text = text
+        self.msg.file = None
         self.msg.is_bot = False
         self.msg.is_info = False
         self.msg.quote = quote
@@ -392,6 +394,8 @@ class TestTldrAndLang(unittest.TestCase):
         mock_contact.address = "user@example.com"
         mock_bot.rpc.get_contact.return_value = mock_contact
         database.set_config("admin_dc_email", "admin@example.com")
+        help_user = bot.get_help_text(mock_bot, 1, 10)
+        self.assertIn("/ai [text]", help_user)
 
     @patch.object(bot, "GEMINI_API_KEY", "fake_key")
     @patch("bot._urlopen")
@@ -444,8 +448,145 @@ class TestTldrAndLang(unittest.TestCase):
         mock_do_tldr.assert_called_once()
         self.assertEqual(mock_do_tldr.call_args[0][5], "https://example.com/page")
 
+    def test_detect_image_mime(self):
+        self.assertEqual(bot._detect_image_mime(b"\xff\xd8\xff\xe0"), "image/jpeg")
+        self.assertEqual(bot._detect_image_mime(b"\x89PNG\r\n\x1a\n\x00"), "image/png")
+        self.assertEqual(bot._detect_image_mime(b"RIFF\x00\x00\x00\x00WEBP"), "image/webp")
+        self.assertEqual(bot._detect_image_mime(b"GIF89a\x01\x00"), "image/gif")
+        self.assertEqual(bot._detect_image_mime(b"BM\x00\x00"), "image/bmp")
+        self.assertEqual(bot._detect_image_mime(b"unknown_bytes", "photo.jpg"), "image/jpeg")
+        self.assertEqual(bot._detect_image_mime(b"unknown_bytes", "diagram.png"), "image/png")
+        self.assertIsNone(bot._detect_image_mime(b"unknown_bytes", "document.pdf"))
+
+    def test_extract_image_from_msg_or_quote(self):
+        # 1. Direct message file
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\nfake_png_data")
+            tmp_png = f.name
+        
+        try:
+            mock_bot = MagicMock()
+            msg_direct = MagicMock()
+            msg_direct.file = tmp_png
+            msg_direct.quote = None
+
+            data, mime = bot._extract_image_from_msg_or_quote(mock_bot, 1, msg_direct)
+            self.assertIsNotNone(data)
+            self.assertEqual(mime, "image/png")
+
+            # 2. Quote with image path
+            msg_quote_img = MagicMock()
+            msg_quote_img.file = None
+            msg_quote_img.quote = {"image": tmp_png}
+
+            data, mime = bot._extract_image_from_msg_or_quote(mock_bot, 1, msg_quote_img)
+            self.assertIsNotNone(data)
+            self.assertEqual(mime, "image/png")
+
+            # 3. Quote with message_id (fetch via RPC)
+            msg_quote_rpc = MagicMock()
+            msg_quote_rpc.file = None
+            msg_quote_rpc.quote = {"message_id": 555}
+
+            quoted_rpc_msg = MagicMock()
+            quoted_rpc_msg.file = tmp_png
+            mock_bot.rpc.get_message.return_value = quoted_rpc_msg
+
+            data, mime = bot._extract_image_from_msg_or_quote(mock_bot, 1, msg_quote_rpc)
+            self.assertIsNotNone(data)
+            self.assertEqual(mime, "image/png")
+            mock_bot.rpc.get_message.assert_called_with(1, 555)
+        finally:
+            if os.path.exists(tmp_png):
+                os.remove(tmp_png)
+
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch("bot._urlopen")
+    def test_call_gemini_api_with_image(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "A photo of a cat."}]}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        fake_img_bytes = b"\xff\xd8\xff\xe0jpeg_data"
+        res = bot._call_gemini_api("What is on this photo?", image_bytes=fake_img_bytes, image_mime="image/jpeg")
+        self.assertEqual(res, "A photo of a cat.")
+
+        req = mock_urlopen.call_args[0][0]
+        req_payload = json.loads(req.data.decode("utf-8"))
+        parts = req_payload["contents"][0]["parts"]
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[0]["text"], "What is on this photo?")
+        self.assertEqual(parts[1]["inline_data"]["mime_type"], "image/jpeg")
+
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch("bot._urlopen")
+    def test_ask_gemini_ai_with_image(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "Diagram showing neural net layers."}]}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        fake_img_bytes = b"\x89PNG\r\n\x1a\npng_data"
+        res = bot._ask_gemini_ai(
+            query="",
+            target_lang="RU",
+            image_bytes=fake_img_bytes,
+            image_mime="image/png",
+            query_key="img_test_123"
+        )
+        self.assertEqual(res, "Diagram showing neural net layers.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+        # Caching check: second call should not hit _urlopen
+        res2 = bot._ask_gemini_ai(
+            query="",
+            target_lang="RU",
+            image_bytes=fake_img_bytes,
+            image_mime="image/png",
+            query_key="img_test_123"
+        )
+        self.assertEqual(res2, "Diagram showing neural net layers.")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch("threading.Thread", side_effect=lambda target, args=(), kwargs={}, **kw: MagicMock(start=lambda: target(*args, **kwargs)))
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_ai_query")
+    def test_handle_ai_command_with_image(self, mock_do_ai, mock_rate_limit, mock_thread):
+        mock_bot = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(b"\xff\xd8\xff\xe0jpeg_data")
+            tmp_jpg = f.name
+
+        try:
+            # Direct image with question
+            event = MockEvent(chat_id=1, msg_id=301, payload="What kind of animal is this?", text="/ai What kind of animal is this?")
+            event.msg.file = tmp_jpg
+
+            bot._handle_ai_command(mock_bot, 1, event)
+            mock_do_ai.assert_called_once()
+            args, kwargs = mock_do_ai.call_args
+            self.assertEqual(args[5], "What kind of animal is this?")
+            self.assertIsNotNone(kwargs.get("image_bytes"))
+            self.assertEqual(kwargs.get("image_mime"), "image/jpeg")
+            mock_do_ai.reset_mock()
+
+            # Direct image without question (just /ai)
+            event_empty = MockEvent(chat_id=1, msg_id=302, payload="", text="/ai")
+            event_empty.msg.file = tmp_jpg
+
+            bot._handle_ai_command(mock_bot, 1, event_empty)
+            mock_do_ai.assert_called_once()
+            args, kwargs = mock_do_ai.call_args
+            self.assertEqual(args[5], "")
+            self.assertIsNotNone(kwargs.get("image_bytes"))
+        finally:
+            if os.path.exists(tmp_jpg):
+                os.remove(tmp_jpg)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.7.2"
+VERSION = "2.8.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -254,9 +254,91 @@ def _karakeep_enabled() -> bool:
     """Return True if KaraKeep integration is configured."""
     return bool(KARAKEEP_URL and KARAKEEP_API_KEY)
 
-def _call_gemini_api(prompt: str, max_tokens: int = 4096, temperature: float = 0.3) -> str | None:
+def _detect_image_mime(data: bytes, filename: str = "") -> str | None:
+    """Detect image MIME type from magic header bytes or file extension."""
+    if not data:
+        return None
+    if data.startswith(b'\xff\xd8\xff'):
+        return "image/jpeg"
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return "image/png"
+    if data.startswith(b'RIFF') and len(data) >= 12 and data[8:12] == b'WEBP':
+        return "image/webp"
+    if data.startswith(b'GIF87a') or data.startswith(b'GIF89a'):
+        return "image/gif"
+    if data.startswith(b'BM'):
+        return "image/bmp"
+
+    if filename:
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in ('.jpg', '.jpeg'):
+            return "image/jpeg"
+        if ext == '.png':
+            return "image/png"
+        if ext == '.webp':
+            return "image/webp"
+        if ext == '.gif':
+            return "image/gif"
+        if ext in ('.heic', '.heif'):
+            return "image/heic"
+        if ext == '.bmp':
+            return "image/bmp"
+    return None
+
+def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str]:
+    """Extract image bytes and mime type from direct message attachment or quoted message."""
+    # 1. Check direct message attachment
+    file_path = getattr(msg, "file", None) or (msg.get("file") if isinstance(msg, dict) else None)
+    if file_path and isinstance(file_path, (str, bytes, os.PathLike)) and os.path.exists(file_path):
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read(16 * 1024 * 1024)
+            mime = _detect_image_mime(data, str(file_path))
+            if mime:
+                return data, mime
+        except Exception as e:
+            logger.warning(f"Failed to read image file from message: {e}")
+
+    # 2. Check quote image or quoted message
+    quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
+    if quote:
+        quote_img = getattr(quote, "image", None) or (quote.get("image") if isinstance(quote, dict) else None)
+        if quote_img and isinstance(quote_img, (str, bytes, os.PathLike)) and os.path.exists(quote_img):
+            try:
+                with open(quote_img, "rb") as f:
+                    data = f.read(16 * 1024 * 1024)
+                mime = _detect_image_mime(data, str(quote_img))
+                if mime:
+                    return data, mime
+            except Exception as e:
+                logger.warning(f"Failed to read image file from quote: {e}")
+
+        # Check quoted message ID via RPC
+        quote_msg_id = getattr(quote, "message_id", None) or (quote.get("message_id") if isinstance(quote, dict) else None)
+        if quote_msg_id and isinstance(quote_msg_id, (int, str)) and bot and hasattr(bot, "rpc"):
+            try:
+                q_msg = bot.rpc.get_message(accid, int(quote_msg_id))
+                q_file = getattr(q_msg, "file", None) or (q_msg.get("file") if isinstance(q_msg, dict) else None)
+                if q_file and isinstance(q_file, (str, bytes, os.PathLike)) and os.path.exists(q_file):
+                    with open(q_file, "rb") as f:
+                        data = f.read(16 * 1024 * 1024)
+                    mime = _detect_image_mime(data, str(q_file))
+                    if mime:
+                        return data, mime
+            except Exception as e:
+                logger.warning(f"Failed to fetch quoted message for image extraction: {e}")
+
+    return None, "image/jpeg"
+
+def _call_gemini_api(
+    prompt: str,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    image_bytes: bytes | None = None,
+    image_mime: str = "image/jpeg",
+) -> str | None:
     """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging."""
-    if not GEMINI_API_KEY or not prompt:
+    if not GEMINI_API_KEY or (not prompt and not image_bytes):
         return None
 
     now = time.time()
@@ -264,12 +346,32 @@ def _call_gemini_api(prompt: str, max_tokens: int = 4096, temperature: float = 0
     if not active_models:
         active_models = list(GEMINI_MODELS)
 
+    # When image is present, only query multimodal models (skip text-only Gemma models)
+    if image_bytes:
+        mm_active = [m for m in active_models if not m.startswith("gemma-")]
+        if mm_active:
+            active_models = mm_active
+        else:
+            active_models = [m for m in GEMINI_MODELS if not m.startswith("gemma-")]
+
     for model_name in active_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         
+        parts = []
+        if prompt:
+            parts.append({"text": prompt})
+        if image_bytes:
+            b64_img = base64.b64encode(image_bytes).decode("utf-8")
+            parts.append({
+                "inline_data": {
+                    "mime_type": image_mime or "image/jpeg",
+                    "data": b64_img
+                }
+            })
+
         payload = {
             "contents": [{
-                "parts": [{"text": prompt}]
+                "parts": parts
             }],
             "generationConfig": {
                 "temperature": temperature,
@@ -288,7 +390,7 @@ def _call_gemini_api(prompt: str, max_tokens: int = 4096, temperature: float = 0
                     'x-goog-api-key': GEMINI_API_KEY
                 }
             )
-            with _urlopen(req, timeout=15) as resp:
+            with _urlopen(req, timeout=20) as resp:
                 body = json.loads(resp.read().decode('utf-8'))
                 candidates = body.get("candidates", [])
                 if candidates:
@@ -368,12 +470,21 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         database.add_cached_tldr(cache_key, res_text)
     return res_text
 
-def _ask_gemini_ai(query: str, context: str | None = None, target_lang: str = "AUTO", query_key: str | None = None) -> str | None:
-    """Answers a question or provides topic overview using Google Gemini API in 2-3 paragraphs with 24h caching."""
-    if not GEMINI_API_KEY or not query or not query.strip():
+def _ask_gemini_ai(
+    query: str,
+    context: str | None = None,
+    target_lang: str = "AUTO",
+    query_key: str | None = None,
+    image_bytes: bytes | None = None,
+    image_mime: str = "image/jpeg",
+) -> str | None:
+    """Answers a question, explains a topic, or analyzes an image using Google Gemini API with 24h caching."""
+    if not GEMINI_API_KEY:
+        return None
+    if not query and not image_bytes and not context:
         return None
 
-    clean_query = query.strip()
+    clean_query = query.strip() if query else ""
     clean_context = context.strip() if context and context.strip() else None
 
     lang_str = target_lang.strip().upper()
@@ -390,7 +501,25 @@ def _ask_gemini_ai(query: str, context: str | None = None, target_lang: str = "A
     else:
         lang_instruction = lang_str
 
-    if clean_context:
+    if image_bytes:
+        if not clean_query or len(clean_query) < 2:
+            prompt = (
+                f"Analyze what is depicted in this image in {lang_instruction}.\n"
+                "Provide a clear and concise description of the main subject, extract any visible text, and highlight key visual details (from a brief answer up to 2-3 paragraphs maximum).\n"
+                "Provide a direct, accurate response without meta-commentary, introductory filler, or conversational preamble. Output the answer directly."
+            )
+            if clean_context:
+                prompt += f"\n\nAdditional Context:\n{clean_context[:8000]}"
+        else:
+            prompt = (
+                f"Analyze the provided image and answer the following question or explain the topic in {lang_instruction}.\n"
+                "Keep the answer as concise as appropriate: if the question calls for a direct, short answer (even a single word, number, or sentence), answer concisely; if it requires detailed explanation, provide an informative summary of up to 2-3 paragraphs maximum.\n"
+                "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler. Output the answer directly:\n\n"
+                f"Question / Request:\n{clean_query}"
+            )
+            if clean_context:
+                prompt += f"\n\nContext:\n{clean_context[:8000]}"
+    elif clean_context:
         truncated_ctx = clean_context[:16000]
         prompt = (
             f"Answer the following question or explain the topic based on the provided context in {lang_instruction}.\n"
@@ -407,7 +536,13 @@ def _ask_gemini_ai(query: str, context: str | None = None, target_lang: str = "A
             f"Question / Topic:\n{clean_query}"
         )
 
-    res_text = _call_gemini_api(prompt, max_tokens=4096, temperature=0.4)
+    res_text = _call_gemini_api(
+        prompt,
+        max_tokens=4096,
+        temperature=0.4,
+        image_bytes=image_bytes,
+        image_mime=image_mime,
+    )
     if res_text and cache_key:
         database.add_cached_tldr(cache_key, res_text)
     return res_text
@@ -4060,7 +4195,19 @@ def _handle_tldr_command(bot, accid, event):
           "• `/tldr <url>` — Generate article summary (TL;DR)\n"
           "• Reply `/tldr` to any message or link to summarize it.")
 
-def _do_ai_query(bot, accid, chat_id, req_msg_id, from_id, prompt: str, context: str | None = None, url: str | None = None, title: str | None = None):
+def _do_ai_query(
+    bot,
+    accid,
+    chat_id,
+    req_msg_id,
+    from_id,
+    prompt: str,
+    context: str | None = None,
+    url: str | None = None,
+    title: str | None = None,
+    image_bytes: bytes | None = None,
+    image_mime: str = "image/jpeg",
+):
     """Processes AI query in background thread."""
     if not GEMINI_API_KEY:
         _react(bot, accid, req_msg_id, "❌")
@@ -4073,10 +4220,18 @@ def _do_ai_query(bot, accid, chat_id, req_msg_id, from_id, prompt: str, context:
 
     try:
         lang = database.get_chat_lang(chat_id)
-        raw_key = f"{prompt}:{context or ''}:{url or ''}"
+        img_hash = hashlib.sha256(image_bytes).hexdigest()[:16] if image_bytes else ""
+        raw_key = f"{prompt}:{context or ''}:{url or ''}:{img_hash}"
         query_key = hashlib.sha256(raw_key.encode('utf-8')).hexdigest()[:16]
 
-        answer = _ask_gemini_ai(prompt, context=context, target_lang=lang, query_key=query_key)
+        answer = _ask_gemini_ai(
+            prompt,
+            context=context,
+            target_lang=lang,
+            query_key=query_key,
+            image_bytes=image_bytes,
+            image_mime=image_mime,
+        )
 
         if not answer:
             _react(bot, accid, req_msg_id, "❌")
@@ -4092,7 +4247,9 @@ def _do_ai_query(bot, accid, chat_id, req_msg_id, from_id, prompt: str, context:
 
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")
-        database.add_preview_log(chat_id, from_id, url or "ai_query", title or "AI Query", len(answer), 0)
+        log_url = url or ("ai_image" if image_bytes else "ai_query")
+        log_title = title or ("AI Vision Query" if image_bytes else "AI Query")
+        database.add_preview_log(chat_id, from_id, log_url, log_title, len(answer), len(image_bytes) if image_bytes else 0)
     except Exception as e:
         logger.error(f"Error in /ai query: {e}")
         _react(bot, accid, req_msg_id, "❌")
@@ -4100,7 +4257,7 @@ def _do_ai_query(bot, accid, chat_id, req_msg_id, from_id, prompt: str, context:
 
 
 def _handle_ai_command(bot, accid, event):
-    """Processes /ai command to answer a question or provide topic overview."""
+    """Processes /ai command to answer a question, analyze topic, or inspect an image."""
     msg = event.msg
     if _is_duplicate_msg(msg.id, "ai"):
         return
@@ -4123,6 +4280,9 @@ def _handle_ai_command(bot, accid, event):
         else:
             quote_text = getattr(quote, "text", "")
         quote_text = (quote_text or "").strip()
+
+    # Check for attached or quoted image
+    image_bytes, image_mime = _extract_image_from_msg_or_quote(bot, accid, msg)
 
     url = _extract_url_from_msg_or_payload(payload, msg)
 
@@ -4173,15 +4333,23 @@ def _handle_ai_command(bot, accid, event):
                 if quote_text:
                     ctx = f"{quote_text}\n\n{ctx}" if ctx else quote_text
 
-                _do_ai_query(bot, accid, msg.chat_id, msg.id, msg.from_id, prompt=prompt, context=ctx, url=url, title=title)
+                _do_ai_query(
+                    bot, accid, msg.chat_id, msg.id, msg.from_id,
+                    prompt=prompt, context=ctx, url=url, title=title,
+                    image_bytes=image_bytes, image_mime=image_mime
+                )
             except Exception as err:
                 logger.error(f"Error in URL handling for /ai: {err}")
-                _do_ai_query(bot, accid, msg.chat_id, msg.id, msg.from_id, prompt=prompt, context=quote_text or None, url=url)
+                _do_ai_query(
+                    bot, accid, msg.chat_id, msg.id, msg.from_id,
+                    prompt=prompt, context=quote_text or None, url=url,
+                    image_bytes=image_bytes, image_mime=image_mime
+                )
 
         threading.Thread(target=_do_ai_with_url, daemon=True).start()
         return
 
-    # No URL: determine prompt and context from payload and quote
+    # No URL: determine prompt and context from payload, quote, and image
     if payload and quote_text:
         prompt = payload
         context = quote_text
@@ -4191,20 +4359,25 @@ def _handle_ai_command(bot, accid, event):
     elif quote_text:
         prompt = quote_text
         context = None
+    elif image_bytes:
+        prompt = ""
+        context = None
     else:
         _send(bot, accid, msg.chat_id,
               "Usage:\n"
-              "• `/ai <question or topic>` — Ask AI a question or request a short answer (2-3 paragraphs) 🤖\n"
+              "• `/ai <question or topic>` — Ask AI a question or analyze a topic 🤖\n"
+              "• Send or reply `/ai` to a photo/image to analyze or describe it 🖼️\n"
               "• Reply `/ai` to any message or link to answer or explain it.")
         return
 
-    if len(prompt.strip()) < 2:
+    if not image_bytes and len(prompt.strip()) < 2:
         _send(bot, accid, msg.chat_id, "❌ Please provide a question or topic to ask AI.")
         return
 
     threading.Thread(
         target=_do_ai_query,
         args=(bot, accid, msg.chat_id, msg.id, msg.from_id, prompt, context),
+        kwargs={"image_bytes": image_bytes, "image_mime": image_mime},
         daemon=True
     ).start()
 
@@ -4446,7 +4619,7 @@ def get_help_text(bot, accid, from_id):
         f"/webxdc <url> — Generate WebXDC app from webpage 📱\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
         f"/tldr [url] — Generate AI summary of article or quoted message ⚡\n"
-        f"/ai <text> — Ask AI a question or request topic overview (2-3 paragraphs) 🤖\n"
+        f"/ai [text] — Ask AI a question, explain topic, or analyze photo/image 🤖\n"
         f"/lang [code] — Set summary language for this chat (e.g. /lang RU) 🌐\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/stats — View bot generation statistics\n"

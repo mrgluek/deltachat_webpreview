@@ -2,6 +2,17 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.8.0] - 2026-08-21
+
+### Added
+- **Multimodal Image & Vision Analysis (`/ai [text]`)**: Added full multimodal vision capabilities to the `/ai` command using Google Gemini's vision models.
+  - **Direct Photo Upload**: Send a photo, screenshot, or graphic with a caption like `/ai What is this?` or `/ai Transcribe this text` (or just `/ai` for an automatic detailed description).
+  - **Reply to Photo / Sticker**: Reply `/ai <question>` (or just `/ai`) to any image, sticker, photo, or image attachment in the chat to analyze its visual content.
+  - **MIME & Magic Header Detection**: Automatically identifies JPEG, PNG, WEBP, GIF, HEIC, and BMP images.
+  - **Smart Multimodal Routing**: Automatically filters and routes image queries to multimodal `gemini-*` models in the fallback chain.
+  - **24-Hour Image Caching**: Caches visual AI responses keyed by image content hash to optimize API quota consumption.
+- **Unit Tests**: Added comprehensive test suites for image MIME detection, attachment and quote extraction, base64 payload construction, and vision AI query caching in `tests/test_tldr_and_lang.py`.
+
 ## [2.7.2] - 2026-08-21
 
 ### Changed

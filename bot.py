@@ -285,8 +285,20 @@ def _detect_image_mime(data: bytes, filename: str = "") -> str | None:
             return "image/bmp"
     return None
 
+def _get_int_field(obj, *keys) -> int | None:
+    """Safely extract integer field from object or dict."""
+    if not obj:
+        return None
+    for k in keys:
+        val = getattr(obj, k, None) if not isinstance(obj, dict) else obj.get(k)
+        if isinstance(val, int) and not isinstance(val, bool):
+            return val
+        if isinstance(val, str) and val.isdigit():
+            return int(val)
+    return None
+
 def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str]:
-    """Extract image bytes and mime type from direct message attachment or quoted message."""
+    """Extract image bytes and mime type from direct message attachment, quoted message, or parent reply."""
     # 1. Check direct message attachment
     file_path = getattr(msg, "file", None) or (msg.get("file") if isinstance(msg, dict) else None)
     if file_path and isinstance(file_path, (str, bytes, os.PathLike)) and os.path.exists(file_path):
@@ -313,11 +325,11 @@ def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
             except Exception as e:
                 logger.warning(f"Failed to read image file from quote: {e}")
 
-        # Check quoted message ID via RPC
-        quote_msg_id = getattr(quote, "message_id", None) or (quote.get("message_id") if isinstance(quote, dict) else None)
-        if quote_msg_id and isinstance(quote_msg_id, (int, str)) and bot and hasattr(bot, "rpc"):
+        # Check quoted message ID via RPC (supports camelCase messageId and snake_case message_id)
+        quote_msg_id = _get_int_field(quote, "message_id", "messageId")
+        if quote_msg_id and bot and hasattr(bot, "rpc"):
             try:
-                q_msg = bot.rpc.get_message(accid, int(quote_msg_id))
+                q_msg = bot.rpc.get_message(accid, quote_msg_id)
                 q_file = getattr(q_msg, "file", None) or (q_msg.get("file") if isinstance(q_msg, dict) else None)
                 if q_file and isinstance(q_file, (str, bytes, os.PathLike)) and os.path.exists(q_file):
                     with open(q_file, "rb") as f:
@@ -327,6 +339,21 @@ def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
                         return data, mime
             except Exception as e:
                 logger.warning(f"Failed to fetch quoted message for image extraction: {e}")
+
+    # 3. Fallback: check parent message if message is a reply
+    parent_id = _get_int_field(msg, "parent_id", "parentId")
+    if parent_id and bot and hasattr(bot, "rpc"):
+        try:
+            p_msg = bot.rpc.get_message(accid, parent_id)
+            p_file = getattr(p_msg, "file", None) or (p_msg.get("file") if isinstance(p_msg, dict) else None)
+            if p_file and isinstance(p_file, (str, bytes, os.PathLike)) and os.path.exists(p_file):
+                with open(p_file, "rb") as f:
+                    data = f.read(16 * 1024 * 1024)
+                mime = _detect_image_mime(data, str(p_file))
+                if mime:
+                    return data, mime
+        except Exception as e:
+            logger.warning(f"Failed to fetch parent message for image extraction: {e}")
 
     return None, "image/jpeg"
 

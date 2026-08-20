@@ -496,6 +496,32 @@ class TestTldrAndLang(unittest.TestCase):
             self.assertIsNotNone(data)
             self.assertEqual(mime, "image/png")
             mock_bot.rpc.get_message.assert_called_with(1, 555)
+
+            # 4. Quote with camelCase messageId (standard Delta Chat JSON-RPC)
+            msg_quote_camel = MagicMock()
+            msg_quote_camel.file = None
+            msg_quote_camel.quote = {"messageId": 666}
+
+            mock_bot.rpc.get_message.reset_mock()
+            mock_bot.rpc.get_message.return_value = quoted_rpc_msg
+            data, mime = bot._extract_image_from_msg_or_quote(mock_bot, 1, msg_quote_camel)
+            self.assertIsNotNone(data)
+            self.assertEqual(mime, "image/png")
+            mock_bot.rpc.get_message.assert_called_with(1, 666)
+
+            # 5. Reply via parent_id / parentId without quote object
+            msg_reply_parent = MagicMock()
+            msg_reply_parent.file = None
+            msg_reply_parent.quote = None
+            msg_reply_parent.parent_id = None
+            msg_reply_parent.parentId = 777
+
+            mock_bot.rpc.get_message.reset_mock()
+            mock_bot.rpc.get_message.return_value = quoted_rpc_msg
+            data, mime = bot._extract_image_from_msg_or_quote(mock_bot, 1, msg_reply_parent)
+            self.assertIsNotNone(data)
+            self.assertEqual(mime, "image/png")
+            mock_bot.rpc.get_message.assert_called_with(1, 777)
         finally:
             if os.path.exists(tmp_png):
                 os.remove(tmp_png)

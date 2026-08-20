@@ -5,12 +5,12 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 ## [2.6.0] - 2026-08-20
 
 ### Added
-- **Asynchronous Sequential `/keep` Archiving**: Overhauled the `/keep` workflow:
+- **Asynchronous Concurrent `/keep` Archiving**: Overhauled the `/keep` workflow:
   1. **KaraKeep First**: If KaraKeep is configured and the command is run by the bot administrator, the URL is saved to KaraKeep first and bookmark confirmation is sent directly to the administrator's private chat.
-  2. **Web Archive**: The bot then attempts to archive the URL to the Internet Archive Wayback Machine and confirms in the chat.
-  3. **Archive.today Multi-Mirror Fallback**: If the Web Archive is down, times out, or returns an error, the bot automatically falls back to **Archive.today**, dynamically querying active mirrors (`archive.ph`, `archive.is`, `archive.today`, `archive.li`, `archive.vn`, `archive.md`) sequentially until one succeeds.
+  2. **Concurrent Web Archive & Archive.today**: The bot triggers archiving simultaneously to both the Internet Archive (Wayback Machine, with a generous 120s timeout) and **Archive.today** (with dynamic multi-mirror selection: `archive.ph`, `archive.is`, `archive.today`, `archive.li`, `archive.vn`, `archive.md`).
+  3. **Streamed & Consolidated Reporting**: If both archives finish promptly, a consolidated response with both links is posted to the chat; if one service finishes early while the other takes longer, results are streamed seamlessly so users never wait on slow responses.
 - **Archive.today Configuration (`ARCHIVE_TODAY_MIRRORS`)**: Added support for configuring or customizing the Archive.today mirror list via the `ARCHIVE_TODAY_MIRRORS` environment variable.
-- **Unit Tests**: Added test suite `TestSaveToArchiveToday` and expanded `TestDoKeep` in `tests/test_karakeep.py` covering redirects, Location headers, meta refresh / WIP extraction, mirror failover sequence, and failure reporting.
+- **Unit Tests**: Added test suite `TestSaveToArchiveToday` and expanded `TestDoKeep` in `tests/test_karakeep.py` covering redirects, Location headers, meta refresh / WIP extraction, mirror failover sequence, concurrent execution, and failure reporting.
 
 ## [2.5.9] - 2026-08-16
 

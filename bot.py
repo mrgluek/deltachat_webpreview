@@ -3250,8 +3250,8 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
             os.environ['https_proxy'] = PROXY_URL
         
         try:
-            # Use 45 second timeout as /save/ endpoint can be slow or down
-            with urllib.request.urlopen(req, timeout=45) as response:
+            # Use 120 second timeout as /save/ endpoint can be slow to respond
+            with urllib.request.urlopen(req, timeout=120) as response:
                 logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
                 redirected_url = response.geturl()
                 
@@ -3406,9 +3406,11 @@ def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
     """
     Background worker:
     1. First, save URL to KaraKeep (if configured and requester is admin).
-    2. Then, attempt to save URL to Web Archive.
-    3. If Web Archive fails/unavailable, fall back to Archive.today (trying mirrors sequentially).
+    2. Concurrently save URL to Web Archive (Wayback Machine) and Archive.today (multi-mirror).
+    3. Consolidate or stream results to chat.
     """
+    import concurrent.futures
+
     # 1. If requester is admin and KaraKeep is enabled, save to KaraKeep first and send confirmation to their private chat
     is_admin = _is_dc_admin(bot, accid, from_id)
     if is_admin and _karakeep_enabled():
@@ -3426,31 +3428,94 @@ def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
         except Exception as e:
             logger.error(f"Failed to send KaraKeep notification to private chat for admin {from_id}: {e}")
 
-    # 2. Try saving to Web Archive
-    wa_success, wa_result = _save_to_web_archive(url)
-    if wa_success:
-        _react(bot, accid, msg_id, "☑️")
-        reply = f"🏛️ Saved to Web Archive!\n🔗 {url}"
-        if wa_result:
-            reply += f"\n📎 {wa_result}"
-        _send(bot, accid, chat_id, reply)
-        return
+    # 2. Concurrently archive to Web Archive and Archive.today
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_wa = executor.submit(_save_to_web_archive, url)
+        future_at = executor.submit(_save_to_archive_today, url)
 
-    # 3. Fallback: Web Archive failed or is down, try Archive.today multi-mirror
-    logger.warning(f"Web Archive save failed ({wa_result}). Falling back to Archive.today for URL: {url}")
-    at_success, at_result = _save_to_archive_today(url)
-    if at_success:
-        _react(bot, accid, msg_id, "☑️")
-        reply = f"🏛️ Saved to Archive.today!\n🔗 {url}"
-        if at_result:
-            reply += f"\n📎 {at_result}"
-        _send(bot, accid, chat_id, reply)
-    else:
-        _react(bot, accid, msg_id, "❌")
-        _send(bot, accid, chat_id,
-              f"❌ Failed to archive URL.\n"
-              f"• Web Archive: {wa_result}\n"
-              f"• Archive.today: {at_result}")
+        # Wait up to 15s for initial completion
+        done, not_done = concurrent.futures.wait([future_wa, future_at], timeout=15)
+
+        wa_sent = False
+        at_sent = False
+
+        if future_wa in done and future_at in done:
+            wa_success, wa_result = future_wa.result()
+            at_success, at_result = future_at.result()
+
+            if wa_success and at_success:
+                _react(bot, accid, msg_id, "☑️")
+                reply = (
+                    f"🏛️ Saved to Web Archives!\n"
+                    f"🔗 {url}\n\n"
+                    f"• Web Archive: {wa_result}\n"
+                    f"• Archive.today: {at_result}"
+                )
+                _send(bot, accid, chat_id, reply)
+                return
+            elif wa_success and not at_success:
+                _react(bot, accid, msg_id, "☑️")
+                reply = f"🏛️ Saved to Web Archive!\n🔗 {url}\n📎 {wa_result}"
+                _send(bot, accid, chat_id, reply)
+                return
+            elif at_success and not wa_success:
+                _react(bot, accid, msg_id, "☑️")
+                reply = f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}"
+                _send(bot, accid, chat_id, reply)
+                return
+            else:
+                _react(bot, accid, msg_id, "❌")
+                _send(bot, accid, chat_id,
+                      f"❌ Failed to archive URL.\n"
+                      f"• Web Archive: {wa_result}\n"
+                      f"• Archive.today: {at_result}")
+                return
+
+        # If we reached here, at least one task is taking longer than 15s
+        if future_at in done:
+            at_success, at_result = future_at.result()
+            if at_success:
+                _react(bot, accid, msg_id, "☑️")
+                _send(bot, accid, chat_id, f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}")
+                at_sent = True
+
+        if future_wa in done:
+            wa_success, wa_result = future_wa.result()
+            if wa_success:
+                _react(bot, accid, msg_id, "☑️")
+                _send(bot, accid, chat_id, f"🏛️ Saved to Web Archive!\n🔗 {url}\n📎 {wa_result}")
+                wa_sent = True
+
+        # Wait for remaining tasks to finish
+        if future_wa in not_done:
+            try:
+                wa_success, wa_result = future_wa.result()
+                if wa_success and not wa_sent:
+                    _react(bot, accid, msg_id, "☑️")
+                    _send(bot, accid, chat_id, f"🏛️ Saved to Web Archive!\n🔗 {url}\n📎 {wa_result}")
+                    wa_sent = True
+            except Exception as e:
+                wa_result = str(e)
+
+        if future_at in not_done:
+            try:
+                at_success, at_result = future_at.result()
+                if at_success and not at_sent:
+                    _react(bot, accid, msg_id, "☑️")
+                    _send(bot, accid, chat_id, f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}")
+                    at_sent = True
+            except Exception as e:
+                at_result = str(e)
+
+        # If neither succeeded and nothing was sent
+        if not wa_sent and not at_sent:
+            wa_res = future_wa.result()[1] if future_wa.done() else "Timed out"
+            at_res = future_at.result()[1] if future_at.done() else "Timed out"
+            _react(bot, accid, msg_id, "❌")
+            _send(bot, accid, chat_id,
+                  f"❌ Failed to archive URL.\n"
+                  f"• Web Archive: {wa_res}\n"
+                  f"• Archive.today: {at_res}")
 
 
 def _handle_keep_command(bot, accid, event):

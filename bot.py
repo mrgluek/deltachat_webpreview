@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.6.0"
+VERSION = "2.6.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -62,7 +62,7 @@ KARAKEEP_URL = os.environ.get("KARAKEEP_URL", "").rstrip("/")
 KARAKEEP_API_KEY = os.environ.get("KARAKEEP_API_KEY", "")
 KARAKEEP_TAGS = [t.strip() for t in os.environ.get("KARAKEEP_TAGS", "").split(",") if t.strip()]
 
-# Archive.today mirrors (fallback for Web Archive)
+# Archive.today mirrors & proxy (fallback/concurrent archiving)
 ARCHIVE_TODAY_DEFAULT_MIRRORS = [
     "https://archive.ph",
     "https://archive.is",
@@ -75,6 +75,7 @@ _raw_archive_today_mirrors = os.environ.get("ARCHIVE_TODAY_MIRRORS", "")
 ARCHIVE_TODAY_MIRRORS = [
     m.strip().rstrip("/") for m in _raw_archive_today_mirrors.split(",") if m.strip()
 ] if _raw_archive_today_mirrors else ARCHIVE_TODAY_DEFAULT_MIRRORS
+ARCHIVE_TODAY_PROXY_URL = os.environ.get("ARCHIVE_TODAY_PROXY_URL", "").strip()
 
 # Jina AI key (opt-in via env)
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
@@ -225,6 +226,16 @@ def _urlopen(req_or_url, timeout=None):
             return opener.open(req_or_url, timeout=timeout)
         else:
             return urllib.request.urlopen(req_or_url, timeout=timeout)
+
+    # Archive.today mirrors requests
+    archive_today_domains = ("archive.ph", "archive.is", "archive.today", "archive.li", "archive.vn", "archive.md", "archive.fo")
+    if any(domain == d or domain.endswith("." + d) for d in archive_today_domains):
+        proxy = ARCHIVE_TODAY_PROXY_URL or PROXY_URL
+        if proxy:
+            logger.info(f"Routing Archive.today request for {url} through proxy: {proxy}")
+            proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
+            opener = urllib.request.build_opener(proxy_handler)
+            return opener.open(req_or_url, timeout=timeout)
 
     # Standard requests matching PROXY_DOMAINS
     if _should_use_proxy(url):
@@ -3402,12 +3413,73 @@ def _save_to_archive_today(url: str) -> tuple[bool, str]:
     return False, "; ".join(errors) if errors else "No accessible mirrors"
 
 
+def _save_to_ghostarchive(url: str) -> tuple[bool, str]:
+    """
+    Save a URL to Ghostarchive (ghostarchive.org).
+    Returns (success, archived_url_or_error).
+    """
+    submit_url = "https://ghostarchive.org/archive"
+    logger.info(f"Saving URL to Ghostarchive: {url}")
+    data = urllib.parse.urlencode({"url": url}).encode("utf-8")
+    req = urllib.request.Request(
+        submit_url,
+        data=data,
+        headers={
+            "User-Agent": STANDARD_USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": "https://ghostarchive.org/",
+        },
+        method="POST",
+    )
+    try:
+        with _urlopen(req, timeout=45) as resp:
+            final_url = resp.geturl()
+            if "ghostarchive.org" in final_url and final_url.rstrip("/") != submit_url.rstrip("/"):
+                logger.info(f"Ghostarchive save succeeded: {final_url}")
+                return True, final_url
+
+            body = resp.read().decode("utf-8", errors="replace")
+
+            # Look for meta refresh
+            meta_match = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^"\']*url=([^"\'>\s]+)', body, re.IGNORECASE)
+            if meta_match:
+                target = meta_match.group(1).strip()
+                return True, urllib.parse.urljoin("https://ghostarchive.org/", target)
+
+            # Look for JS redirect
+            js_match = re.search(r'(?:location\.replace\s*\(\s*|location(?:\.href)?\s*=\s*)["\']([^"\']+)["\']', body, re.IGNORECASE)
+            if js_match:
+                target = js_match.group(1).strip()
+                return True, urllib.parse.urljoin("https://ghostarchive.org/", target)
+
+            # Look for archive link in HTML
+            link_match = re.search(r'href=["\']((?:https?://ghostarchive\.org)?/(?:v?archive)/[a-zA-Z0-9_-]+)["\']', body, re.IGNORECASE)
+            if link_match:
+                target = link_match.group(1).strip()
+                return True, urllib.parse.urljoin("https://ghostarchive.org/", target)
+
+            return True, f"https://ghostarchive.org/archive/{url}"
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
+            loc = e.headers.get("Location")
+            return True, urllib.parse.urljoin("https://ghostarchive.org/", loc)
+        logger.warning(f"Ghostarchive HTTP error {e.code}: {e.reason}")
+        return False, f"HTTP {e.code}: {e.reason}"
+    except urllib.error.URLError as e:
+        logger.warning(f"Ghostarchive URLError: {e}")
+        return False, str(e)
+    except Exception as e:
+        logger.error(f"Ghostarchive save failed: {e}")
+        return False, str(e)
+
+
 def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
     """
     Background worker:
     1. First, save URL to KaraKeep (if configured and requester is admin).
-    2. Concurrently save URL to Web Archive (Wayback Machine) and Archive.today (multi-mirror).
-    3. Consolidate or stream results to chat.
+    2. Concurrently save URL to Web Archive, Archive.today, and Ghostarchive.
+    3. Consolidate and stream results to chat.
     """
     import concurrent.futures
 
@@ -3428,94 +3500,79 @@ def _do_keep(bot, accid, chat_id, msg_id, from_id, url: str):
         except Exception as e:
             logger.error(f"Failed to send KaraKeep notification to private chat for admin {from_id}: {e}")
 
-    # 2. Concurrently archive to Web Archive and Archive.today
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_wa = executor.submit(_save_to_web_archive, url)
-        future_at = executor.submit(_save_to_archive_today, url)
+    # 2. Concurrently archive to Web Archive, Archive.today, and Ghostarchive
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            "Web Archive": executor.submit(_save_to_web_archive, url),
+            "Archive.today": executor.submit(_save_to_archive_today, url),
+            "Ghostarchive": executor.submit(_save_to_ghostarchive, url),
+        }
 
         # Wait up to 15s for initial completion
-        done, not_done = concurrent.futures.wait([future_wa, future_at], timeout=15)
+        done, not_done = concurrent.futures.wait(futures.values(), timeout=15)
 
-        wa_sent = False
-        at_sent = False
+        sent_services = set()
+        succeeded = {}
+        failed = {}
 
-        if future_wa in done and future_at in done:
-            wa_success, wa_result = future_wa.result()
-            at_success, at_result = future_at.result()
+        if not not_done:
+            # All tasks finished within initial 15s window
+            for name, fut in futures.items():
+                ok, res = fut.result()
+                if ok:
+                    succeeded[name] = res
+                else:
+                    failed[name] = res
 
-            if wa_success and at_success:
+            if succeeded:
                 _react(bot, accid, msg_id, "☑️")
-                reply = (
-                    f"🏛️ Saved to Web Archives!\n"
-                    f"🔗 {url}\n\n"
-                    f"• Web Archive: {wa_result}\n"
-                    f"• Archive.today: {at_result}"
-                )
-                _send(bot, accid, chat_id, reply)
-                return
-            elif wa_success and not at_success:
-                _react(bot, accid, msg_id, "☑️")
-                reply = f"🏛️ Saved to Web Archive!\n🔗 {url}\n📎 {wa_result}"
-                _send(bot, accid, chat_id, reply)
-                return
-            elif at_success and not wa_success:
-                _react(bot, accid, msg_id, "☑️")
-                reply = f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}"
-                _send(bot, accid, chat_id, reply)
+                if len(succeeded) == 1:
+                    name, res = next(iter(succeeded.items()))
+                    _send(bot, accid, chat_id, f"🏛️ Saved to {name}!\n🔗 {url}\n📎 {res}")
+                else:
+                    lines = [f"• {name}: {res}" for name, res in succeeded.items()]
+                    _send(bot, accid, chat_id, f"🏛️ Saved to Web Archives!\n🔗 {url}\n\n" + "\n".join(lines))
                 return
             else:
                 _react(bot, accid, msg_id, "❌")
-                _send(bot, accid, chat_id,
-                      f"❌ Failed to archive URL.\n"
-                      f"• Web Archive: {wa_result}\n"
-                      f"• Archive.today: {at_result}")
+                err_lines = [f"• {name}: {res}" for name, res in failed.items()]
+                _send(bot, accid, chat_id, f"❌ Failed to archive URL.\n" + "\n".join(err_lines))
                 return
 
-        # If we reached here, at least one task is taking longer than 15s
-        if future_at in done:
-            at_success, at_result = future_at.result()
-            if at_success:
-                _react(bot, accid, msg_id, "☑️")
-                _send(bot, accid, chat_id, f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}")
-                at_sent = True
-
-        if future_wa in done:
-            wa_success, wa_result = future_wa.result()
-            if wa_success:
-                _react(bot, accid, msg_id, "☑️")
-                _send(bot, accid, chat_id, f"🏛️ Saved to Web Archive!\n🔗 {url}\n📎 {wa_result}")
-                wa_sent = True
+        # At least one task is taking longer than 15s (e.g. slow Web Archive)
+        # Check finished tasks
+        for name, fut in futures.items():
+            if fut in done:
+                ok, res = fut.result()
+                if ok:
+                    succeeded[name] = res
+                    _react(bot, accid, msg_id, "☑️")
+                    _send(bot, accid, chat_id, f"🏛️ Saved to {name}!\n🔗 {url}\n📎 {res}")
+                    sent_services.add(name)
+                else:
+                    failed[name] = res
 
         # Wait for remaining tasks to finish
-        if future_wa in not_done:
-            try:
-                wa_success, wa_result = future_wa.result()
-                if wa_success and not wa_sent:
-                    _react(bot, accid, msg_id, "☑️")
-                    _send(bot, accid, chat_id, f"🏛️ Saved to Web Archive!\n🔗 {url}\n📎 {wa_result}")
-                    wa_sent = True
-            except Exception as e:
-                wa_result = str(e)
+        for name, fut in futures.items():
+            if fut in not_done:
+                try:
+                    ok, res = fut.result()
+                    if ok:
+                        succeeded[name] = res
+                        if name not in sent_services:
+                            _react(bot, accid, msg_id, "☑️")
+                            _send(bot, accid, chat_id, f"🏛️ Saved to {name}!\n🔗 {url}\n📎 {res}")
+                            sent_services.add(name)
+                    else:
+                        failed[name] = res
+                except Exception as e:
+                    failed[name] = str(e)
 
-        if future_at in not_done:
-            try:
-                at_success, at_result = future_at.result()
-                if at_success and not at_sent:
-                    _react(bot, accid, msg_id, "☑️")
-                    _send(bot, accid, chat_id, f"🏛️ Saved to Archive.today!\n🔗 {url}\n📎 {at_result}")
-                    at_sent = True
-            except Exception as e:
-                at_result = str(e)
-
-        # If neither succeeded and nothing was sent
-        if not wa_sent and not at_sent:
-            wa_res = future_wa.result()[1] if future_wa.done() else "Timed out"
-            at_res = future_at.result()[1] if future_at.done() else "Timed out"
+        # If none succeeded at all and nothing was sent
+        if not sent_services and not succeeded:
             _react(bot, accid, msg_id, "❌")
-            _send(bot, accid, chat_id,
-                  f"❌ Failed to archive URL.\n"
-                  f"• Web Archive: {wa_res}\n"
-                  f"• Archive.today: {at_res}")
+            err_lines = [f"• {name}: {failed.get(name, 'Timed out')}" for name in futures]
+            _send(bot, accid, chat_id, f"❌ Failed to archive URL.\n" + "\n".join(err_lines))
 
 
 def _handle_keep_command(bot, accid, event):

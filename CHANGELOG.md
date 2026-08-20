@@ -2,6 +2,13 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.6.1] - 2026-08-20
+
+### Added
+- **Ghostarchive Integration (`ghostarchive.org`)**: Added concurrent web archiving to Ghostarchive alongside Web Archive and Archive.today, ensuring resilient fallback even when server datacenter IPs are blocked by Cloudflare/WAF.
+- **Archive.today Proxy Configuration (`ARCHIVE_TODAY_PROXY_URL`)**: Added support for routing Archive.today mirror requests through a dedicated proxy (e.g. Tor `socks5://127.0.0.1:9050` or residential HTTP proxy) or falling back to `PROXY_URL` to bypass Cloudflare 429 rate limit / anti-bot blocks.
+- **Unit Tests**: Added test suite `TestSaveToGhostarchive` and `TestArchiveTodayProxyRouting` in `tests/test_karakeep.py`.
+
 ## [2.6.0] - 2026-08-20
 
 ### Added

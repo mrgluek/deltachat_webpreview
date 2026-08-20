@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.7.1] - 2026-08-20
+
+### Changed
+- **Optimized Gemini & Gemma Models Fallback Chain**: Updated default `GEMINI_MODELS` list to place modern 4th-generation Gemma models ahead of older generation Lite models: `gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it,gemini-2.5-flash-lite`. This provides superior reasoning quality and factual depth via Gemma 4 31B and 26B MoE before falling back to legacy 2.5-lite.
+
 ## [2.7.0] - 2026-08-20
 
 ### Added

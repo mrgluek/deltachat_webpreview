@@ -3236,11 +3236,33 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
     return True, bookmark_id
 
 
+def _check_wayback_availability(url: str, auth_header: str | None = None) -> str | None:
+    """Check if Wayback Machine already has a snapshot of the URL."""
+    try:
+        api_url = f"https://archive.org/wayback/available?url={urllib.parse.quote(url, safe='')}"
+        headers = {
+            "User-Agent": STANDARD_USER_AGENT,
+            "Accept": "application/json",
+        }
+        if auth_header:
+            headers["Authorization"] = auth_header
+        req = urllib.request.Request(api_url, headers=headers)
+        with _urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            snapshots = data.get("archived_snapshots", {})
+            closest = snapshots.get("closest", {})
+            if closest.get("available") and closest.get("url"):
+                return closest["url"]
+    except Exception as e:
+        logger.debug(f"Wayback availability check failed for {url}: {e}")
+    return None
+
+
 def _save_to_web_archive(url: str) -> tuple[bool, str]:
     """
     Save a URL to Web Archive (Wayback Machine).
-    Supports authenticated SPN2 API (with WAYBACK_ACCESS_KEY / WAYBACK_SECRET_KEY)
-    and anonymous /save/ endpoint fallback.
+    Supports authenticated SPN2 API (with WAYBACK_ACCESS_KEY / WAYBACK_SECRET_KEY),
+    availability fallback, and anonymous /save/ endpoint retry.
     Returns (success, archived_url_or_error).
     """
     if WAYBACK_ACCESS_KEY and WAYBACK_SECRET_KEY:
@@ -3270,6 +3292,9 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
                 if not job_id:
                     if "url" in data:
                         return True, data["url"]
+                    avail = _check_wayback_availability(url, auth_header)
+                    if avail:
+                        return True, avail
                     return False, f"SPN2 error: {data}"
 
             # Poll status for job_id
@@ -3300,16 +3325,35 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
                         elif status == "error":
                             err = s_data.get("message") or s_data.get("status_ext") or "Unknown SPN2 error"
                             logger.warning(f"SPN2 job {job_id} failed: {err}")
+                            avail = _check_wayback_availability(url, auth_header)
+                            if avail:
+                                return True, avail
                             return False, f"SPN2 error: {err}"
                 except Exception as e:
                     logger.warning(f"SPN2 status check error: {e}")
+            
+            avail = _check_wayback_availability(url, auth_header)
+            if avail:
+                return True, avail
             return False, "SPN2 timed out waiting for snapshot"
         except urllib.error.HTTPError as e:
-            logger.warning(f"SPN2 HTTP error {e.code}: {e.reason}")
-            return False, f"HTTP {e.code}: {e.reason}"
+            error_body = ""
+            try:
+                error_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            logger.warning(f"SPN2 HTTP error {e.code}: {e.reason}. Detail: {error_body}")
+            
+            # If 503/429 (e.g. rate limit, already captured), check if recent snapshot exists
+            avail = _check_wayback_availability(url, auth_header)
+            if avail:
+                logger.info(f"Found existing Wayback snapshot after SPN2 {e.code}: {avail}")
+                return True, avail
+
+            # Try standard save_url before giving up
+            logger.info(f"SPN2 returned {e.code}. Attempting standard /save/ endpoint for {url}...")
         except Exception as e:
             logger.error(f"SPN2 request failed: {e}")
-            return False, str(e)
 
     # Fallback to anonymous save endpoint
     save_url = f"https://web.archive.org/save/{url}"
@@ -3355,9 +3399,15 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
                     del os.environ['https_proxy']
     except urllib.error.HTTPError as e:
         logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}.")
+        avail = _check_wayback_availability(url)
+        if avail:
+            return True, avail
         return False, f"HTTP {e.code}: {e.reason}"
     except urllib.error.URLError as e:
         logger.warning(f"Web Archive save URLError: {e}")
+        avail = _check_wayback_availability(url)
+        if avail:
+            return True, avail
         return False, str(e)
     except Exception as e:
         logger.error(f"Web Archive save failed: {e}")

@@ -276,6 +276,28 @@ class TestSaveToWebArchive(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(result, "https://web.archive.org/web/20260820120000/https://example.com")
 
+    @patch("bot._urlopen")
+    def test_spn2_503_recovers_via_availability(self, mock_urlopen):
+        """Test that if SPN2 returns 503 (e.g. rate limit / daily captures), it recovers via Availability API."""
+        from urllib.error import HTTPError
+        from http.client import HTTPMessage
+
+        err503 = HTTPError("https://web.archive.org/save/", 503, "Service Unavailable", HTTPMessage(), None)
+
+        mock_avail_resp = MagicMock()
+        mock_avail_resp.read.return_value = b'{"archived_snapshots": {"closest": {"available": true, "url": "https://web.archive.org/web/20260820110000/https://example.com"}}}'
+
+        mock_urlopen.side_effect = [
+            err503,
+            MagicMock(__enter__=MagicMock(return_value=mock_avail_resp)),
+        ]
+
+        with patch("bot.WAYBACK_ACCESS_KEY", "my_access_key"), patch("bot.WAYBACK_SECRET_KEY", "my_secret_key"):
+            success, result = bot._save_to_web_archive("https://example.com")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://web.archive.org/web/20260820110000/https://example.com")
+
     @patch("urllib.request.urlopen")
     def test_anonymous_save_success(self, mock_urlopen):
         """Test that unauthenticated save uses standard /save/ endpoint."""

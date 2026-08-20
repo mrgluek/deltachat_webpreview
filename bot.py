@@ -297,11 +297,14 @@ def _get_int_field(obj, *keys) -> int | None:
             return int(val)
     return None
 
-def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str]:
-    """Extract image bytes and mime type from direct message attachment, quoted message, or parent reply."""
-    # 1. Check direct message attachment
-    file_path = getattr(msg, "file", None) or (msg.get("file") if isinstance(msg, dict) else None)
-    if file_path and isinstance(file_path, (str, bytes, os.PathLike)) and os.path.exists(file_path):
+def _download_and_read_msg_file(bot, accid, msg, timeout: float = 15.0) -> tuple[bytes | None, str]:
+    """Ensures a message's attachment is downloaded and reads its bytes."""
+    if not msg:
+        return None, "image/jpeg"
+
+    # 1. If file path is already present and exists, read it
+    file_path = getattr(msg, "file", None) if not isinstance(msg, dict) else msg.get("file")
+    if isinstance(file_path, (str, bytes, os.PathLike)) and os.path.exists(file_path):
         try:
             with open(file_path, "rb") as f:
                 data = f.read(16 * 1024 * 1024)
@@ -310,6 +313,72 @@ def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
                 return data, mime
         except Exception as e:
             logger.warning(f"Failed to read image file from message: {e}")
+
+    # 2. Check if we can trigger an on-demand download via RPC
+    msg_id = _get_int_field(msg, "id", "message_id", "messageId")
+    if not msg_id or not bot or not hasattr(bot, "rpc"):
+        return None, "image/jpeg"
+
+    raw_vt = getattr(msg, "view_type", None) if not isinstance(msg, dict) else msg.get("view_type")
+    view_type = raw_vt.lower() if isinstance(raw_vt, str) else ""
+
+    raw_fn = getattr(msg, "file_name", None) if not isinstance(msg, dict) else msg.get("file_name")
+    file_name = raw_fn.lower() if isinstance(raw_fn, str) else ""
+
+    raw_fb = getattr(msg, "file_bytes", None) if not isinstance(msg, dict) else msg.get("file_bytes")
+    file_bytes = raw_fb if isinstance(raw_fb, int) and not isinstance(raw_fb, bool) else 0
+
+    raw_ds = getattr(msg, "download_state", None) if not isinstance(msg, dict) else msg.get("download_state")
+    d_state = raw_ds.lower() if isinstance(raw_ds, str) else ""
+
+    has_potential_image = (
+        any(t in view_type for t in ("image", "gif", "sticker", "file", "2", "3", "4", "5"))
+        or any(file_name.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic"))
+        or file_bytes > 0
+        or d_state in ("available", "inprogress")
+        or isinstance(file_path, (str, bytes, os.PathLike))
+    )
+
+    if not has_potential_image:
+        return None, "image/jpeg"
+
+    try:
+        if hasattr(bot.rpc, "download_full_message"):
+            bot.rpc.download_full_message(accid, msg_id)
+        elif hasattr(bot.rpc, "download_msg"):
+            bot.rpc.download_msg(accid, msg_id)
+    except Exception as e:
+        logger.warning(f"Could not trigger download_full_message for msg {msg_id}: {e}")
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            curr_msg = bot.rpc.get_message(accid, msg_id)
+            cur_path = getattr(curr_msg, "file", None) if not isinstance(curr_msg, dict) else curr_msg.get("file")
+            if isinstance(cur_path, (str, bytes, os.PathLike)) and os.path.exists(cur_path):
+                with open(cur_path, "rb") as f:
+                    data = f.read(16 * 1024 * 1024)
+                mime = _detect_image_mime(data, str(cur_path))
+                if mime:
+                    return data, mime
+            raw_cur_ds = getattr(curr_msg, "download_state", None) if not isinstance(curr_msg, dict) else curr_msg.get("download_state")
+            cur_d_state = raw_cur_ds.lower() if isinstance(raw_cur_ds, str) else ""
+            if cur_d_state == "failure":
+                logger.warning(f"Download failed for msg {msg_id}")
+                break
+        except Exception as e:
+            logger.warning(f"Error while polling downloaded msg {msg_id}: {e}")
+            break
+        time.sleep(0.3)
+
+    return None, "image/jpeg"
+
+def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str]:
+    """Extract image bytes and mime type from direct message attachment, quoted message, or parent reply."""
+    # 1. Check direct message attachment (and download on-demand if needed)
+    data, mime = _download_and_read_msg_file(bot, accid, msg)
+    if data:
+        return data, mime
 
     # 2. Check quote image or quoted message
     quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
@@ -325,33 +394,25 @@ def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
             except Exception as e:
                 logger.warning(f"Failed to read image file from quote: {e}")
 
-        # Check quoted message ID via RPC (supports camelCase messageId and snake_case message_id)
+        # Check quoted message ID via RPC (and download on-demand if needed)
         quote_msg_id = _get_int_field(quote, "message_id", "messageId")
         if quote_msg_id and bot and hasattr(bot, "rpc"):
             try:
                 q_msg = bot.rpc.get_message(accid, quote_msg_id)
-                q_file = getattr(q_msg, "file", None) or (q_msg.get("file") if isinstance(q_msg, dict) else None)
-                if q_file and isinstance(q_file, (str, bytes, os.PathLike)) and os.path.exists(q_file):
-                    with open(q_file, "rb") as f:
-                        data = f.read(16 * 1024 * 1024)
-                    mime = _detect_image_mime(data, str(q_file))
-                    if mime:
-                        return data, mime
+                data, mime = _download_and_read_msg_file(bot, accid, q_msg)
+                if data:
+                    return data, mime
             except Exception as e:
                 logger.warning(f"Failed to fetch quoted message for image extraction: {e}")
 
-    # 3. Fallback: check parent message if message is a reply
+    # 3. Fallback: check parent message if message is a reply (and download on-demand if needed)
     parent_id = _get_int_field(msg, "parent_id", "parentId")
     if parent_id and bot and hasattr(bot, "rpc"):
         try:
             p_msg = bot.rpc.get_message(accid, parent_id)
-            p_file = getattr(p_msg, "file", None) or (p_msg.get("file") if isinstance(p_msg, dict) else None)
-            if p_file and isinstance(p_file, (str, bytes, os.PathLike)) and os.path.exists(p_file):
-                with open(p_file, "rb") as f:
-                    data = f.read(16 * 1024 * 1024)
-                mime = _detect_image_mime(data, str(p_file))
-                if mime:
-                    return data, mime
+            data, mime = _download_and_read_msg_file(bot, accid, p_msg)
+            if data:
+                return data, mime
         except Exception as e:
             logger.warning(f"Failed to fetch parent message for image extraction: {e}")
 
@@ -4308,9 +4369,6 @@ def _handle_ai_command(bot, accid, event):
             quote_text = getattr(quote, "text", "")
         quote_text = (quote_text or "").strip()
 
-    # Check for attached or quoted image
-    image_bytes, image_mime = _extract_image_from_msg_or_quote(bot, accid, msg)
-
     url = _extract_url_from_msg_or_payload(payload, msg)
 
     if url:
@@ -4335,6 +4393,7 @@ def _handle_ai_command(bot, accid, event):
 
         def _do_ai_with_url():
             try:
+                image_bytes, image_mime = _extract_image_from_msg_or_quote(bot, accid, msg)
                 urlhash = database.get_or_create_url_hash(url)
                 cached_og = database.get_cached_og(urlhash)
                 title = cached_og.get("title") if cached_og else None
@@ -4376,37 +4435,47 @@ def _handle_ai_command(bot, accid, event):
         threading.Thread(target=_do_ai_with_url, daemon=True).start()
         return
 
-    # No URL: determine prompt and context from payload, quote, and image
-    if payload and quote_text:
-        prompt = payload
-        context = quote_text
-    elif payload:
-        prompt = payload
-        context = None
-    elif quote_text:
-        prompt = quote_text
-        context = None
-    elif image_bytes:
-        prompt = ""
-        context = None
-    else:
-        _send(bot, accid, msg.chat_id,
-              "Usage:\n"
-              "• `/ai <question or topic>` — Ask AI a question or analyze a topic 🤖\n"
-              "• Send or reply `/ai` to a photo/image to analyze or describe it 🖼️\n"
-              "• Reply `/ai` to any message or link to answer or explain it.")
-        return
+    # No URL: run background thread for prompt / quote / image processing
+    def _do_ai_async():
+        image_bytes, image_mime = _extract_image_from_msg_or_quote(bot, accid, msg)
 
-    if not image_bytes and len(prompt.strip()) < 2:
-        _send(bot, accid, msg.chat_id, "❌ Please provide a question or topic to ask AI.")
-        return
+        if payload and quote_text:
+            prompt = payload
+            context = quote_text
+        elif payload:
+            prompt = payload
+            context = None
+        elif quote_text:
+            prompt = quote_text
+            context = None
+        elif image_bytes:
+            prompt = ""
+            context = None
+        else:
+            _send(bot, accid, msg.chat_id,
+                  "Usage:\n"
+                  "• `/ai <question or topic>` — Ask AI a question or analyze a topic 🤖\n"
+                  "• Send or reply `/ai` to a photo/image to analyze or describe it 🖼️\n"
+                  "• Reply `/ai` to any message or link to answer or explain it.")
+            return
 
-    threading.Thread(
-        target=_do_ai_query,
-        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, prompt, context),
-        kwargs={"image_bytes": image_bytes, "image_mime": image_mime},
-        daemon=True
-    ).start()
+        if not image_bytes and len(prompt.strip()) < 2:
+            _send(bot, accid, msg.chat_id, "❌ Please provide a question or topic to ask AI.")
+            return
+
+        _do_ai_query(
+            bot,
+            accid,
+            msg.chat_id,
+            msg.id,
+            msg.from_id,
+            prompt,
+            context,
+            image_bytes=image_bytes,
+            image_mime=image_mime,
+        )
+
+    threading.Thread(target=_do_ai_async, daemon=True).start()
 
 def _handle_lang_command(bot, accid, event):
     """Processes /lang command to view or set preferred summary language for a chat."""

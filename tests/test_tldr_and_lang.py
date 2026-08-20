@@ -334,9 +334,10 @@ class TestTldrAndLang(unittest.TestCase):
         mock_send.assert_called()
         self.assertIn("GEMINI_API_KEY", mock_send.call_args[0][3])
 
+    @patch("threading.Thread", side_effect=lambda target, args=(), kwargs={}, **kw: MagicMock(start=lambda: target(*args, **kwargs)))
     @patch("bot._is_rate_limited", return_value=False)
     @patch("bot._send")
-    def test_handle_ai_command_empty(self, mock_send, mock_rate_limit):
+    def test_handle_ai_command_empty(self, mock_send, mock_rate_limit, mock_thread):
         mock_bot = MagicMock()
         event = MockEvent(chat_id=1, payload="", text="/ai")
         bot._handle_ai_command(mock_bot, 1, event)
@@ -345,9 +346,10 @@ class TestTldrAndLang(unittest.TestCase):
         self.assertIn("Usage:", mock_send.call_args[0][3])
         self.assertIn("/ai", mock_send.call_args[0][3])
 
+    @patch("threading.Thread", side_effect=lambda target, args=(), kwargs={}, **kw: MagicMock(start=lambda: target(*args, **kwargs)))
     @patch("bot._is_rate_limited", return_value=False)
     @patch("bot._do_ai_query")
-    def test_handle_ai_command_direct_payload(self, mock_do_ai, mock_rate_limit):
+    def test_handle_ai_command_direct_payload(self, mock_do_ai, mock_rate_limit, mock_thread):
         mock_bot = MagicMock()
         event = MockEvent(chat_id=1, payload="Explain relativity", text="/ai Explain relativity")
         bot._handle_ai_command(mock_bot, 1, event)
@@ -357,9 +359,10 @@ class TestTldrAndLang(unittest.TestCase):
         self.assertEqual(args[5], "Explain relativity")
         self.assertIsNone(args[6])
 
+    @patch("threading.Thread", side_effect=lambda target, args=(), kwargs={}, **kw: MagicMock(start=lambda: target(*args, **kwargs)))
     @patch("bot._is_rate_limited", return_value=False)
     @patch("bot._do_ai_query")
-    def test_handle_ai_command_quote_only(self, mock_do_ai, mock_rate_limit):
+    def test_handle_ai_command_quote_only(self, mock_do_ai, mock_rate_limit, mock_thread):
         mock_bot = MagicMock()
         quoted_msg = MagicMock()
         quoted_msg.quote = {"text": "How do rockets work in vacuum?"}
@@ -372,9 +375,10 @@ class TestTldrAndLang(unittest.TestCase):
         self.assertEqual(args[5], "How do rockets work in vacuum?")
         self.assertIsNone(args[6])
 
+    @patch("threading.Thread", side_effect=lambda target, args=(), kwargs={}, **kw: MagicMock(start=lambda: target(*args, **kwargs)))
     @patch("bot._is_rate_limited", return_value=False)
     @patch("bot._do_ai_query")
-    def test_handle_ai_command_quote_with_payload(self, mock_do_ai, mock_rate_limit):
+    def test_handle_ai_command_quote_with_payload(self, mock_do_ai, mock_rate_limit, mock_thread):
         mock_bot = MagicMock()
         quoted_msg = MagicMock()
         quoted_msg.quote = {"text": "The experiment showed unexpected anomalies in sector 4."}

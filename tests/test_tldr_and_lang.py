@@ -184,19 +184,20 @@ class TestTldrAndLang(unittest.TestCase):
         mock_send.assert_called_once()
         self.assertIn("Preferred summary language for this chat set to **RU**", mock_send.call_args[0][3])
 
-    @patch("bot._do_tldr")
+    @patch("threading.Thread")
     @patch("bot._is_rate_limited", return_value=False)
     @patch("bot._is_bot_blocked", return_value=False)
-    def test_dynamic_tldr_trigger(self, mock_blocked, mock_rate_limit, mock_do_tldr):
+    def test_dynamic_tldr_trigger(self, mock_blocked, mock_rate_limit, mock_thread_cls):
         urlhash = database.get_or_create_url_hash("https://news.org/dynamic")
         mock_bot = MagicMock()
 
         event = MockEvent(chat_id=1, text=f"/tldr_{urlhash}")
         bot.on_new_message(mock_bot, 1, event)
 
-        mock_do_tldr.assert_called_once()
-        args, kwargs = mock_do_tldr.call_args
-        self.assertEqual(args[5], "https://news.org/dynamic")
+        mock_thread_cls.assert_called_once()
+        kwargs = mock_thread_cls.call_args[1]
+        self.assertEqual(kwargs["target"], bot._do_tldr)
+        self.assertEqual(kwargs["args"][5], "https://news.org/dynamic")
 
     @patch("bot._is_dc_admin")
     def test_format_preview_buttons(self, mock_is_admin):

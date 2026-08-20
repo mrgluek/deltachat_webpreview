@@ -79,21 +79,21 @@ class TestWebXDC(unittest.TestCase):
 
         mock_handle.assert_called_once_with(mock_bot, 1, event, mode="webxdc")
 
-    @patch("bot._do_preview")
+    @patch("threading.Thread")
     @patch("bot._is_rate_limited", return_value=False)
     @patch("bot._is_bot_blocked", return_value=False)
-    def test_dynamic_webxdc_trigger(self, mock_blocked, mock_rate_limit, mock_do_preview):
+    def test_dynamic_webxdc_trigger(self, mock_blocked, mock_rate_limit, mock_thread_cls):
         urlhash = database.get_or_create_url_hash("https://example.com/dynamic")
         mock_bot = MagicMock()
 
         event = MockEvent(chat_id=1, text=f"/webxdc_{urlhash}")
         bot.on_new_message(mock_bot, 1, event)
 
-        # Give background thread time or check call
-        mock_do_preview.assert_called_once()
-        args, kwargs = mock_do_preview.call_args
-        self.assertEqual(args[5], "https://example.com/dynamic")
-        self.assertEqual(args[6], "webxdc")
+        mock_thread_cls.assert_called_once()
+        kwargs = mock_thread_cls.call_args[1]
+        self.assertEqual(kwargs["target"], bot._do_preview)
+        self.assertEqual(kwargs["args"][5], "https://example.com/dynamic")
+        self.assertEqual(kwargs["args"][6], "webxdc")
 
 
     def test_process_soup_links(self):

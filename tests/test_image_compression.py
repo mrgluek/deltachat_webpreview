@@ -39,10 +39,10 @@ class TestImageCompression(unittest.TestCase):
             self.assertEqual(new_h, 400)
 
             # Verify saved WebP is animated and has 3 frames
-            saved_img = Image.open(dest_path)
-            self.assertTrue(getattr(saved_img, "is_animated", False))
-            self.assertEqual(getattr(saved_img, "n_frames", 1), 3)
-            self.assertEqual(saved_img.size, (800, 400))
+            with Image.open(dest_path) as saved_img:
+                self.assertTrue(getattr(saved_img, "is_animated", False))
+                self.assertEqual(getattr(saved_img, "n_frames", 1), 3)
+                self.assertEqual(saved_img.size, (800, 400))
 
     def test_static_image_to_webp(self):
         # Create a static 600x400 PNG

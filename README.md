@@ -67,7 +67,9 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 | `KARAKEEP_API_KEY` | The API Key for authenticating with your KaraKeep instance. | *(Empty)* |
 | `KARAKEEP_TAGS` | Optional comma-separated list of tags to automatically attach to saved bookmarks (e.g., `deltachat`). | *(Empty)* |
 | `ARCHIVE_TODAY_MIRRORS` | Comma-separated list of Archive.today mirror URLs to try sequentially when archiving. | `https://archive.ph,https://archive.is,https://archive.today,https://archive.li,https://archive.vn,https://archive.md` |
-| `ARCHIVE_TODAY_PROXY_URL` | Optional dedicated proxy URL (e.g. `socks5://127.0.0.1:9050` or `http://proxy:8080`) to route Archive.today requests through to bypass Cloudflare/datacenter 429 blocks (falls back to `PROXY_URL` if set). | *(Empty)* |
+| `ARCHIVE_TODAY_PROXY_URL` | Optional dedicated proxy URL (e.g. `socks5://127.0.0.1:9050` or `http://proxy:8080`) to route Archive.today & Ghostarchive requests through to bypass Cloudflare/datacenter 429/403 blocks (falls back to `PROXY_URL` if set). | *(Empty)* |
+| `WAYBACK_ACCESS_KEY` | Optional Internet Archive S3 Access Key for authenticated [SPN2 API](https://archive.org/account/s3.php) saves (bypasses anonymous 403 blocks & raises rate limits). | *(Empty)* |
+| `WAYBACK_SECRET_KEY` | Optional Internet Archive S3 Secret Key for authenticated [SPN2 API](https://archive.org/account/s3.php) saves. | *(Empty)* |
 | `DELETE_DEVICE_AFTER` | Local message retention duration (in seconds) in the bot database. | `3600` (1 hour) |
 | `DOWNLOAD_LIMIT` | Automatic download limit for incoming message attachments (in bytes). | `1` (1 byte) |
 

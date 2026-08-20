@@ -77,6 +77,10 @@ ARCHIVE_TODAY_MIRRORS = [
 ] if _raw_archive_today_mirrors else ARCHIVE_TODAY_DEFAULT_MIRRORS
 ARCHIVE_TODAY_PROXY_URL = os.environ.get("ARCHIVE_TODAY_PROXY_URL", "").strip()
 
+# Internet Archive SPN2 API keys (opt-in via env, https://archive.org/account/s3.php)
+WAYBACK_ACCESS_KEY = os.environ.get("WAYBACK_ACCESS_KEY", "").strip()
+WAYBACK_SECRET_KEY = os.environ.get("WAYBACK_SECRET_KEY", "").strip()
+
 # Jina AI key (opt-in via env)
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
 JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
@@ -227,12 +231,12 @@ def _urlopen(req_or_url, timeout=None):
         else:
             return urllib.request.urlopen(req_or_url, timeout=timeout)
 
-    # Archive.today mirrors requests
-    archive_today_domains = ("archive.ph", "archive.is", "archive.today", "archive.li", "archive.vn", "archive.md", "archive.fo")
-    if any(domain == d or domain.endswith("." + d) for d in archive_today_domains):
+    # Archive.today and Ghostarchive requests
+    archive_domains = ("archive.ph", "archive.is", "archive.today", "archive.li", "archive.vn", "archive.md", "archive.fo", "ghostarchive.org")
+    if any(domain == d or domain.endswith("." + d) for d in archive_domains):
         proxy = ARCHIVE_TODAY_PROXY_URL or PROXY_URL
         if proxy:
-            logger.info(f"Routing Archive.today request for {url} through proxy: {proxy}")
+            logger.info(f"Routing archive request for {url} through proxy: {proxy}")
             proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
             opener = urllib.request.build_opener(proxy_handler)
             return opener.open(req_or_url, timeout=timeout)
@@ -3235,11 +3239,80 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
 def _save_to_web_archive(url: str) -> tuple[bool, str]:
     """
     Save a URL to Web Archive (Wayback Machine).
-    Routes through proxy if needed.
+    Supports authenticated SPN2 API (with WAYBACK_ACCESS_KEY / WAYBACK_SECRET_KEY)
+    and anonymous /save/ endpoint fallback.
     Returns (success, archived_url_or_error).
     """
+    if WAYBACK_ACCESS_KEY and WAYBACK_SECRET_KEY:
+        logger.info(f"Saving URL to Web Archive via SPN2 API: {url}")
+        post_data = urllib.parse.urlencode({
+            "url": url,
+            "capture_all": "1",
+            "capture_outlinks": "0",
+            "capture_screenshot": "0",
+        }).encode("utf-8")
+        auth_header = f"LOW {WAYBACK_ACCESS_KEY}:{WAYBACK_SECRET_KEY}"
+        req = urllib.request.Request(
+            "https://web.archive.org/save/",
+            data=post_data,
+            headers={
+                "User-Agent": STANDARD_USER_AGENT,
+                "Authorization": auth_header,
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method="POST",
+        )
+        try:
+            with _urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                job_id = data.get("job_id")
+                if not job_id:
+                    if "url" in data:
+                        return True, data["url"]
+                    return False, f"SPN2 error: {data}"
+
+            # Poll status for job_id
+            status_url = f"https://web.archive.org/save/status/{job_id}"
+            start_time = time.time()
+            while time.time() - start_time < 120:
+                time.sleep(3)
+                status_req = urllib.request.Request(
+                    status_url,
+                    headers={
+                        "User-Agent": STANDARD_USER_AGENT,
+                        "Authorization": auth_header,
+                        "Accept": "application/json",
+                    },
+                )
+                try:
+                    with _urlopen(status_req, timeout=15) as s_resp:
+                        s_data = json.loads(s_resp.read().decode("utf-8"))
+                        status = s_data.get("status")
+                        if status == "success":
+                            timestamp = s_data.get("timestamp")
+                            orig_url = s_data.get("original_url", url)
+                            if timestamp:
+                                snapshot_url = f"https://web.archive.org/web/{timestamp}/{orig_url}"
+                                logger.info(f"SPN2 save succeeded: {snapshot_url}")
+                                return True, snapshot_url
+                            return True, f"https://web.archive.org/web/*/{url}"
+                        elif status == "error":
+                            err = s_data.get("message") or s_data.get("status_ext") or "Unknown SPN2 error"
+                            logger.warning(f"SPN2 job {job_id} failed: {err}")
+                            return False, f"SPN2 error: {err}"
+                except Exception as e:
+                    logger.warning(f"SPN2 status check error: {e}")
+            return False, "SPN2 timed out waiting for snapshot"
+        except urllib.error.HTTPError as e:
+            logger.warning(f"SPN2 HTTP error {e.code}: {e.reason}")
+            return False, f"HTTP {e.code}: {e.reason}"
+        except Exception as e:
+            logger.error(f"SPN2 request failed: {e}")
+            return False, str(e)
+
+    # Fallback to anonymous save endpoint
     save_url = f"https://web.archive.org/save/{url}"
-    
     logger.info(f"Saving URL to Web Archive: {save_url}")
     
     try:
@@ -3250,10 +3323,9 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
             }
         )
         
-        # Route through proxy if needed (same logic as _check_url_headers)
+        # Route through proxy if needed
         if _should_use_proxy(save_url):
             logger.info(f"Routing Web Archive save request for {url} through proxy: {PROXY_URL}")
-            # Set proxy environment variables for urlopen
             import os
             original_http_proxy = os.environ.get('http_proxy')
             original_https_proxy = os.environ.get('https_proxy')
@@ -3261,7 +3333,6 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
             os.environ['https_proxy'] = PROXY_URL
         
         try:
-            # Use 120 second timeout as /save/ endpoint can be slow to respond
             with urllib.request.urlopen(req, timeout=120) as response:
                 logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
                 redirected_url = response.geturl()
@@ -3270,10 +3341,8 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
                 if "/web/" in redirected_url or "archive.org" in redirected_url:
                     return True, redirected_url
                 
-                # Fallback: return the save_url if no redirect to /web/ was received
                 return True, save_url
         finally:
-            # Restore proxy environment variables if we changed them
             if _should_use_proxy(save_url):
                 import os
                 if original_http_proxy is not None:
@@ -3453,17 +3522,21 @@ def _save_to_ghostarchive(url: str) -> tuple[bool, str]:
                 target = js_match.group(1).strip()
                 return True, urllib.parse.urljoin("https://ghostarchive.org/", target)
 
-            # Look for archive link in HTML
-            link_match = re.search(r'href=["\']((?:https?://ghostarchive\.org)?/(?:v?archive)/[a-zA-Z0-9_-]+)["\']', body, re.IGNORECASE)
+            # Look for archive link in HTML (e.g. /archive/xyz123 or /varchive/xyz123)
+            link_match = re.search(r'href=["\']((?:https?://ghostarchive\.org)?/(?:v?archive)/[a-zA-Z0-9_-]{4,30})["\']', body, re.IGNORECASE)
             if link_match:
                 target = link_match.group(1).strip()
-                return True, urllib.parse.urljoin("https://ghostarchive.org/", target)
+                target_url = urllib.parse.urljoin("https://ghostarchive.org/", target)
+                return True, target_url
 
-            return True, f"https://ghostarchive.org/archive/{url}"
+            logger.warning(f"Ghostarchive response received but no snapshot URL found for {url}")
+            return False, "No snapshot URL in Ghostarchive response"
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
             loc = e.headers.get("Location")
-            return True, urllib.parse.urljoin("https://ghostarchive.org/", loc)
+            if "/archive/" in loc or "/varchive/" in loc:
+                target_url = urllib.parse.urljoin("https://ghostarchive.org/", loc)
+                return True, target_url
         logger.warning(f"Ghostarchive HTTP error {e.code}: {e.reason}")
         return False, f"HTTP {e.code}: {e.reason}"
     except urllib.error.URLError as e:

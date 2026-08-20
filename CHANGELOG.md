@@ -5,9 +5,11 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 ## [2.6.1] - 2026-08-20
 
 ### Added
-- **Ghostarchive Integration (`ghostarchive.org`)**: Added concurrent web archiving to Ghostarchive alongside Web Archive and Archive.today, ensuring resilient fallback even when server datacenter IPs are blocked by Cloudflare/WAF.
-- **Archive.today Proxy Configuration (`ARCHIVE_TODAY_PROXY_URL`)**: Added support for routing Archive.today mirror requests through a dedicated proxy (e.g. Tor `socks5://127.0.0.1:9050` or residential HTTP proxy) or falling back to `PROXY_URL` to bypass Cloudflare 429 rate limit / anti-bot blocks.
-- **Unit Tests**: Added test suite `TestSaveToGhostarchive` and `TestArchiveTodayProxyRouting` in `tests/test_karakeep.py`.
+- **Internet Archive SPN2 API Support (`WAYBACK_ACCESS_KEY` & `WAYBACK_SECRET_KEY`)**: Added native authenticated Save Page Now 2 (SPN2) API integration for the Wayback Machine. With free S3 keys from `archive.org/account/s3.php`, archive jobs are submitted directly via authenticated API and polled until snapshot generation, avoiding anonymous 403 Forbidden blocks and rate limits.
+- **Ghostarchive Integration (`ghostarchive.org`)**: Added concurrent web archiving to Ghostarchive with strict snapshot ID validation.
+- **Archive.today & Ghostarchive Proxy Routing (`ARCHIVE_TODAY_PROXY_URL`)**: Added support for routing Archive.today and Ghostarchive requests through a dedicated proxy (e.g. Tor `socks5://127.0.0.1:9050` or HTTP proxy) or `PROXY_URL` to bypass Cloudflare 429/403 blocks on server IPs.
+- **Docker Compose Configuration**: Added `ARCHIVE_TODAY_MIRRORS`, `ARCHIVE_TODAY_PROXY_URL`, `WAYBACK_ACCESS_KEY`, and `WAYBACK_SECRET_KEY` to `docker-compose.yml`.
+- **Unit Tests**: Added test suites `TestSaveToWebArchive`, `TestSaveToGhostarchive`, and `TestArchiveTodayProxyRouting` in `tests/test_karakeep.py`.
 
 ## [2.6.0] - 2026-08-20
 

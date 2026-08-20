@@ -253,6 +253,43 @@ class TestSaveToArchiveToday(unittest.TestCase):
         self.assertIn("Connection refused", result)
 
 
+class TestSaveToWebArchive(unittest.TestCase):
+    """Tests for _save_to_web_archive (SPN2 authenticated API & anonymous fallback)."""
+
+    @patch("bot._urlopen")
+    def test_spn2_success(self, mock_urlopen):
+        """Test that authenticated SPN2 API submits job and polls for success."""
+        mock_post_resp = MagicMock()
+        mock_post_resp.read.return_value = b'{"job_id": "spn2-12345"}'
+
+        mock_status_resp = MagicMock()
+        mock_status_resp.read.return_value = b'{"status": "success", "timestamp": "20260820120000", "original_url": "https://example.com"}'
+
+        mock_urlopen.side_effect = [
+            MagicMock(__enter__=MagicMock(return_value=mock_post_resp)),
+            MagicMock(__enter__=MagicMock(return_value=mock_status_resp)),
+        ]
+
+        with patch("bot.WAYBACK_ACCESS_KEY", "my_access_key"), patch("bot.WAYBACK_SECRET_KEY", "my_secret_key"), patch("time.sleep"):
+            success, result = bot._save_to_web_archive("https://example.com")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://web.archive.org/web/20260820120000/https://example.com")
+
+    @patch("urllib.request.urlopen")
+    def test_anonymous_save_success(self, mock_urlopen):
+        """Test that unauthenticated save uses standard /save/ endpoint."""
+        mock_resp = MagicMock()
+        mock_resp.geturl.return_value = "https://web.archive.org/web/20260820120000/https://example.com"
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        with patch("bot.WAYBACK_ACCESS_KEY", ""), patch("bot.WAYBACK_SECRET_KEY", ""):
+            success, result = bot._save_to_web_archive("https://example.com")
+
+        self.assertTrue(success)
+        self.assertEqual(result, "https://web.archive.org/web/20260820120000/https://example.com")
+
+
 class TestSaveToGhostarchive(unittest.TestCase):
     """Tests for _save_to_ghostarchive API call logic (mocked HTTP)."""
 

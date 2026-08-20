@@ -53,7 +53,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.7.1"
+VERSION = "2.7.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -393,15 +393,17 @@ def _ask_gemini_ai(query: str, context: str | None = None, target_lang: str = "A
     if clean_context:
         truncated_ctx = clean_context[:16000]
         prompt = (
-            f"Answer the following question or explain the topic based on the provided context in 2-3 informative paragraphs in {lang_instruction}.\n"
-            "Provide a direct, accurate, and comprehensive explanation without meta-commentary, introductory filler (such as 'Here is...', 'Sure', etc.), or conversational preamble. Output the answer directly:\n\n"
+            f"Answer the following question or explain the topic based on the provided context in {lang_instruction}.\n"
+            "Keep the answer as concise as appropriate: if the question calls for a direct, short answer (even a single word, number, or sentence), answer concisely; if it requires detailed explanation, provide an informative summary of up to 2-3 paragraphs maximum.\n"
+            "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler (such as 'Here is...', 'Sure', etc.). Output the answer directly:\n\n"
             f"Context:\n{truncated_ctx}\n\n"
             f"Question / Topic:\n{clean_query}"
         )
     else:
         prompt = (
-            f"Answer the following question or provide a concise overview of the topic in 2-3 informative paragraphs in {lang_instruction}.\n"
-            "Provide a direct, accurate, and comprehensive explanation covering key details and context without meta-commentary, introductory filler (such as 'Here is...', 'Sure', etc.), or conversational preamble. Output the answer directly:\n\n"
+            f"Answer the following question or explain the topic in {lang_instruction}.\n"
+            "Keep the answer as concise as appropriate: if the question calls for a direct, short answer (even a single word, number, or sentence), answer concisely; if it requires detailed explanation, provide an informative overview of up to 2-3 paragraphs maximum.\n"
+            "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler (such as 'Here is...', 'Sure', etc.). Output the answer directly:\n\n"
             f"Question / Topic:\n{clean_query}"
         )
 
@@ -4010,6 +4012,11 @@ def _handle_tldr_command(bot, accid, event):
         return
 
     payload = (event.payload or "").strip()
+    if not payload and getattr(msg, "text", None):
+        parts = msg.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            payload = parts[1].strip()
+
     url = _extract_url_from_msg_or_payload(payload, msg)
     
     if url:
@@ -4102,6 +4109,10 @@ def _handle_ai_command(bot, accid, event):
         return
 
     payload = (event.payload or "").strip()
+    if not payload and getattr(msg, "text", None):
+        parts = msg.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            payload = parts[1].strip()
 
     # Check for quoted text
     quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
@@ -4201,6 +4212,10 @@ def _handle_lang_command(bot, accid, event):
     """Processes /lang command to view or set preferred summary language for a chat."""
     msg = event.msg
     payload = (event.payload or "").strip()
+    if not payload and getattr(msg, "text", None):
+        parts = msg.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            payload = parts[1].strip()
     
     if not payload:
         curr_lang = database.get_chat_lang(msg.chat_id)
@@ -4230,113 +4245,113 @@ def _handle_lang_command(bot, accid, event):
 
 # ── Command Listeners ──
 
-@dc_cli.on(events.NewMessage(command="/ai", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/ai(?:@\w+)?(?:\s|$)", is_bot=None))
 def ai_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/ai(?:@\w+)?(?:\s|$)", text):
+    if not re.match(r"^/ai(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_ai_command(bot, accid, event)
 
-@dc_cli.on(events.NewMessage(command="/tldr", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/tldr(?:@\w+)?(?:\s|$)", is_bot=None))
 def tldr_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/tldr(?:\s|$)", text):
+    if not re.match(r"^/tldr(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_tldr_command(bot, accid, event)
 
-@dc_cli.on(events.NewMessage(command="/lang", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/lang(?:@\w+)?(?:\s|$)", is_bot=None))
 def lang_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/lang(?:\s|$)", text):
+    if not re.match(r"^/lang(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_lang_command(bot, accid, event)
 
-@dc_cli.on(events.NewMessage(command="/preview", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/preview(?:@\w+)?(?:\s|$)", is_bot=None))
 def preview_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/preview(?:\s|$)", text):
+    if not re.match(r"^/preview(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_preview_command(bot, accid, event, mode="readability")
 
-@dc_cli.on(events.NewMessage(command="/archive", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/archive(?:@\w+)?(?:\s|$)", is_bot=None))
 def archive_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/archive(?:\s|$)", text):
+    if not re.match(r"^/archive(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_preview_command(bot, accid, event, mode="archive")
 
-@dc_cli.on(events.NewMessage(command="/webxdc", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/webxdc(?:@\w+)?(?:\s|$)", is_bot=None))
 def webxdc_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/webxdc(?:\s|$)", text):
+    if not re.match(r"^/webxdc(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_preview_command(bot, accid, event, mode="webxdc")
 
-@dc_cli.on(events.NewMessage(command="/keep", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/keep(?:@\w+)?(?:\s|$)", is_bot=None))
 def keep_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/keep(?:\s|$)", text):
+    if not re.match(r"^/keep(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_keep_command(bot, accid, event)
 
-@dc_cli.on(events.NewMessage(command="/jina", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/jina(?:@\w+)?(?:\s|$)", is_bot=None))
 def jina_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/jina(?:\s|$)", text):
+    if not re.match(r"^/jina(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_jina_command(bot, accid, event)
 
-@dc_cli.on(events.NewMessage(command="/previewjs", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/previewjs(?:@\w+)?(?:\s|$)", is_bot=None))
 def previewjs_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/previewjs(?:\s|$)", text):
+    if not re.match(r"^/previewjs(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_preview_command(bot, accid, event, mode="archive")
 
-@dc_cli.on(events.NewMessage(command="/download", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/download(?:@\w+)?(?:\s|$)", is_bot=None))
 def download_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/download(?:\s|$)", text):
+    if not re.match(r"^/download(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     
     msg = event.msg
@@ -4349,6 +4364,11 @@ def download_command(bot, accid, event):
     # Extract target URL
     url = ""
     payload = event.payload.strip() if event.payload else ""
+    if not payload and msg.text:
+        parts = msg.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            payload = parts[1].strip()
+
     if payload:
         url_match = re.search(r'(https?://[^\s<>"]+)', payload)
         if url_match:
@@ -4381,18 +4401,22 @@ def download_command(bot, accid, event):
     )
     t.start()
 
-@dc_cli.on(events.NewMessage(command="/webpreview", is_bot=None))
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/webpreview(?:@\w+)?(?:\s|$)", is_bot=None))
 def webpreview_command(bot, accid, event):
     if _is_bot_blocked(bot, accid, event.msg):
         return
     if accid != dc_accid:
         return
     text = (event.msg.text or "").strip()
-    if not re.match(r"^/webpreview(?:\s|$)", text):
+    if not re.match(r"^/webpreview(?:\s|$)", text, re.IGNORECASE):
         return
     
     msg = event.msg
     payload = (event.payload or "").strip().lower()
+    if not payload and msg.text:
+        parts = msg.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            payload = parts[1].strip().lower()
     
     if payload in ("off", "0", "false"):
         database.set_webpreview_disabled(msg.chat_id, True)
@@ -5029,9 +5053,9 @@ def on_new_message(bot, accid, event):
         return
 
     # 1. Intercept dynamic commands: /preview_urlhash, /previewjs_urlhash, /archive_urlhash, /webxdc_urlhash, /download_urlhash, /keep_urlhash or /tldr_urlhash
-    m = re.match(r"^/(preview|previewjs|archive|webxdc|download|keep|tldr)_([0-9a-fA-F]{8})(?:@\w+)?", text)
+    m = re.match(r"^/(preview|previewjs|archive|webxdc|download|keep|tldr)_([0-9a-fA-F]{8})(?:@\w+)?", text, re.IGNORECASE)
     if m:
-        cmd_type, urlhash = m.group(1), m.group(2)
+        cmd_type, urlhash = m.group(1).lower(), m.group(2).lower()
         url = database.get_url_by_hash(urlhash)
         if not url:
             _react(bot, accid, msg.id, "❌")

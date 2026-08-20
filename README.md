@@ -82,8 +82,8 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/preview <url>` — Save page in highly compressed reader-mode format (using Mozilla's Readability).
 - `/webxdc <url>` — Save page as a WebXDC app 📱 (`.xdc` ZIP containing `index.html`, `manifest.toml`, `icon.png`).
 - `/archive <url>` — Save page as a full monolith-based dynamic archive (with JS enabled, optimized images). *(Note: `/previewjs` is also supported as an alias to `/archive`)*
-- `/tldr [url]` — Generate AI summary (TL;DR) ⚡ for an article, long text, or quoted message (supports reply and dynamic `/tldr_[hash]` links).
-- `/ai <text>` — Ask AI a question or request a short, informative 2-3 paragraph answer/overview on any topic, URL, or quoted message 🤖.
+- `/tldr [url]` — Generate AI summary (TL;DR) ⚡ for an article, long text, or quoted message (supports reply and dynamic `/tldr_[hash]` links). Commands are case-insensitive (e.g. `/tldr` or `/TLDR`).
+- `/ai <text>` — Ask AI a question or request a concise answer (from a single word up to 2-3 paragraphs maximum) on any topic, URL, or quoted message 🤖. Commands are case-insensitive (e.g. `/ai` or `/AI`).
 - `/lang [code]` — Set preferred summary language for current chat (e.g. `/lang AUTO` (default), `/lang RU`, `/lang EN`, `/lang DE`).
 - `/download <url>` — Download file directly and send as attachment (supported for PDF, office documents, text files).
 - `/keep <url>` — Asynchronously save webpage to [KaraKeep](https://karakeep.app/) (admin private notification), [Web Archive](https://web.archive.org/) (120s timeout), [Archive.today](https://archive.today/) (multi-mirror with optional proxy), and [Ghostarchive](https://ghostarchive.org/). Also supports dynamic `/keep_[hash]` links.

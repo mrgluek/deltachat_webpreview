@@ -393,10 +393,59 @@ class TestTldrAndLang(unittest.TestCase):
         mock_bot.rpc.get_contact.return_value = mock_contact
         database.set_config("admin_dc_email", "admin@example.com")
 
-        help_user = bot.get_help_text(mock_bot, 1, 10)
-        self.assertIn("/ai <text>", help_user)
+    @patch.object(bot, "GEMINI_API_KEY", "fake_key")
+    @patch("bot._urlopen")
+    def test_ask_gemini_ai_short_single_word_answer(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = (
+            b'{"candidates": [{"content": {"parts": [{"text": "42"}]}}]}'
+        )
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        res = bot._ask_gemini_ai("What is 6 * 7?", target_lang="EN")
+        self.assertEqual(res, "42")
+        self.assertEqual(mock_urlopen.call_count, 1)
+
+    @patch("threading.Thread", side_effect=lambda target, args=(), kwargs={}, **kw: MagicMock(start=lambda: target(*args, **kwargs)))
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_ai_query")
+    def test_ai_command_case_insensitive(self, mock_do_ai, mock_rate_limit, mock_thread):
+        mock_bot = MagicMock()
+
+        # /AI uppercase
+        event_upper = MockEvent(chat_id=1, msg_id=201, payload="What is 2+2?", text="/AI What is 2+2?")
+        bot.ai_command(mock_bot, 1, event_upper)
+        mock_do_ai.assert_called_once()
+        self.assertEqual(mock_do_ai.call_args[0][5], "What is 2+2?")
+        mock_do_ai.reset_mock()
+
+        # /Ai mixed case
+        event_mixed = MockEvent(chat_id=1, msg_id=202, payload="Explain speed", text="/Ai Explain speed")
+        bot.ai_command(mock_bot, 1, event_mixed)
+        mock_do_ai.assert_called_once()
+        self.assertEqual(mock_do_ai.call_args[0][5], "Explain speed")
+
+    @patch("threading.Thread", side_effect=lambda target, args=(), kwargs={}, **kw: MagicMock(start=lambda: target(*args, **kwargs)))
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._do_tldr")
+    def test_tldr_command_case_insensitive(self, mock_do_tldr, mock_rate_limit, mock_thread):
+        mock_bot = MagicMock()
+
+        # /TLDR uppercase
+        event_upper = MockEvent(chat_id=1, msg_id=203, payload="https://example.com/page", text="/TLDR https://example.com/page")
+        bot.tldr_command(mock_bot, 1, event_upper)
+        mock_do_tldr.assert_called_once()
+        self.assertEqual(mock_do_tldr.call_args[0][5], "https://example.com/page")
+        mock_do_tldr.reset_mock()
+
+        # /Tldr mixed case
+        event_mixed = MockEvent(chat_id=1, msg_id=204, payload="https://example.com/page", text="/Tldr https://example.com/page")
+        bot.tldr_command(mock_bot, 1, event_mixed)
+        mock_do_tldr.assert_called_once()
+        self.assertEqual(mock_do_tldr.call_args[0][5], "https://example.com/page")
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

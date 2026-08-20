@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.7.2] - 2026-08-21
+
+### Changed
+- **Adaptive AI Answer Length**: Refined prompt in `_ask_gemini_ai` to dynamically adapt the response length based on the nature of the prompt. Direct questions (e.g. quick facts, math, yes/no) yield ultra-concise answers (from a single word or sentence), while complex concepts and open-ended topics expand up to 2-3 informative paragraphs maximum.
+- **Case-Insensitive Command Matching**: Made all bot commands case-insensitive (e.g. `/AI`, `/TLDR`, `/LANG`, `/PREVIEW`, `/ARCHIVE`, `/KEEP`, `/DOWNLOAD`, `/HELP`, `/STATS`). Commands can now be entered in lowercase, uppercase, or mixed-case without issue.
+
 ## [2.7.1] - 2026-08-20
 
 ### Changed

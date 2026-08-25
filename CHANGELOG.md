@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.8.1] - 2026-08-25
+
+### Fixed
+- **Web Archive Stale Snapshot Validation (`/keep`)**: Fixed a bug where `_check_wayback_availability` returned historical Wayback Machine snapshots from years ago (e.g. from 2022) when current archiving failed, falsely treating the save as successful and aborting fallback. Now, `_check_wayback_availability` enforces snapshot timestamp freshness (within 1 hour / `max_age_seconds`). If only an old snapshot exists, the save is properly marked as failed, allowing `_do_keep` to fall back to **Archive.today** and **Ghostarchive** to capture a fresh snapshot.
+- **Unit Tests**: Added test suite `TestCheckWaybackAvailability` and tests in `TestSaveToWebArchive` to verify rejection of stale historical snapshots (e.g. from 2022) and seamless fallback to alternate archive services.
+
 ## [2.8.0] - 2026-08-21
 
 ### Added

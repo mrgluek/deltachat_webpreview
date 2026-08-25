@@ -1,5 +1,6 @@
 import asyncio
 import collections
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -53,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.8.0"
+VERSION = "2.8.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -3511,8 +3512,13 @@ def _save_to_karakeep(url: str) -> tuple[bool, str]:
     return True, bookmark_id
 
 
-def _check_wayback_availability(url: str, auth_header: str | None = None) -> str | None:
-    """Check if Wayback Machine already has a snapshot of the URL."""
+def _check_wayback_availability(url: str, auth_header: str | None = None, max_age_seconds: int = 3600) -> str | None:
+    """
+    Check if Wayback Machine has a RECENT snapshot of the URL.
+    Only snapshots created within `max_age_seconds` (default: 1 hour) are accepted,
+    preventing stale historical snapshots (e.g. from years ago) from masquerading
+    as successful fresh saves.
+    """
     try:
         api_url = f"https://archive.org/wayback/available?url={urllib.parse.quote(url, safe='')}"
         headers = {
@@ -3527,7 +3533,32 @@ def _check_wayback_availability(url: str, auth_header: str | None = None) -> str
             snapshots = data.get("archived_snapshots", {})
             closest = snapshots.get("closest", {})
             if closest.get("available") and closest.get("url"):
-                return closest["url"]
+                snapshot_url = closest["url"]
+                ts_str = str(closest.get("timestamp", "")).strip()
+                if not ts_str:
+                    m = re.search(r"/web/(\d{14})", snapshot_url)
+                    if m:
+                        ts_str = m.group(1)
+
+                if ts_str:
+                    try:
+                        snapshot_dt = datetime.strptime(ts_str[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+                        now_dt = datetime.now(timezone.utc)
+                        age_seconds = (now_dt - snapshot_dt).total_seconds()
+                        if -300 <= age_seconds <= max_age_seconds:
+                            logger.info(f"Found recent Wayback snapshot ({age_seconds:.0f}s old): {snapshot_url}")
+                            return snapshot_url
+                        else:
+                            logger.warning(
+                                f"Wayback snapshot found for {url} but is too old ({age_seconds / 86400:.1f} days old, ts={ts_str}): {snapshot_url}"
+                            )
+                            return None
+                    except Exception as parse_err:
+                        logger.warning(f"Failed to parse Wayback timestamp '{ts_str}': {parse_err}")
+                        return None
+                else:
+                    logger.warning(f"Wayback snapshot found for {url} without valid timestamp: {snapshot_url}")
+                    return None
     except Exception as e:
         logger.debug(f"Wayback availability check failed for {url}: {e}")
     return None
@@ -3537,7 +3568,7 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
     """
     Save a URL to Web Archive (Wayback Machine).
     Supports authenticated SPN2 API (with WAYBACK_ACCESS_KEY / WAYBACK_SECRET_KEY),
-    availability fallback, and anonymous /save/ endpoint retry.
+    availability fallback (for recent snapshots only), and anonymous /save/ endpoint retry.
     Returns (success, archived_url_or_error).
     """
     if WAYBACK_ACCESS_KEY and WAYBACK_SECRET_KEY:
@@ -3606,7 +3637,7 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
                             return False, f"SPN2 error: {err}"
                 except Exception as e:
                     logger.warning(f"SPN2 status check error: {e}")
-            
+
             avail = _check_wayback_availability(url, auth_header)
             if avail:
                 return True, avail
@@ -3618,11 +3649,11 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
             except Exception:
                 pass
             logger.warning(f"SPN2 HTTP error {e.code}: {e.reason}. Detail: {error_body}")
-            
+
             # If 503/429 (e.g. rate limit, already captured), check if recent snapshot exists
             avail = _check_wayback_availability(url, auth_header)
             if avail:
-                logger.info(f"Found existing Wayback snapshot after SPN2 {e.code}: {avail}")
+                logger.info(f"Found recent Wayback snapshot after SPN2 {e.code}: {avail}")
                 return True, avail
 
             # Try standard save_url before giving up
@@ -3633,7 +3664,7 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
     # Fallback to anonymous save endpoint
     save_url = f"https://web.archive.org/save/{url}"
     logger.info(f"Saving URL to Web Archive: {save_url}")
-    
+
     try:
         req = urllib.request.Request(
             save_url,
@@ -3641,49 +3672,48 @@ def _save_to_web_archive(url: str) -> tuple[bool, str]:
                 'User-Agent': STANDARD_USER_AGENT
             }
         )
-        
-        # Route through proxy if needed
-        if _should_use_proxy(save_url):
-            logger.info(f"Routing Web Archive save request for {url} through proxy: {PROXY_URL}")
-            import os
-            original_http_proxy = os.environ.get('http_proxy')
-            original_https_proxy = os.environ.get('https_proxy')
-            os.environ['http_proxy'] = PROXY_URL
-            os.environ['https_proxy'] = PROXY_URL
-        
+
         try:
-            with urllib.request.urlopen(req, timeout=120) as response:
+            with _urlopen(req, timeout=60) as response:
                 logger.info(f"Web Archive save succeeded with User-Agent: {STANDARD_USER_AGENT}")
                 redirected_url = response.geturl()
-                
+
                 # The /save/ endpoint returns a redirect to the snapshot URL
                 if "/web/" in redirected_url or "archive.org" in redirected_url:
-                    return True, redirected_url
-                
-                return True, save_url
-        finally:
-            if _should_use_proxy(save_url):
-                import os
-                if original_http_proxy is not None:
-                    os.environ['http_proxy'] = original_http_proxy
-                elif 'http_proxy' in os.environ:
-                    del os.environ['http_proxy']
-                if original_https_proxy is not None:
-                    os.environ['https_proxy'] = original_https_proxy
-                elif 'https_proxy' in os.environ:
-                    del os.environ['https_proxy']
-    except urllib.error.HTTPError as e:
-        logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}.")
-        avail = _check_wayback_availability(url)
-        if avail:
-            return True, avail
-        return False, f"HTTP {e.code}: {e.reason}"
-    except urllib.error.URLError as e:
-        logger.warning(f"Web Archive save URLError: {e}")
-        avail = _check_wayback_availability(url)
-        if avail:
-            return True, avail
-        return False, str(e)
+                    if "/web/" in redirected_url:
+                        m = re.search(r"/web/(\d{14})", redirected_url)
+                        if m:
+                            ts_str = m.group(1)
+                            try:
+                                snapshot_dt = datetime.strptime(ts_str, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+                                now_dt = datetime.now(timezone.utc)
+                                age_seconds = (now_dt - snapshot_dt).total_seconds()
+                                if -300 <= age_seconds <= 3600:
+                                    return True, redirected_url
+                                else:
+                                    logger.warning(f"Anonymous save redirected to old snapshot: {redirected_url}")
+                            except Exception:
+                                pass
+                        else:
+                            return True, redirected_url
+
+                avail = _check_wayback_availability(url)
+                if avail:
+                    return True, avail
+
+                return False, "No fresh snapshot generated by Web Archive"
+        except urllib.error.HTTPError as e:
+            logger.warning(f"Web Archive HTTP error {e.code}: {e.reason}.")
+            avail = _check_wayback_availability(url)
+            if avail:
+                return True, avail
+            return False, f"HTTP {e.code}: {e.reason}"
+        except urllib.error.URLError as e:
+            logger.warning(f"Web Archive save URLError: {e}")
+            avail = _check_wayback_availability(url)
+            if avail:
+                return True, avail
+            return False, str(e)
     except Exception as e:
         logger.error(f"Web Archive save failed: {e}")
         return False, str(e)

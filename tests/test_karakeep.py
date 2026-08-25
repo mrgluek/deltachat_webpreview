@@ -253,6 +253,68 @@ class TestSaveToArchiveToday(unittest.TestCase):
         self.assertIn("Connection refused", result)
 
 
+class TestCheckWaybackAvailability(unittest.TestCase):
+    """Tests for _check_wayback_availability timestamp freshness validation."""
+
+    @patch("bot._urlopen")
+    def test_stale_snapshot_rejected(self, mock_urlopen):
+        """Test that a snapshot from 2022 is rejected as stale."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://web.archive.org/web/20221012065811/http://efirnet.ru/",
+                    "timestamp": "20221012065811"
+                }
+            }
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        result = bot._check_wayback_availability("https://efirnet.ru")
+        self.assertIsNone(result)
+
+    @patch("bot._urlopen")
+    def test_fresh_snapshot_accepted(self, mock_urlopen):
+        """Test that a snapshot created within the last hour is accepted."""
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fresh_url = f"https://web.archive.org/web/{now_str}/https://example.com"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": fresh_url,
+                    "timestamp": now_str
+                }
+            }
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        result = bot._check_wayback_availability("https://example.com")
+        self.assertEqual(result, fresh_url)
+
+    @patch("bot._urlopen")
+    def test_missing_timestamp_rejected(self, mock_urlopen):
+        """Test that a snapshot without a valid timestamp is rejected."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "https://web.archive.org/web/invalid/https://example.com",
+                    "timestamp": ""
+                }
+            }
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+        result = bot._check_wayback_availability("https://example.com")
+        self.assertIsNone(result)
+
+
 class TestSaveToWebArchive(unittest.TestCase):
     """Tests for _save_to_web_archive (SPN2 authenticated API & anonymous fallback)."""
 
@@ -277,15 +339,27 @@ class TestSaveToWebArchive(unittest.TestCase):
         self.assertEqual(result, "https://web.archive.org/web/20260820120000/https://example.com")
 
     @patch("bot._urlopen")
-    def test_spn2_503_recovers_via_availability(self, mock_urlopen):
-        """Test that if SPN2 returns 503 (e.g. rate limit / daily captures), it recovers via Availability API."""
+    def test_spn2_503_recovers_via_fresh_availability(self, mock_urlopen):
+        """Test that if SPN2 returns 503, it recovers via Availability API if snapshot is fresh."""
         from urllib.error import HTTPError
         from http.client import HTTPMessage
+        from datetime import datetime, timezone
+
+        now_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fresh_url = f"https://web.archive.org/web/{now_str}/https://example.com"
 
         err503 = HTTPError("https://web.archive.org/save/", 503, "Service Unavailable", HTTPMessage(), None)
 
         mock_avail_resp = MagicMock()
-        mock_avail_resp.read.return_value = b'{"archived_snapshots": {"closest": {"available": true, "url": "https://web.archive.org/web/20260820110000/https://example.com"}}}'
+        mock_avail_resp.read.return_value = json.dumps({
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": fresh_url,
+                    "timestamp": now_str
+                }
+            }
+        }).encode("utf-8")
 
         mock_urlopen.side_effect = [
             err503,
@@ -296,20 +370,85 @@ class TestSaveToWebArchive(unittest.TestCase):
             success, result = bot._save_to_web_archive("https://example.com")
 
         self.assertTrue(success)
-        self.assertEqual(result, "https://web.archive.org/web/20260820110000/https://example.com")
+        self.assertEqual(result, fresh_url)
 
-    @patch("urllib.request.urlopen")
+    @patch("bot._urlopen")
+    def test_spn2_503_fails_on_stale_snapshot(self, mock_urlopen):
+        """Test that if SPN2 returns 503 and only stale snapshot exists, save returns False."""
+        from urllib.error import HTTPError
+        from http.client import HTTPMessage
+
+        err503 = HTTPError("https://web.archive.org/save/", 503, "Service Unavailable", HTTPMessage(), None)
+
+        mock_avail_resp = MagicMock()
+        mock_avail_resp.read.return_value = json.dumps({
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://web.archive.org/web/20221012065811/http://example.com/",
+                    "timestamp": "20221012065811"
+                }
+            }
+        }).encode("utf-8")
+
+        mock_urlopen.side_effect = [
+            err503,
+            MagicMock(__enter__=MagicMock(return_value=mock_avail_resp)),
+            err503,
+            MagicMock(__enter__=MagicMock(return_value=mock_avail_resp)),
+        ]
+
+        with patch("bot.WAYBACK_ACCESS_KEY", "my_access_key"), patch("bot.WAYBACK_SECRET_KEY", "my_secret_key"):
+            success, result = bot._save_to_web_archive("https://example.com")
+
+        self.assertFalse(success)
+
+    @patch("bot._urlopen")
     def test_anonymous_save_success(self, mock_urlopen):
-        """Test that unauthenticated save uses standard /save/ endpoint."""
+        """Test that unauthenticated save uses standard /save/ endpoint with fresh redirect."""
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        fresh_url = f"https://web.archive.org/web/{now_str}/https://example.com"
+
         mock_resp = MagicMock()
-        mock_resp.geturl.return_value = "https://web.archive.org/web/20260820120000/https://example.com"
+        mock_resp.geturl.return_value = fresh_url
         mock_urlopen.return_value.__enter__.return_value = mock_resp
 
         with patch("bot.WAYBACK_ACCESS_KEY", ""), patch("bot.WAYBACK_SECRET_KEY", ""):
             success, result = bot._save_to_web_archive("https://example.com")
 
         self.assertTrue(success)
-        self.assertEqual(result, "https://web.archive.org/web/20260820120000/https://example.com")
+        self.assertEqual(result, fresh_url)
+
+    @patch("bot._urlopen")
+    def test_anonymous_save_fails_on_403_and_stale_snapshot(self, mock_urlopen):
+        """Test that anonymous 403 with only a 2022 snapshot returns False to allow fallback."""
+        from urllib.error import HTTPError
+        from http.client import HTTPMessage
+
+        err403 = HTTPError("https://web.archive.org/save/https://example.com", 403, "Forbidden", HTTPMessage(), None)
+
+        mock_avail_resp = MagicMock()
+        mock_avail_resp.read.return_value = json.dumps({
+            "archived_snapshots": {
+                "closest": {
+                    "available": True,
+                    "url": "http://web.archive.org/web/20221012065811/http://example.com/",
+                    "timestamp": "20221012065811"
+                }
+            }
+        }).encode("utf-8")
+
+        mock_urlopen.side_effect = [
+            err403,
+            MagicMock(__enter__=MagicMock(return_value=mock_avail_resp)),
+        ]
+
+        with patch("bot.WAYBACK_ACCESS_KEY", ""), patch("bot.WAYBACK_SECRET_KEY", ""):
+            success, result = bot._save_to_web_archive("https://example.com")
+
+        self.assertFalse(success)
+        self.assertIn("HTTP 403", result)
 
 
 class TestSaveToGhostarchive(unittest.TestCase):

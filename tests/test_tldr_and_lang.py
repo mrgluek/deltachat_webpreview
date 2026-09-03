@@ -136,6 +136,12 @@ class TestTldrAndLang(unittest.TestCase):
         self.assertEqual(res, "Fallback model summary.")
         self.assertEqual(mock_urlopen.call_count, 2)
 
+    def test_gemini_models_default_chain(self):
+        self.assertTrue(len(bot.GEMINI_MODELS) > 0)
+        self.assertEqual(bot.GEMINI_MODELS[0], "gemini-3.8-flash")
+        self.assertIn("gemini-3.8-flash", bot.GEMINI_MODELS)
+        self.assertIn("gemini-3.7-flash", bot.GEMINI_MODELS)
+
     @patch.object(bot, "GEMINI_API_KEY", "fake_key")
     @patch("bot._summarize_text_with_gemini")
     def test_format_preview_caption_with_tldr(self, mock_summarize):

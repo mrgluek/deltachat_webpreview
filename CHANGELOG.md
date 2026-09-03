@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.8.2] - 2026-09-03
+
+### Changed
+- **Primary AI Model Upgrade to Gemini 3.8 Flash**: Added `gemini-3.8-flash` as the primary default model in the `GEMINI_MODELS` fallback chain (`gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it,gemini-2.5-flash-lite`) for all `/tldr`, `/ai`, and web preview summarization requests.
+
 ## [2.8.1] - 2026-08-25
 
 ### Fixed

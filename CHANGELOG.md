@@ -2,6 +2,16 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.0] - 2026-09-04
+
+### Added
+- **Instagram & OGInstagram Embed Support**: Added native link preview support for Instagram posts (`/p/...`), reels (`/reel/...` and `/reels/...`), stories, and profiles using [OGInstagram](https://github.com/seirenkr/OGInstagram).
+  - **Early Domain Interception**: Intercepts Instagram URLs before standard generic HTML parsing and before Jina Reader to avoid Instagram login walls, rate limits, and 403 blocks.
+  - **Captions & Accessibility Alt-Text Extraction**: Extracts author/profile names, full post captions (`og:description`), and accessibility descriptions (`og:image:alt` / `twitter:image:alt`), formatting them cleanly into preview cards and Markdown caches.
+  - **Direct Unblocked Image Delivery**: Bypasses Instagram CDN hotlinking protection by downloading unblocked images via OGInstagram (with automatic fallback to `d.{OGINSTAGRAM_HOST}` direct media endpoint), compressing them into WebP format for fast Delta Chat delivery.
+  - **Configurable Host (`OGINSTAGRAM_HOST`)**: Supports custom or self-hosted OGInstagram instances via the `OGINSTAGRAM_HOST` environment variable (defaults to `oginstagram.com`).
+- **Unit Tests**: Added test suite `TestFetchInstagramOgData`, `TestIsInstagramUrl`, and `TestGetOgPreviewDataInstagramEarlyReturn` in `tests/test_instagram_parser.py` to verify OpenGraph extraction, alt-text parsing, fallback routing, and early returns.
+
 ## [2.8.2] - 2026-09-03
 
 ### Changed

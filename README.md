@@ -20,6 +20,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - 📺 **Invidious & YT Bot Redirection:** Detects Invidious instances (alternative YouTube front-ends) by checking page description metadata. If `YT Bot` is present in the chat, the bot extracts the video ID and redirects it to a standard `youtu.be` link to be processed by `YT Bot`, completely bypassing WebPreview generation. It automatically learns detected instance domains and supports manual domain registration/management via admin commands.
 - 🏛️ **Web Archive / KaraKeep / Archive.today / Ghostarchive Integration (`/keep <url>`):** Asynchronously save webpages across archiving services. When executed by the bot administrator with a configured [KaraKeep](https://karakeep.app/) instance, the URL is saved to KaraKeep first (with confirmation sent privately). The bot then attempts to archive the URL to the **Web Archive (Wayback Machine)** using a 120s timeout and official **Save Page Now 2 (SPN2)** authenticated API support. Only if the Web Archive fails or is unavailable does the bot fall back to **Archive.today** (with active mirror failover and optional proxy routing via `ARCHIVE_TODAY_PROXY_URL`) and **Ghostarchive** (`ghostarchive.org`).
 - 📱 **Telegram Post Previews (`t.me`):** Detects Telegram post links and scrapes them directly from the static public preview feed (`https://t.me/s/{channel}/{post_id}`), bypassing any JavaScript requirements. Extracts the post author, text content with preserved line breaks, and media/thumbnails. Caches the extracted markdown in the local SQLite database so `/preview` and `/archive` commands run entirely offline/instantaneously.
+- 📸 **Instagram & OGInstagram Embeds:** Detects Instagram links (`instagram.com`, `instagr.am`, `oginstagram.com` for posts, reels, stories, profiles) and seamlessly resolves them via the [OGInstagram](https://github.com/seirenkr/OGInstagram) embed proxy. Bypasses Instagram login walls and CDN hotlink blocks, extracting author names, full captions, accessibility/alt descriptions, and direct unblocked images for Delta Chat cards and offline reader views.
 - 🔇 **Chat-Specific Toggle (`/webpreview [on|off]`):** Turn off automatic link previews in specific group or private chats. When disabled, the bot reacts only when explicit commands like `/preview`, `/archive`, or `/keep` are run manually (by typing the command or replying to a link).
 - 🐳 **Docker Ready:** Built with a multi-stage Docker build compiling Rust-based `monolith` and packing it into a slim Python runtime.
 
@@ -58,6 +59,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 | Variable | Description | Default |
 | --- | --- | --- |
 | `ALLOWED_BOT_EMAILS` | Comma-separated list of allowed bot emails. | *(Empty)* |
+| `OGINSTAGRAM_HOST` | Hostname of the [OGInstagram](https://github.com/seirenkr/OGInstagram) proxy instance for Instagram post/reel/profile embeds. | `oginstagram.com` |
 | `JINA_API_KEY` | Optional API Key for Jina Reader (`r.jina.ai`) to raise rate limits (from 20 req/min to 500+). | *(Empty)* |
 | `JINA_PROXY_URL` | Optional dedicated proxy server URL for routing Jina Reader requests (if unset, Jina queries run directly). | *(Empty)* |
 | `GEMINI_API_KEY` | Optional Google Gemini API Key for enabling article TL;DR summarization (`/tldr`), AI question answering (`/ai`), and automatic short summaries in previews. | *(Empty)* |
@@ -135,6 +137,8 @@ The repository ships with a `tests/` directory containing 56 unit tests:
 
 | File | What it covers |
 |---|---|
+| `tests/test_instagram_parser.py` | `_is_instagram_url`, `_fetch_instagram_og_data` – OGInstagram parsing, alt text, direct media fallback |
+| `tests/test_telegram_parser.py` | `_is_telegram_url`, `_fetch_telegram_og_data` – static preview parsing, truncation, newlines |
 | `tests/test_url_validation.py` | `_is_internal_or_invalid_url` – valid domains, private IPs, blocked TLDs |
 | `tests/test_invidious.py` | `_extract_youtube_id_from_invidious`, `_clean_domain`, Invidious database helpers |
 | `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, SVG skip, octet-stream logic, cache saving, OG fallback |

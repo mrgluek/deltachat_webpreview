@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.8.2"
+VERSION = "2.9.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -94,6 +94,11 @@ if not GEMINI_MODELS:
     GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash-lite"]
 GEMINI_MODEL = GEMINI_MODELS[0]
 _GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
+
+# OGInstagram embed proxy settings (opt-in via env, https://github.com/seirenkr/OGInstagram)
+OGINSTAGRAM_HOST = os.environ.get("OGINSTAGRAM_HOST", "oginstagram.com").strip().rstrip("/")
+if not OGINSTAGRAM_HOST:
+    OGINSTAGRAM_HOST = "oginstagram.com"
 
 # Proxy settings (opt-in via env)
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
@@ -2510,6 +2515,141 @@ def _fetch_telegram_og_data(url: str) -> tuple[str | None, str | None, str | Non
         logger.warning(f"Telegram preview fetch/parse failed for {url}: {e}")
         return None, None, None
 
+def _is_instagram_url(url: str) -> bool:
+    """Return True if the URL is an Instagram or OGInstagram URL."""
+    try:
+        host = url.split("//", 1)[-1].split("/")[0].lower().split(":")[0]
+        if host in (
+            "instagram.com", "www.instagram.com", "instagr.am", "www.instagr.am",
+            "oginstagram.com", "www.oginstagram.com", "d.oginstagram.com", "www.d.oginstagram.com",
+            "g.oginstagram.com", "www.g.oginstagram.com"
+        ):
+            return True
+        if OGINSTAGRAM_HOST:
+            og_host = OGINSTAGRAM_HOST.lower().split(":")[0]
+            if host == og_host or host.endswith("." + og_host):
+                return True
+    except Exception:
+        pass
+    return False
+
+def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | None]:
+    """
+    Fetch title, preview image and content for an Instagram URL via OGInstagram embed proxy.
+
+    Supports:
+      https://instagram.com/p/SHORTCODE
+      https://instagram.com/reel/SHORTCODE or /reels/SHORTCODE
+      https://instagram.com/stories/username/ID
+      https://instagram.com/username
+      https://d.oginstagram.com/p/SHORTCODE (and other oginstagram hosts)
+
+    Extracts author, caption, alt-text (accessibility description), and unblocked image URL.
+    Returns (title, thumbnail_url, markdown_content) or (None, None, None) if extraction fails.
+    The title is composed as "author: caption_or_alt_excerpt".
+    """
+    from bs4 import BeautifulSoup
+    import html
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path
+        if not path or path == "/":
+            return None, None, None
+
+        og_host = OGINSTAGRAM_HOST or "oginstagram.com"
+        target_url = f"https://{og_host}{path}"
+        if parsed.query:
+            target_url += f"?{parsed.query}"
+
+        logger.info(f"Fetching Instagram preview from {target_url}")
+        req = urllib.request.Request(
+            target_url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"}
+        )
+        with _urlopen(req, timeout=8) as response:
+            html_bytes = response.read(512 * 1024)
+            html_content = _decode_html(html_bytes, response.headers)
+
+        if not html_content:
+            return None, None, None
+
+        soup = BeautifulSoup(html_content, BS_PARSER)
+
+        # 1. Extract title (author name / profile)
+        title = None
+        for tag in soup.find_all("meta"):
+            prop = tag.get("property", "") or tag.get("name", "")
+            if prop.lower() in ("og:title", "twitter:title") and tag.get("content"):
+                title = html.unescape(tag["content"].strip())
+                break
+
+        if not title and soup.title and soup.title.string:
+            title = html.unescape(soup.title.string.strip())
+
+        author = title or "Instagram"
+
+        # 2. Extract description (post caption)
+        description = None
+        for tag in soup.find_all("meta"):
+            prop = tag.get("property", "") or tag.get("name", "")
+            if prop.lower() in ("og:description", "twitter:description") and tag.get("content"):
+                description = html.unescape(tag["content"].strip())
+                break
+
+        # 3. Extract image alt text (accessibility caption)
+        alt_text = None
+        for tag in soup.find_all("meta"):
+            prop = tag.get("property", "") or tag.get("name", "")
+            if prop.lower() in ("og:image:alt", "twitter:image:alt") and tag.get("content"):
+                alt_text = html.unescape(tag["content"].strip())
+                break
+
+        # 4. Extract image URL
+        image_url = None
+        for tag in soup.find_all("meta"):
+            prop = tag.get("property", "") or tag.get("name", "")
+            if prop.lower() in ("og:image", "twitter:image") and tag.get("content"):
+                image_url = html.unescape(tag["content"].strip())
+                if image_url:
+                    image_url = urllib.parse.urljoin(target_url, image_url)
+                break
+
+        # Fallback to direct media endpoint if no image meta tag found
+        if not image_url and path.startswith(("/p/", "/reel/", "/reels/", "/stories/")):
+            image_url = f"https://d.{og_host}{path}"
+            if parsed.query:
+                image_url += f"?{parsed.query}"
+
+        # 5. Build formatted title / excerpt
+        content_text = description or alt_text or ""
+        if content_text:
+            clean_text = re.sub(r"\s+", " ", content_text).strip()
+            excerpt = clean_text[:200] + ("…" if len(clean_text) > 200 else "")
+            formatted_title = f"{author}: {excerpt}"
+        else:
+            formatted_title = author
+
+        # 6. Build markdown representation for cache / readability / webxdc
+        md_lines = []
+        md_lines.append(f"# {author}")
+        md_lines.append("")
+        if description:
+            md_lines.append(description.strip())
+            md_lines.append("")
+        if alt_text and alt_text.strip() != (description or "").strip():
+            md_lines.append(f"*{alt_text.strip()}*")
+            md_lines.append("")
+        if image_url:
+            md_lines.append(f"![Media]({image_url})")
+
+        jina_markdown = "\n".join(md_lines).strip()
+        return formatted_title, image_url, jina_markdown
+
+    except Exception as e:
+        logger.warning(f"Instagram preview fetch/parse failed for {url}: {e}")
+        return None, None, None
+
 def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, str | None]:
     """
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
@@ -2527,6 +2667,16 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, s
                 return tg_title, tg_thumb, False, None, tg_md
     except Exception as _tg_err:
         logger.warning(f"Telegram early-return failed for {url}: {_tg_err}")
+    # ---------------------------------------------------------------------
+
+    # --- Instagram posts: use OGInstagram embed proxy --------------------
+    try:
+        if _is_instagram_url(url):
+            ig_title, ig_image, ig_md = _fetch_instagram_og_data(url)
+            if ig_title:
+                return ig_title, ig_image, False, None, ig_md
+    except Exception as _ig_err:
+        logger.warning(f"Instagram early-return failed for {url}: {_ig_err}")
     # ---------------------------------------------------------------------
 
 
@@ -2904,7 +3054,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     cached_warning = cached.get("warning")
                     cached_jina_markdown = cached.get("jina_markdown")
                     
-                    emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if cached_jina_markdown else "🌐")
+                    emoji_prefix = "🌐" if (_is_telegram_url(url) or _is_instagram_url(url)) else ("🤖🌐" if cached_jina_markdown else "🌐")
                     buttons = _format_preview_buttons(bot, accid, from_id, urlhash)
                     if cached_warning:
                         caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n{buttons}"
@@ -2960,7 +3110,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         if jina_markdown:
             _save_jina_preview_to_cache(url, urlhash, title, jina_markdown)
             
-        emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if jina_markdown else "🌐")
+        emoji_prefix = "🌐" if (_is_telegram_url(url) or _is_instagram_url(url)) else ("🤖🌐" if jina_markdown else "🌐")
         buttons = _format_preview_buttons(bot, accid, from_id, urlhash)
         if warning:
             caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n{buttons}"

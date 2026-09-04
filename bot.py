@@ -54,8 +54,9 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.4"
+VERSION = "2.9.5"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
 # KaraKeep integration (opt-in via env)
@@ -295,7 +296,8 @@ def _urlopen(req_or_url, timeout=None):
     if INSTAGRAM_PROXY_URL:
         ig_domains = (
             "instagram.com", "instagr.am", "cdninstagram.com", "fbcdn.net",
-            "oginstagram.com", "kkinstagram.com", "vxinstagram.com", "kkclip.com"
+            "oginstagram.com", "kkinstagram.com", "vxinstagram.com", "kkclip.com",
+            "rapidcdn.app"
         )
         custom_og_host = ""
         if OGINSTAGRAM_HOST:
@@ -1356,10 +1358,12 @@ def compress_image(image_bytes: bytes, max_width=800, quality=70) -> bytes:
 
 def _download_image_bytes(image_url: str) -> bytes | None:
     """Downloads image bytes trying standard and fallback User-Agents."""
-    for ua in [STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT]:
+    is_bot_service = any(k in image_url.lower() for k in ("instagram", "kkclip", "vxinsta", "tiktok", "twitter", "x.com", "fxtwitter", "vxtwitter", "rapidcdn"))
+    user_agents = [BOT_USER_AGENT, STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT] if is_bot_service else [STANDARD_USER_AGENT, BOT_USER_AGENT, NON_MOZILLA_USER_AGENT]
+    for ua in user_agents:
         try:
             req = urllib.request.Request(image_url, headers={'User-Agent': ua})
-            with _urlopen(req, timeout=5) as response:
+            with _urlopen(req, timeout=8) as response:
                 content_type = response.headers.get('Content-Type', '')
                 if 'image' in content_type.lower() or response.status == 200:
                     return response.read()
@@ -3059,42 +3063,35 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
     except Exception:
         pass
 
-    # Try standard User-Agent first
+    is_bot_service = any(
+        k in image_url.lower() for k in ("instagram", "kkclip", "vxinsta", "tiktok", "twitter", "x.com", "fxtwitter", "vxtwitter", "rapidcdn")
+    )
+    user_agents = [BOT_USER_AGENT, STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT] if is_bot_service else [STANDARD_USER_AGENT, BOT_USER_AGENT, NON_MOZILLA_USER_AGENT]
+
     response_data = None
     content_type = ""
-    try:
-        req = urllib.request.Request(
-            image_url, 
-            headers={'User-Agent': STANDARD_USER_AGENT}
-        )
-        with _urlopen(req, timeout=5) as response:
-            content_type = response.headers.get('Content-Type', '')
-            if 'svg' in content_type.lower():
-                logger.info(f"Skipping SVG content-type as preview: {image_url}")
-                return None
-            if 'image' in content_type.lower():
-                response_data = response.read()
-    except Exception as e:
-        logger.warning(f"Standard fetch failed for image {image_url}: {e}. Retrying with non-Mozilla User-Agent...")
-
-    # Fallback to non-Mozilla User-Agent
-    if response_data is None:
+    for ua in user_agents:
         try:
             req = urllib.request.Request(
                 image_url, 
-                headers={'User-Agent': NON_MOZILLA_USER_AGENT}
+                headers={'User-Agent': ua}
             )
-            with _urlopen(req, timeout=5) as response:
-                content_type = response.headers.get('Content-Type', '')
-                if 'svg' in content_type.lower():
+            with _urlopen(req, timeout=8) as response:
+                ct = response.headers.get('Content-Type', '')
+                if 'svg' in ct.lower():
                     logger.info(f"Skipping SVG content-type as preview: {image_url}")
                     return None
-                if 'image' in content_type.lower():
-                    response_data = response.read()
+                if 'image' in ct.lower():
+                    data = response.read()
+                    if data:
+                        response_data = data
+                        content_type = ct
+                        break
         except Exception as e:
-            logger.warning(f"Fallback fetch failed for image {image_url}: {e}")
+            logger.warning(f"Fetch failed for image {image_url} with UA {ua[:30]}: {e}")
 
     if not response_data:
+        logger.warning(f"Could not download image data from {image_url} with any User-Agent")
         return None
 
     # Try to compress and resize the image using Pillow (max 800px on the longer side, WebP format)
@@ -3185,8 +3182,10 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     )
                     _send(bot, accid, chat_id, caption)
                     return
-                  # Verify that if there is a cached image path, the file still exists on disk
-                if not cached_image_path or os.path.exists(cached_image_path):
+                  # Verify that if there is a cached image path, the file still exists on disk.
+                  # If cached_image_path is missing for an Instagram URL, treat as cache miss to re-attempt image fetch.
+                is_missing_ig_image = not cached_image_path and _is_instagram_url(url)
+                if not is_missing_ig_image and (not cached_image_path or os.path.exists(cached_image_path)):
                     logger.info(f"OG Cache hit for group preview: {url}")
                     cached_warning = cached.get("warning")
                     cached_jina_markdown = cached.get("jina_markdown")

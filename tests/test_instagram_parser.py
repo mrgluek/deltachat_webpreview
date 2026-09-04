@@ -289,5 +289,79 @@ class TestGetOgPreviewDataInstagramEarlyReturn(unittest.TestCase):
         self.assertEqual(title, "Instagram Login")
 
 
+class TestInstagramImageDownload(unittest.TestCase):
+    """Verify Instagram and embed proxy images use BOT_USER_AGENT."""
+
+    @patch("bot._urlopen")
+    def test_download_cached_image_uses_bot_user_agent_for_instagram(self, mock_urlopen):
+        # Valid 1x1 GIF bytes
+        valid_img = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+        mock_resp = MagicMock()
+        mock_resp.headers = {"Content-Type": "image/jpeg"}
+        mock_resp.read.return_value = valid_img
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_resp)
+        cm.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = cm
+
+        res = bot._download_cached_image("https://kkinstagram.com/kotkefir98/p/Dc2nawoo8la/", "test_hash")
+        self.assertIsNotNone(res)
+        self.assertTrue(res.endswith("og_test_hash.webp"))
+        self.assertTrue(os.path.exists(res))
+
+        # Verify that BOT_USER_AGENT was used in the first request
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.get_header("User-agent"), bot.BOT_USER_AGENT)
+
+    @patch("bot._urlopen")
+    def test_download_image_bytes_uses_bot_user_agent(self, mock_urlopen):
+        mock_resp = MagicMock()
+        mock_resp.headers = {"Content-Type": "image/jpeg"}
+        mock_resp.read.return_value = b"image_data"
+        mock_resp.status = 200
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_resp)
+        cm.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = cm
+
+        data = bot._download_image_bytes("https://kkinstagram.com/kotkefir98/p/Dc2nawoo8la/")
+        self.assertEqual(data, b"image_data")
+        req = mock_urlopen.call_args[0][0]
+        self.assertEqual(req.get_header("User-agent"), bot.BOT_USER_AGENT)
+
+
+class TestInstagramCacheMissOnMissingImage(unittest.TestCase):
+    """Verify that cached Instagram entries without an image are re-fetched."""
+
+    @patch("bot.database.get_cached_og")
+    @patch("bot.database.get_or_create_url_hash", return_value="testhash")
+    @patch("bot.database.is_excluded", return_value=False)
+    @patch("bot._get_og_preview_data", return_value=("Title", "https://img.com/pic.jpg", False, None, None))
+    @patch("bot._download_cached_image", return_value="/tmp/test.webp")
+    @patch("bot.database.add_cached_og")
+    @patch("bot._send")
+    @patch("os.path.exists", return_value=True)
+    def test_missing_cached_image_forces_network_refetch(
+        self, mock_exists, mock_send, mock_add_cached, mock_dl, mock_get_og, mock_excl, mock_hash, mock_get_cached
+    ):
+        # Existing cache entry has image_path=None
+        mock_get_cached.return_value = {
+            "created_at": 10000000000,  # far future
+            "title": "Instagram (@kotkefir98)",
+            "image_path": None,
+            "warning": None,
+            "jina_markdown": None,
+        }
+
+        mock_bot = MagicMock()
+        bot._do_group_link_preview(mock_bot, 1, 42, 11, "https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/")
+
+        # Must have called _get_og_preview_data instead of returning early from cache hit
+        mock_get_og.assert_called_once_with("https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/")
+        mock_dl.assert_called_once()
+        mock_send.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
+

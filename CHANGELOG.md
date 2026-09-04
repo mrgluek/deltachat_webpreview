@@ -2,6 +2,15 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.5] - 2026-09-04
+
+### Fixed
+- **Instagram Preview Image Downloads & Bot User-Agent:**
+  - Fixed an issue where Instagram preview cards were sent without their banner images because embed proxies (e.g. `kkinstagram.com`) return HTML redirect pages when requested with standard desktop browser User-Agents.
+  - Added `BOT_USER_AGENT` (`Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)`) to `_download_cached_image` and `_download_image_bytes`, prioritizing bot user-agents for Instagram and social media embed proxies to reliably fetch the direct JPEG image data.
+  - Added `rapidcdn.app` to Instagram domains routed through `INSTAGRAM_PROXY_URL`.
+  - Added automatic cache miss handling in `_do_group_link_preview` when an existing cached entry for an Instagram URL is missing its thumbnail image (`image_path is None`), allowing previously failed image downloads to automatically self-heal upon re-request.
+
 ## [2.9.4] - 2026-09-04
 
 ### Improved

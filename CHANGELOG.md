@@ -2,6 +2,13 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.7] - 2026-09-05
+
+### Performance
+- **Prebuilt Monolith Binary in Docker:**
+  - Replaced multi-stage Rust compilation (`cargo install monolith`) with direct download of the official prebuilt `monolith` binary (v2.10.1) for x86_64 and aarch64.
+  - Drastically speeds up Docker image builds from several minutes down to seconds and avoids heavy Rust toolchain dependencies.
+
 ## [2.9.6] - 2026-09-04
 
 ### Improved

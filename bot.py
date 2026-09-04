@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.2"
+VERSION = "2.9.3"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -253,9 +253,20 @@ def _should_use_proxy(url: str) -> bool:
         pass
     return False
 
+def _copy_req(req_or_url):
+    """Create a fresh Request copy without any attached proxy tunneling state."""
+    if isinstance(req_or_url, urllib.request.Request):
+        return urllib.request.Request(
+            req_or_url.full_url,
+            data=req_or_url.data,
+            headers=dict(req_or_url.header_items())
+        )
+    return req_or_url
+
 def _urlopen(req_or_url, timeout=None):
     """
     urlopen wrapper that dynamically routes specific domains through a proxy.
+    Falls back to direct connection if the configured proxy fails (e.g. 403, timeout, connection refused).
     """
     url = req_or_url.full_url if isinstance(req_or_url, urllib.request.Request) else req_or_url
     try:
@@ -272,7 +283,11 @@ def _urlopen(req_or_url, timeout=None):
             logger.info(f"Routing Jina request for {url} through Jina proxy: {JINA_PROXY_URL}")
             proxy_handler = urllib.request.ProxyHandler({'http': JINA_PROXY_URL, 'https': JINA_PROXY_URL})
             opener = urllib.request.build_opener(proxy_handler)
-            return opener.open(req_or_url, timeout=timeout)
+            try:
+                return opener.open(req_or_url, timeout=timeout)
+            except Exception as e:
+                logger.warning(f"Jina proxy {JINA_PROXY_URL} failed for {url}: {e}. Retrying direct connection...")
+                return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
         else:
             return urllib.request.urlopen(req_or_url, timeout=timeout)
 
@@ -280,7 +295,7 @@ def _urlopen(req_or_url, timeout=None):
     if INSTAGRAM_PROXY_URL:
         ig_domains = (
             "instagram.com", "instagr.am", "cdninstagram.com", "fbcdn.net",
-            "oginstagram.com", "kkinstagram.com", "vxinstagram.com"
+            "oginstagram.com", "kkinstagram.com", "vxinstagram.com", "kkclip.com"
         )
         custom_og_host = ""
         if OGINSTAGRAM_HOST:
@@ -299,7 +314,11 @@ def _urlopen(req_or_url, timeout=None):
             logger.info(f"Routing Instagram request for {url} through Instagram proxy: {INSTAGRAM_PROXY_URL}")
             proxy_handler = urllib.request.ProxyHandler({'http': INSTAGRAM_PROXY_URL, 'https': INSTAGRAM_PROXY_URL})
             opener = urllib.request.build_opener(proxy_handler)
-            return opener.open(req_or_url, timeout=timeout)
+            try:
+                return opener.open(req_or_url, timeout=timeout)
+            except Exception as e:
+                logger.warning(f"Instagram proxy {INSTAGRAM_PROXY_URL} failed for {url}: {e}. Retrying direct connection...")
+                return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
 
     # Archive.today and Ghostarchive requests
     archive_domains = ("archive.ph", "archive.is", "archive.today", "archive.li", "archive.vn", "archive.md", "archive.fo", "ghostarchive.org")
@@ -309,14 +328,22 @@ def _urlopen(req_or_url, timeout=None):
             logger.info(f"Routing archive request for {url} through proxy: {proxy}")
             proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
             opener = urllib.request.build_opener(proxy_handler)
-            return opener.open(req_or_url, timeout=timeout)
+            try:
+                return opener.open(req_or_url, timeout=timeout)
+            except Exception as e:
+                logger.warning(f"Archive proxy {proxy} failed for {url}: {e}. Retrying direct connection...")
+                return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
 
     # Standard requests matching PROXY_DOMAINS
     if _should_use_proxy(url):
         logger.info(f"Routing request for {url} through proxy: {PROXY_URL}")
         proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
         opener = urllib.request.build_opener(proxy_handler)
-        return opener.open(req_or_url, timeout=timeout)
+        try:
+            return opener.open(req_or_url, timeout=timeout)
+        except Exception as e:
+            logger.warning(f"Proxy {PROXY_URL} failed for {url}: {e}. Retrying direct connection...")
+            return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
 
     return urllib.request.urlopen(req_or_url, timeout=timeout)
 
@@ -2629,7 +2656,7 @@ def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | No
 
         og_host = (OGINSTAGRAM_HOST or "oginstagram.com").strip()
         hosts_to_try = [og_host]
-        for fallback_host in ("kkinstagram.com", "vxinstagram.com"):
+        for fallback_host in ("kkinstagram.com", "kkclip.com", "vxinstagram.com"):
             if fallback_host not in hosts_to_try:
                 hosts_to_try.append(fallback_host)
 
@@ -2659,7 +2686,15 @@ def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | No
                     if "image/" in content_type:
                         logger.info(f"Direct image returned by Instagram proxy {host} for {url}")
                         image_url = target_url
-                        return "Instagram", image_url, f"# Instagram\n\n![Media]({image_url})"
+                        clean_path = path.strip("/")
+                        parts = clean_path.split("/")
+                        if len(parts) >= 2 and parts[1] in ("p", "reel", "reels"):
+                            author = f"Instagram (@{parts[0]})"
+                        elif len(parts) == 1 and parts[0] not in ("p", "reel", "reels", "stories"):
+                            author = f"Instagram (@{parts[0]})"
+                        else:
+                            author = "Instagram"
+                        return author, image_url, f"# {author}\n\n![Media]({image_url})"
 
                     html_bytes = response.read(512 * 1024)
                     html_content = _decode_html(html_bytes, response.headers)

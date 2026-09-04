@@ -2,6 +2,16 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.3] - 2026-09-04
+
+### Improved
+- **Automatic Direct Fallback for Proxies:**
+  - Added resilient fallback to direct connection in `_urlopen` when a configured proxy (`INSTAGRAM_PROXY_URL`, `PROXY_URL`, `ARCHIVE_TODAY_PROXY_URL`, or `JINA_PROXY_URL`) encounters an error (HTTP 403, timeouts, connection refused, or tunnel failures).
+- **Instagram Gateway Fallbacks & Direct Media:**
+  - Added `kkclip.com` to the Instagram gateway mirror list.
+  - Improved handling for gateways returning direct media (`image/jpeg`) by extracting the author username from the path (e.g. `/@username/p/...`), formatting cleaner titles (`Instagram (@username)`).
+  - Ensured failed proxy attempts on gateways fall back to direct connections before falling back to generic Jina/web readability.
+
 ## [2.9.2] - 2026-09-04
 
 ### Added

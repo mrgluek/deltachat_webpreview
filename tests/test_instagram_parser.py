@@ -220,6 +220,21 @@ class TestFetchInstagramOgData(unittest.TestCase):
         self.assertIsNone(img)
         self.assertIsNone(md)
 
+    @patch("bot._urlopen")
+    def test_direct_image_returns_author_and_target_url(self, mock_urlopen):
+        """When host returns direct image/jpeg, author username is extracted from path."""
+        mock_resp = MagicMock()
+        mock_resp.headers = {"Content-Type": "image/jpeg"}
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_resp)
+        cm.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = cm
+
+        title, image_url, md = bot._fetch_instagram_og_data("https://www.instagram.com/kotkefir98/p/Dc3qj0nIC-v/")
+        self.assertEqual(title, "Instagram (@kotkefir98)")
+        self.assertIn("oginstagram.com/kotkefir98/p/Dc3qj0nIC-v/", image_url)
+        self.assertIn("![Media]", md)
+
     def test_root_path_returns_none(self):
         """Bare domain without path returns None."""
         title, img, md = bot._fetch_instagram_og_data("https://instagram.com")

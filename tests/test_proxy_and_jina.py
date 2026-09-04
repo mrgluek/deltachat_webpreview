@@ -162,6 +162,29 @@ class TestUrlopen(unittest.TestCase):
         finally:
             bot.INSTAGRAM_PROXY_URL = ""
 
+    @patch("urllib.request.build_opener")
+    @patch("urllib.request.urlopen")
+    def test_proxy_fallback_to_direct_on_error(self, mock_urlopen, mock_build_opener):
+        """Verify that when a proxy raises an error (403, timeout, etc.), _urlopen falls back to direct connection."""
+        mock_opener = MagicMock()
+        mock_opener.open.side_effect = urllib.error.URLError("Tunnel connection failed: 403 Access denied")
+        mock_build_opener.return_value = mock_opener
+
+        bot.INSTAGRAM_PROXY_URL = "http://bad-proxy:8080"
+        try:
+            bot._urlopen("https://kkinstagram.com/p/C7xY123", timeout=8)
+            # Proxy was tried first
+            mock_opener.open.assert_called_once()
+            # Then direct connection was attempted as fallback
+            mock_urlopen.assert_called_once()
+            direct_req = mock_urlopen.call_args[0][0]
+            self.assertEqual(
+                direct_req.full_url if isinstance(direct_req, urllib.request.Request) else direct_req,
+                "https://kkinstagram.com/p/C7xY123"
+            )
+        finally:
+            bot.INSTAGRAM_PROXY_URL = ""
+
 
 class TestFetchFromJina(unittest.TestCase):
     """Tests for _fetch_from_jina request headers."""

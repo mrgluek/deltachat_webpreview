@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -2529,8 +2529,11 @@ def _is_instagram_url(url: str) -> bool:
         ):
             return True
         if OGINSTAGRAM_HOST:
-            og_host = OGINSTAGRAM_HOST.lower().split(":")[0]
-            if host == og_host or host.endswith("." + og_host):
+            og_host = OGINSTAGRAM_HOST.lower()
+            if "://" in og_host:
+                og_host = og_host.split("://", 1)[1]
+            og_host = og_host.split("/")[0].split(":")[0]
+            if og_host and (host == og_host or host.endswith("." + og_host)):
                 return True
     except Exception:
         pass
@@ -2560,14 +2563,21 @@ def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | No
         if not path or path == "/":
             return None, None, None
 
-        og_host = OGINSTAGRAM_HOST or "oginstagram.com"
+        og_host = (OGINSTAGRAM_HOST or "oginstagram.com").strip()
         hosts_to_try = [og_host]
         for fallback_host in ("kkinstagram.com", "vxinstagram.com"):
             if fallback_host not in hosts_to_try:
                 hosts_to_try.append(fallback_host)
 
         for host in hosts_to_try:
-            target_url = f"https://{host}{path}"
+            if host.startswith(("http://", "https://")):
+                base_url = host.rstrip("/")
+            elif ":" in host or host.startswith("localhost") or "." not in host:
+                base_url = f"http://{host.rstrip('/')}"
+            else:
+                base_url = f"https://{host.rstrip('/')}"
+
+            target_url = f"{base_url}{path}"
             if parsed.query:
                 target_url += f"?{parsed.query}"
 
@@ -2640,7 +2650,10 @@ def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | No
 
             # Fallback to direct media endpoint if no image meta tag found
             if not image_url and path.startswith(("/p/", "/reel/", "/reels/", "/stories/")):
-                image_url = f"https://d.{host}{path}"
+                if base_url.startswith("http://") or ":" in host or "." not in host:
+                    image_url = f"{base_url}/d{path}"
+                else:
+                    image_url = f"https://d.{host}{path}"
                 if parsed.query:
                     image_url += f"?{parsed.query}"
 

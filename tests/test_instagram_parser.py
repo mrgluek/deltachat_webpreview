@@ -42,6 +42,10 @@ class TestIsInstagramUrl(unittest.TestCase):
             self.assertTrue(bot._is_instagram_url("https://ig.example.org/p/Dcscta2oz5v/"))
             self.assertTrue(bot._is_instagram_url("https://d.ig.example.org/p/Dcscta2oz5v/"))
 
+        with patch.object(bot, "OGINSTAGRAM_HOST", "http://oginstagram:3000"):
+            self.assertTrue(bot._is_instagram_url("http://oginstagram:3000/p/Dcscta2oz5v/"))
+            self.assertTrue(bot._is_instagram_url("http://oginstagram/p/Dcscta2oz5v/"))
+
     def test_non_instagram_domains(self):
         self.assertFalse(bot._is_instagram_url("https://example.com/p/Dcscta2oz5v/"))
         self.assertFalse(bot._is_instagram_url("https://t.me/nerdpapers/3349"))
@@ -188,6 +192,24 @@ class TestFetchInstagramOgData(unittest.TestCase):
         title, image_url, md = bot._fetch_instagram_og_data("https://www.instagram.com/p/123/")
         self.assertEqual(title, "Cat Video: Meow")
         self.assertEqual(image_url, "https://d.kkinstagram.com/p/123.jpg")
+
+    @patch("bot._urlopen")
+    def test_internal_docker_http_host(self, mock_urlopen):
+        """When OGINSTAGRAM_HOST is an internal docker host with http/port, uses http."""
+        html = """
+        <html><head>
+          <meta property="og:title" content="Docker Test">
+          <meta property="og:description" content="Local preview">
+          <meta property="og:image" content="/media/pic.jpg">
+        </head></html>
+        """
+        mock_urlopen.return_value = _make_mock_response(html)
+        with patch.object(bot, "OGINSTAGRAM_HOST", "http://oginstagram:3000"):
+            title, image_url, md = bot._fetch_instagram_og_data("https://www.instagram.com/p/dockertest/")
+            self.assertEqual(title, "Docker Test: Local preview")
+            self.assertEqual(image_url, "http://oginstagram:3000/media/pic.jpg")
+            req = mock_urlopen.call_args[0][0]
+            self.assertTrue(req.full_url.startswith("http://oginstagram:3000/p/dockertest/"))
 
     @patch("bot._urlopen")
     def test_network_error_returns_none(self, mock_urlopen):

@@ -2,6 +2,14 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.1] - 2026-09-04
+
+### Improved
+- **Support Internal Docker Hosts & HTTP Schemes for `OGINSTAGRAM_HOST`:**
+  - Added support for explicit `http://` or `https://` URLs, custom ports (e.g. `http://oginstagram:3000`), and internal Docker container hostnames in `OGINSTAGRAM_HOST`.
+  - Automatically adapts direct media fallback endpoints (`/d/...`) for internal and port-based setups.
+  - Allows running private, non-publicly exposed OGInstagram or embed proxy containers within the internal Docker bridge network.
+
 ## [2.9.0] - 2026-09-04
 
 ### Added

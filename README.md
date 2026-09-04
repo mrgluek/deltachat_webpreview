@@ -64,8 +64,10 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 | `JINA_PROXY_URL` | Optional dedicated proxy server URL for routing Jina Reader requests (if unset, Jina queries run directly). | *(Empty)* |
 | `GEMINI_API_KEY` | Optional Google Gemini API Key for enabling article TL;DR summarization (`/tldr`), AI question answering (`/ai`), and automatic short summaries in previews. | *(Empty)* |
 | `GEMINI_MODELS` | Optional comma-separated list of Gemini/Gemma models for automatic fallback on rate limit (HTTP 429). | `gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it,gemini-2.5-flash-lite` |
-| `PROXY_URL` | Optional proxy server URL to route matching domains through (e.g. `http://127.0.0.1:8118` or `socks5://127.0.0.1:9050`). This proxy is also passed to Jina Reader via `X-Proxy-Url` to route Jina's crawler for matching domains. | *(Empty)* |
-| `PROXY_DOMAINS` | Comma-separated list of domain suffixes to route via `PROXY_URL`. | `.ru` |
+| `PROXY_URL` | Optional proxy server URL to route matching domains through (e.g. `http://127.0.0.1:8118` or `socks5://127.0.0.1:9050`). `RU_PROXY` is also recognized as an alias. This proxy is also passed to Jina Reader via `X-Proxy-Url` to route Jina's crawler for matching domains. | *(Empty)* |
+| `RU_PROXY` | Optional alias for `PROXY_URL` (shares configuration with YT Bot). | *(Empty)* |
+| `PROXY_DOMAINS` | Comma-separated list of domain suffixes to route via `PROXY_URL`. Automatically supports Cyrillic/internationalized domains and Punycode (e.g. `.ru, .su, .рф`). | `.ru` |
+| `INSTAGRAM_PROXY_URL` | Optional dedicated proxy URL (e.g. home residential router) for routing Instagram/OGInstagram requests and preview image downloads to bypass Cloudflare/datacenter IP limits. | *(Empty)* |
 | `KARAKEEP_URL` | The base URL of your KaraKeep instance (e.g., `https://keep.gluek.info`). | *(Empty)* |
 | `KARAKEEP_API_KEY` | The API Key for authenticating with your KaraKeep instance. | *(Empty)* |
 | `KARAKEEP_TAGS` | Optional comma-separated list of tags to automatically attach to saved bookmarks (e.g., `deltachat`). | *(Empty)* |

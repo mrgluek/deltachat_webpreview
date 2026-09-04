@@ -54,6 +54,24 @@ class TestShouldUseProxy(unittest.TestCase):
         self.assertFalse(bot._should_use_proxy("https://r.jina.ai/https://yandex.ru/"))
         self.assertFalse(bot._should_use_proxy("https://r.jina.ai/http://blocked.com/path"))
 
+    def test_cyrillic_and_punycode_domain_matching(self):
+        # Test that .рф and .su written in unicode match both unicode and punycode URLs
+        orig_domains = bot.PROXY_DOMAINS
+        try:
+            bot.PROXY_DOMAINS = bot._normalize_proxy_domains(".ru, .su, .рф")
+            # Should match unicode .рф URL
+            self.assertTrue(bot._should_use_proxy("https://президент.рф/news"))
+            # Should match punycode .рф URL
+            self.assertTrue(bot._should_use_proxy("https://xn--d1abbgf6aiiy.xn--p1ai/news"))
+            # Should match .su URL
+            self.assertTrue(bot._should_use_proxy("http://example.su/page"))
+            # Should match .ru URL
+            self.assertTrue(bot._should_use_proxy("https://tass.ru/"))
+            # Should not match .com URL
+            self.assertFalse(bot._should_use_proxy("https://example.com/"))
+        finally:
+            bot.PROXY_DOMAINS = orig_domains
+
 
 class TestUrlopen(unittest.TestCase):
     """Tests for _urlopen proxy routing logic."""
@@ -110,6 +128,39 @@ class TestUrlopen(unittest.TestCase):
             mock_urlopen.assert_not_called()
         finally:
             bot.JINA_PROXY_URL = ""
+
+    @patch("urllib.request.build_opener")
+    @patch("urllib.request.urlopen")
+    def test_instagram_proxy_routing(self, mock_urlopen, mock_build_opener):
+        mock_opener = MagicMock()
+        mock_build_opener.return_value = mock_opener
+        bot.INSTAGRAM_PROXY_URL = "http://uk-router:8080"
+        try:
+            # 1. oginstagram.com should be routed via INSTAGRAM_PROXY_URL
+            bot._urlopen("https://oginstagram.com/p/C7xY123", timeout=8)
+            mock_build_opener.assert_called_once()
+            handler = mock_build_opener.call_args[0][0]
+            self.assertEqual(handler.proxies, {"http": "http://uk-router:8080", "https": "http://uk-router:8080"})
+            mock_opener.open.assert_called_once_with("https://oginstagram.com/p/C7xY123", timeout=8)
+
+            mock_build_opener.reset_mock()
+            mock_opener.reset_mock()
+
+            # 2. kkinstagram.com and cdninstagram.com should also be routed
+            bot._urlopen("https://scontent.cdninstagram.com/v/t51.2885-15/test.jpg", timeout=5)
+            mock_build_opener.assert_called_once()
+            mock_opener.open.assert_called_once_with("https://scontent.cdninstagram.com/v/t51.2885-15/test.jpg", timeout=5)
+
+            mock_build_opener.reset_mock()
+            mock_opener.reset_mock()
+
+            # 3. Local/internal docker containers should NOT be proxied externally
+            with patch.object(bot, "OGINSTAGRAM_HOST", "http://oginstagram:3000"):
+                bot._urlopen("http://oginstagram:3000/p/C7xY123", timeout=8)
+                mock_build_opener.assert_not_called()
+                mock_urlopen.assert_called_once_with("http://oginstagram:3000/p/C7xY123", timeout=8)
+        finally:
+            bot.INSTAGRAM_PROXY_URL = ""
 
 
 class TestFetchFromJina(unittest.TestCase):

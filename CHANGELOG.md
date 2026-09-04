@@ -2,6 +2,16 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.2] - 2026-09-04
+
+### Added
+- **Dedicated Instagram Proxy (`INSTAGRAM_PROXY_URL`):**
+  - Added support for routing Instagram/OGInstagram metadata requests and thumbnail image downloads through an optional dedicated proxy (e.g. residential UK router) to bypass Cloudflare/datacenter IP rate-limits on public gateways (`oginstagram.com`, `kkinstagram.com`, `vxinstagram.com`).
+- **`RU_PROXY` Environment Variable Alias:**
+  - Added support for `RU_PROXY` as an alias for `PROXY_URL`, unifying proxy configuration across `deltachat_yt` and `deltachat_webpreview`.
+- **Automatic IDNA / Punycode Domain Support:**
+  - Expanded `PROXY_DOMAINS` parsing to automatically generate and match both Unicode and Punycode variants (e.g. `.рф` and `.xn--p1ai`), allowing internationalized domain suffixes written in Cyrillic to route through the proxy seamlessly.
+
 ## [2.9.1] - 2026-09-04
 
 ### Improved

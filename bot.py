@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.1"
+VERSION = "2.9.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -101,8 +101,36 @@ if not OGINSTAGRAM_HOST:
     OGINSTAGRAM_HOST = "oginstagram.com"
 
 # Proxy settings (opt-in via env)
-PROXY_URL = os.environ.get("PROXY_URL", "").strip()
-PROXY_DOMAINS = [d.strip().lower() for d in os.environ.get("PROXY_DOMAINS", ".ru").split(",") if d.strip()]
+PROXY_URL = (os.environ.get("PROXY_URL") or os.environ.get("RU_PROXY", "")).strip()
+INSTAGRAM_PROXY_URL = os.environ.get("INSTAGRAM_PROXY_URL", "").strip()
+
+def _normalize_proxy_domains(raw_domains_str: str) -> list[str]:
+    """Parse comma-separated proxy domains, automatically expanding IDNA punycode and unicode variants."""
+    domains = []
+    for item in raw_domains_str.split(","):
+        d = item.strip().lower()
+        if not d:
+            continue
+        if d not in domains:
+            domains.append(d)
+        # Add punycode representation for internationalized domains (e.g. .рф -> .xn--p1ai)
+        try:
+            idna_d = d.encode("idna").decode("ascii")
+            if idna_d not in domains:
+                domains.append(idna_d)
+        except Exception:
+            pass
+        # Add unicode representation if input was already punycode (e.g. .xn--p1ai -> .рф)
+        if "xn--" in d:
+            try:
+                unicode_d = d.encode("ascii").decode("idna")
+                if unicode_d not in domains:
+                    domains.append(unicode_d)
+            except Exception:
+                pass
+    return domains
+
+PROXY_DOMAINS = _normalize_proxy_domains(os.environ.get("PROXY_DOMAINS", ".ru"))
 
 # Characters that are never legitimate at the end of a URL when extracted from
 # natural-language text.  We also handle unbalanced parentheses separately below.
@@ -207,9 +235,20 @@ def _should_use_proxy(url: str) -> bool:
         if domain == "r.jina.ai":
             return False
 
+        domains_to_check = [domain]
+        if "xn--" in domain:
+            try:
+                unicode_d = domain.encode("ascii").decode("idna")
+                if unicode_d not in domains_to_check:
+                    domains_to_check.append(unicode_d)
+            except Exception:
+                pass
+
         for proxy_domain in PROXY_DOMAINS:
-            if domain.endswith(proxy_domain):
-                return True
+            clean_pd = proxy_domain.lstrip(".")
+            for d in domains_to_check:
+                if d == clean_pd or d.endswith("." + clean_pd) or d.endswith(proxy_domain):
+                    return True
     except Exception:
         pass
     return False
@@ -236,6 +275,31 @@ def _urlopen(req_or_url, timeout=None):
             return opener.open(req_or_url, timeout=timeout)
         else:
             return urllib.request.urlopen(req_or_url, timeout=timeout)
+
+    # Instagram and gateway requests (opt-in via INSTAGRAM_PROXY_URL)
+    if INSTAGRAM_PROXY_URL:
+        ig_domains = (
+            "instagram.com", "instagr.am", "cdninstagram.com", "fbcdn.net",
+            "oginstagram.com", "kkinstagram.com", "vxinstagram.com"
+        )
+        custom_og_host = ""
+        if OGINSTAGRAM_HOST:
+            try:
+                parsed_og = urllib.parse.urlparse(OGINSTAGRAM_HOST if "://" in OGINSTAGRAM_HOST else f"http://{OGINSTAGRAM_HOST}")
+                custom_og_host = (parsed_og.netloc or parsed_og.path).split(":")[0].lower()
+            except Exception:
+                pass
+
+        is_ig = any(domain == d or domain.endswith("." + d) for d in ig_domains)
+        if not is_ig and custom_og_host and (domain == custom_og_host or domain.endswith("." + custom_og_host)):
+            if not (custom_og_host in ("localhost", "127.0.0.1") or "." not in custom_og_host):
+                is_ig = True
+
+        if is_ig:
+            logger.info(f"Routing Instagram request for {url} through Instagram proxy: {INSTAGRAM_PROXY_URL}")
+            proxy_handler = urllib.request.ProxyHandler({'http': INSTAGRAM_PROXY_URL, 'https': INSTAGRAM_PROXY_URL})
+            opener = urllib.request.build_opener(proxy_handler)
+            return opener.open(req_or_url, timeout=timeout)
 
     # Archive.today and Ghostarchive requests
     archive_domains = ("archive.ph", "archive.is", "archive.today", "archive.li", "archive.vn", "archive.md", "archive.fo", "ghostarchive.org")

@@ -126,6 +126,7 @@ class TestWebPreviewToggle(unittest.TestCase):
         event_a1 = MockEvent(chat_id=1, msg_id=101, text="Check this link https://google.com")
         bot.on_new_message(mock_bot, 1, event_a1)
         mock_thread.assert_called_once()
+        self.assertEqual(mock_thread.call_args[1]["target"], bot._do_group_link_preview)
         mock_thread.reset_mock()
 
         # When WebPreview is disabled, thread should NOT start
@@ -142,6 +143,7 @@ class TestWebPreviewToggle(unittest.TestCase):
         event_b1 = MockEvent(chat_id=2, msg_id=103, text="Look: https://google.com")
         bot.on_new_message(mock_bot, 1, event_b1)
         mock_thread.assert_called_once()
+        self.assertEqual(mock_thread.call_args[1]["target"], bot._do_group_link_preview)
         mock_thread.reset_mock()
 
         # When WebPreview is disabled

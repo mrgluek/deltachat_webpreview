@@ -2,6 +2,13 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.4] - 2026-09-04
+
+### Improved
+- **Unified Link Previews for Private & Group Chats:**
+  - Standardized bare URL handling in 1-on-1 private messages to send interactive preview cards with banner images and quick action buttons (`⚡ /tldr`, `🖥️ /preview`, `📦 /webxdc`, `🏛️ /keep`), matching the behavior in group chats.
+  - Avoids automatically compiling heavy, full-page readability HTML files and executing Gemini AI calls on every link shared in direct messages, while keeping full preview generation readily accessible via `/preview` commands and preview card buttons.
+
 ## [2.9.3] - 2026-09-04
 
 ### Improved

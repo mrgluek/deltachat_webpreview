@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.3"
+VERSION = "2.9.4"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
 
@@ -5708,106 +5708,70 @@ def on_new_message(bot, accid, event):
                 _send(bot, accid, msg.chat_id, help_text)
                 database.set_config(greeted_key, "1")
 
-            # 2. Automatically parse URLs sent in private chat (if not starting with a slash command)
-            if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
-                url_match = re.search(r'(https?://[^\s<>"]+)', text)
-                if url_match:
-                    raw_url = _strip_url_trailing_junk(url_match.group(1))
-                    url = _clean_url_params(raw_url)
+        # 2. Automatically parse URLs sent in chat (if not starting with a slash command and previews enabled)
+        if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
+            url_match = re.search(r'(https?://[^\s<>"]+)', text)
+            if url_match:
+                raw_url = _strip_url_trailing_junk(url_match.group(1))
+                url = _clean_url_params(raw_url)
+                
+                if _is_internal_or_invalid_url(url):
+                    return
+
+                # Check if it's a direct image link and process it
+                if _is_image_url(url):
+                    logger.info(f"Detected direct image URL in chat {msg.chat_id}: {url}")
+                    success, result_path, compress_info = _download_and_compress_image(url, msg.chat_id)
+                    if success:
+                        t = threading.Thread(
+                            target=_send_image_to_chat,
+                            args=(bot, accid, msg.chat_id, result_path, compress_info, url),
+                            daemon=True
+                        )
+                        t.start()
+                    else:
+                        logger.warning(f"Failed to download/compress image {url}: {result_path}")
+                    return
+
+                # Skip if the URL is in the exclusions
+                if database.is_excluded(url):
+                    return
+
+                # Skip if YT Bot is in the chat and this is a link handled by YT Bot
+                if _is_yt_bot_in_chat(bot, accid, msg.chat_id):
+                    if _is_handled_by_yt_bot(url):
+                        logger.info(f"Skipping link auto-preview for {url} since YT Bot is present and handles it.")
+                        return
+                    # Check if this is a known Invidious domain
+                    domain = urllib.parse.urlparse(url).netloc.lower()
+                    is_invidious = False
+                    try:
+                        if database.get_config(f"invidious_domain_{domain}") == "1":
+                            is_invidious = True
+                    except Exception:
+                        pass
                     
-                    if _is_internal_or_invalid_url(url):
-                        return
-
-                    # Rate limiting check
-                    if _is_rate_limited(bot, accid, msg.from_id):
-                        _react(bot, accid, msg.id, "⏱")
-                        return
-
-                    # Check if it's a direct image link and process it
-                    if _is_image_url(url):
-                        logger.info(f"Detected direct image URL in private chat: {url}")
-                        success, result_path, compress_info = _download_and_compress_image(url, msg.chat_id)
-                        if success:
-                            t = threading.Thread(
-                                target=_send_image_to_chat,
-                                args=(bot, accid, msg.chat_id, result_path, compress_info, url),
-                                daemon=True
-                            )
-                            t.start()
-                        else:
-                            logger.warning(f"Failed to download/compress image {url}: {result_path}")
-                        return
-
-                    # Run readability in background thread by default
-                    t = threading.Thread(
-                        target=_do_preview, 
-                        args=(bot, accid, msg.chat_id, msg.id, msg.from_id, url, "readability"), 
-                        daemon=True
-                    )
-                    t.start()
-        else:
-            # Automatic preview of links in group chats
-            if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
-                url_match = re.search(r'(https?://[^\s<>"]+)', text)
-                if url_match:
-                    raw_url = _strip_url_trailing_junk(url_match.group(1))
-                    url = _clean_url_params(raw_url)
-                    
-                    if _is_internal_or_invalid_url(url):
-                        return
-
-                    # Check if it's a direct image link and process it
-                    if _is_image_url(url):
-                        logger.info(f"Detected direct image URL in group chat: {url}")
-                        success, result_path, compress_info = _download_and_compress_image(url, msg.chat_id)
-                        if success:
-                            t = threading.Thread(
-                                target=_send_image_to_chat,
-                                args=(bot, accid, msg.chat_id, result_path, compress_info, url),
-                                daemon=True
-                            )
-                            t.start()
-                        else:
-                            logger.warning(f"Failed to download/compress image {url}: {result_path}")
-                        return
-
-                    # Skip if the URL is in the exclusions
-                    if database.is_excluded(url):
-                        return
-
-                    # Skip if YT Bot is in the chat and this is a link handled by YT Bot
-                    if _is_yt_bot_in_chat(bot, accid, msg.chat_id):
-                        if _is_handled_by_yt_bot(url):
-                            logger.info(f"Skipping group link auto-preview for {url} since YT Bot is present and handles it.")
+                    if is_invidious:
+                        video_id = _extract_youtube_id_from_invidious(url)
+                        if video_id:
+                            yt_link = f"https://youtu.be/{video_id}"
+                            logger.info(f"Detected known Invidious URL {url} in chat with YT Bot. Forwarding: {yt_link}")
+                            _send(bot, accid, msg.chat_id, yt_link)
                             return
-                        # Check if this is a known Invidious domain
-                        domain = urllib.parse.urlparse(url).netloc.lower()
-                        is_invidious = False
-                        try:
-                            if database.get_config(f"invidious_domain_{domain}") == "1":
-                                is_invidious = True
-                        except Exception:
-                            pass
-                        
-                        if is_invidious:
-                            video_id = _extract_youtube_id_from_invidious(url)
-                            if video_id:
-                                yt_link = f"https://youtu.be/{video_id}"
-                                logger.info(f"Detected known Invidious URL {url} in chat with YT Bot. Forwarding: {yt_link}")
-                                _send(bot, accid, msg.chat_id, yt_link)
-                                return
-                        
-                    # Rate limiting check
-                    if _is_rate_limited(bot, accid, msg.from_id):
-                        return
                     
-                    # Run OG preview generation in background thread
-                    t = threading.Thread(
-                        target=_do_group_link_preview, 
-                        args=(bot, accid, msg.chat_id, msg.from_id, url), 
-                        daemon=True
-                    )
-                    t.start()
+                # Rate limiting check
+                if _is_rate_limited(bot, accid, msg.from_id):
+                    if is_private:
+                        _react(bot, accid, msg.id, "⏱")
+                    return
+                
+                # Run link preview generation in background thread
+                t = threading.Thread(
+                    target=_do_group_link_preview, 
+                    args=(bot, accid, msg.chat_id, msg.from_id, url), 
+                    daemon=True
+                )
+                t.start()
     except Exception as e:
         logger.error(f"Chat processing error: {e}")
 

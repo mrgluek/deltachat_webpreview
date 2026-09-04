@@ -1888,7 +1888,10 @@ def _is_handled_by_yt_bot(url: str) -> bool:
     # 2. Yandex Music URLs
     if "music.yandex." in url_lower:
         return True
-    # 3. Major video/audio hosting sites supported by YT Bot
+    # 3. Instagram Reels and Videos (handled preferentially by YT Bot)
+    if any(p in url_lower for p in ("/reel/", "/reels/", "/tv/")) and ("instagram.com" in url_lower or "instagr.am" in url_lower or "oginstagram.com" in url_lower):
+        return True
+    # 4. Major video/audio hosting sites supported by YT Bot
     other_media_domains = [
         "vimeo.com", "vk.com/video", "vkvideo.ru", "rutube.ru", "soundcloud.com", 
         "tiktok.com", "twitch.tv", "bilibili.com", "dzen.ru", "ok.ru", "coub.com"
@@ -2535,7 +2538,7 @@ def _is_instagram_url(url: str) -> bool:
 
 def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | None]:
     """
-    Fetch title, preview image and content for an Instagram URL via OGInstagram embed proxy.
+    Fetch title, preview image and content for an Instagram URL via OGInstagram / mirror embed proxy.
 
     Supports:
       https://instagram.com/p/SHORTCODE
@@ -2558,97 +2561,119 @@ def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | No
             return None, None, None
 
         og_host = OGINSTAGRAM_HOST or "oginstagram.com"
-        target_url = f"https://{og_host}{path}"
-        if parsed.query:
-            target_url += f"?{parsed.query}"
+        hosts_to_try = [og_host]
+        for fallback_host in ("kkinstagram.com", "vxinstagram.com"):
+            if fallback_host not in hosts_to_try:
+                hosts_to_try.append(fallback_host)
 
-        logger.info(f"Fetching Instagram preview from {target_url}")
-        req = urllib.request.Request(
-            target_url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"}
-        )
-        with _urlopen(req, timeout=8) as response:
-            html_bytes = response.read(512 * 1024)
-            html_content = _decode_html(html_bytes, response.headers)
-
-        if not html_content:
-            return None, None, None
-
-        soup = BeautifulSoup(html_content, BS_PARSER)
-
-        # 1. Extract title (author name / profile)
-        title = None
-        for tag in soup.find_all("meta"):
-            prop = tag.get("property", "") or tag.get("name", "")
-            if prop.lower() in ("og:title", "twitter:title") and tag.get("content"):
-                title = html.unescape(tag["content"].strip())
-                break
-
-        if not title and soup.title and soup.title.string:
-            title = html.unescape(soup.title.string.strip())
-
-        author = title or "Instagram"
-
-        # 2. Extract description (post caption)
-        description = None
-        for tag in soup.find_all("meta"):
-            prop = tag.get("property", "") or tag.get("name", "")
-            if prop.lower() in ("og:description", "twitter:description") and tag.get("content"):
-                description = html.unescape(tag["content"].strip())
-                break
-
-        # 3. Extract image alt text (accessibility caption)
-        alt_text = None
-        for tag in soup.find_all("meta"):
-            prop = tag.get("property", "") or tag.get("name", "")
-            if prop.lower() in ("og:image:alt", "twitter:image:alt") and tag.get("content"):
-                alt_text = html.unescape(tag["content"].strip())
-                break
-
-        # 4. Extract image URL
-        image_url = None
-        for tag in soup.find_all("meta"):
-            prop = tag.get("property", "") or tag.get("name", "")
-            if prop.lower() in ("og:image", "twitter:image") and tag.get("content"):
-                image_url = html.unescape(tag["content"].strip())
-                if image_url:
-                    image_url = urllib.parse.urljoin(target_url, image_url)
-                break
-
-        # Fallback to direct media endpoint if no image meta tag found
-        if not image_url and path.startswith(("/p/", "/reel/", "/reels/", "/stories/")):
-            image_url = f"https://d.{og_host}{path}"
+        for host in hosts_to_try:
+            target_url = f"https://{host}{path}"
             if parsed.query:
-                image_url += f"?{parsed.query}"
+                target_url += f"?{parsed.query}"
 
-        # 5. Build formatted title / excerpt
-        content_text = description or alt_text or ""
-        if content_text:
-            clean_text = re.sub(r"\s+", " ", content_text).strip()
-            excerpt = clean_text[:200] + ("…" if len(clean_text) > 200 else "")
-            formatted_title = f"{author}: {excerpt}"
-        else:
-            formatted_title = author
+            logger.info(f"Fetching Instagram preview from {target_url}")
+            html_content = ""
+            try:
+                req = urllib.request.Request(
+                    target_url,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"}
+                )
+                with _urlopen(req, timeout=8) as response:
+                    content_type = response.headers.get("Content-Type", "").lower()
 
-        # 6. Build markdown representation for cache / readability / webxdc
-        md_lines = []
-        md_lines.append(f"# {author}")
-        md_lines.append("")
-        if description:
-            md_lines.append(description.strip())
+                    # Direct image returned by proxy
+                    if "image/" in content_type:
+                        logger.info(f"Direct image returned by Instagram proxy {host} for {url}")
+                        image_url = target_url
+                        return "Instagram", image_url, f"# Instagram\n\n![Media]({image_url})"
+
+                    html_bytes = response.read(512 * 1024)
+                    html_content = _decode_html(html_bytes, response.headers)
+            except Exception as host_err:
+                logger.warning(f"Fetch failed for Instagram host {host}: {host_err}")
+                continue
+
+            if not html_content or "Just a moment..." in html_content or "Testing to determine if you are a bot" in html_content:
+                logger.warning(f"Instagram proxy {host} returned challenge/empty content, trying next fallback...")
+                continue
+
+            soup = BeautifulSoup(html_content, BS_PARSER)
+
+            # 1. Extract title (author name / profile)
+            title = None
+            for tag in soup.find_all("meta"):
+                prop = tag.get("property", "") or tag.get("name", "")
+                if prop.lower() in ("og:title", "twitter:title") and tag.get("content"):
+                    title = html.unescape(tag["content"].strip())
+                    break
+
+            if not title and soup.title and soup.title.string:
+                title = html.unescape(soup.title.string.strip())
+
+            author = title or "Instagram"
+
+            # 2. Extract description (post caption)
+            description = None
+            for tag in soup.find_all("meta"):
+                prop = tag.get("property", "") or tag.get("name", "")
+                if prop.lower() in ("og:description", "twitter:description") and tag.get("content"):
+                    description = html.unescape(tag["content"].strip())
+                    break
+
+            # 3. Extract image alt text (accessibility caption)
+            alt_text = None
+            for tag in soup.find_all("meta"):
+                prop = tag.get("property", "") or tag.get("name", "")
+                if prop.lower() in ("og:image:alt", "twitter:image:alt") and tag.get("content"):
+                    alt_text = html.unescape(tag["content"].strip())
+                    break
+
+            # 4. Extract image URL
+            image_url = None
+            for tag in soup.find_all("meta"):
+                prop = tag.get("property", "") or tag.get("name", "")
+                if prop.lower() in ("og:image", "twitter:image") and tag.get("content"):
+                    image_url = html.unescape(tag["content"].strip())
+                    if image_url:
+                        image_url = urllib.parse.urljoin(target_url, image_url)
+                    break
+
+            # Fallback to direct media endpoint if no image meta tag found
+            if not image_url and path.startswith(("/p/", "/reel/", "/reels/", "/stories/")):
+                image_url = f"https://d.{host}{path}"
+                if parsed.query:
+                    image_url += f"?{parsed.query}"
+
+            # 5. Build formatted title / excerpt
+            content_text = description or alt_text or ""
+            if content_text:
+                clean_text = re.sub(r"\s+", " ", content_text).strip()
+                excerpt = clean_text[:200] + ("…" if len(clean_text) > 200 else "")
+                formatted_title = f"{author}: {excerpt}"
+            else:
+                formatted_title = author
+
+            # 6. Build markdown representation for cache / readability / webxdc
+            md_lines = []
+            md_lines.append(f"# {author}")
             md_lines.append("")
-        if alt_text and alt_text.strip() != (description or "").strip():
-            md_lines.append(f"*{alt_text.strip()}*")
-            md_lines.append("")
-        if image_url:
-            md_lines.append(f"![Media]({image_url})")
+            if description:
+                md_lines.append(description.strip())
+                md_lines.append("")
+            if alt_text and alt_text.strip() != (description or "").strip():
+                md_lines.append(f"*{alt_text.strip()}*")
+                md_lines.append("")
+            if image_url:
+                md_lines.append(f"![Media]({image_url})")
 
-        jina_markdown = "\n".join(md_lines).strip()
-        return formatted_title, image_url, jina_markdown
+            jina_markdown = "\n".join(md_lines).strip()
+            return formatted_title, image_url, jina_markdown
 
     except Exception as e:
         logger.warning(f"Instagram preview fetch/parse failed for {url}: {e}")
         return None, None, None
+
+    return None, None, None
 
 def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, str | None]:
     """

@@ -156,8 +156,42 @@ class TestFetchInstagramOgData(unittest.TestCase):
         self.assertIn('"Meme" \'test\'', md)
 
     @patch("bot._urlopen")
+    def test_direct_image_content_type(self, mock_urlopen):
+        """When proxy returns direct image/jpeg, it is used directly as image_url."""
+        mock_resp = MagicMock()
+        mock_resp.headers = {"Content-Type": "image/jpeg"}
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_resp)
+        cm.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = cm
+
+        title, image_url, md = bot._fetch_instagram_og_data("https://www.instagram.com/p/Dcscta2oz5v/")
+        self.assertEqual(title, "Instagram")
+        self.assertIn("https://oginstagram.com/p/Dcscta2oz5v/", image_url)
+        self.assertIn("![Media]", md)
+
+    @patch("bot._urlopen")
+    def test_multi_host_fallback(self, mock_urlopen):
+        """If first host fails or returns challenge, falls back to next host."""
+        # First call fails (e.g. 403 or challenge), second call succeeds
+        challenge_resp = _make_mock_response("<html><head><title>Just a moment...</title></head></html>")
+        valid_html = """
+        <html><head>
+          <meta property="og:title" content="Cat Video">
+          <meta property="og:description" content="Meow">
+          <meta property="og:image" content="https://d.kkinstagram.com/p/123.jpg">
+        </head></html>
+        """
+        valid_resp = _make_mock_response(valid_html)
+        mock_urlopen.side_effect = [challenge_resp, valid_resp]
+
+        title, image_url, md = bot._fetch_instagram_og_data("https://www.instagram.com/p/123/")
+        self.assertEqual(title, "Cat Video: Meow")
+        self.assertEqual(image_url, "https://d.kkinstagram.com/p/123.jpg")
+
+    @patch("bot._urlopen")
     def test_network_error_returns_none(self, mock_urlopen):
-        """Returns (None, None, None) on network exception."""
+        """Returns (None, None, None) on network exception across all hosts."""
         mock_urlopen.side_effect = Exception("Connection timed out")
         title, img, md = bot._fetch_instagram_og_data("https://instagram.com/p/error/")
         self.assertIsNone(title)

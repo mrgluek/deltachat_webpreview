@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.5"
+VERSION = "2.9.6"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -2763,9 +2763,13 @@ def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | No
             # 5. Build formatted title / excerpt
             content_text = description or alt_text or ""
             if content_text:
-                clean_text = re.sub(r"\s+", " ", content_text).strip()
-                excerpt = clean_text[:200] + ("…" if len(clean_text) > 200 else "")
-                formatted_title = f"{author}: {excerpt}"
+                clean_text = content_text.strip()
+                # Clean up excessive blank lines and repetitive horizontal spaces
+                clean_text = re.sub(r"[ \t]+", " ", clean_text)
+                clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
+                if len(clean_text) > 500:
+                    clean_text = clean_text[:500].rstrip() + "…"
+                formatted_title = f"{author}: {clean_text}"
             else:
                 formatted_title = author
 
@@ -3142,6 +3146,39 @@ def _format_preview_buttons(bot, accid, from_id, urlhash: str) -> str:
     return buttons
 
 
+def _format_group_link_caption(
+    url: str,
+    title: str,
+    urlhash: str,
+    bot,
+    accid,
+    from_id,
+    warning: str | None = None,
+    jina_markdown: str | None = None,
+) -> str:
+    """Format caption for group/chat link preview card."""
+    if _is_instagram_url(url):
+        # Format Instagram preview: description (if present) before author source link, no action buttons
+        parts = []
+        author = title
+        desc = ""
+        if ": " in title:
+            author, desc = title.split(": ", 1)
+        if desc.strip():
+            parts.append(desc.strip())
+        parts.append(f"🌐 [{author.strip()}]({url})")
+        if warning:
+            parts.append(f"Warning: {warning}")
+        return "\n\n".join(parts)
+
+    emoji_prefix = "🌐" if _is_telegram_url(url) else ("🤖🌐" if jina_markdown else "🌐")
+    buttons = _format_preview_buttons(bot, accid, from_id, urlhash)
+    if warning:
+        return f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n{buttons}"
+    else:
+        return f"{emoji_prefix} [{title}]({url})\n\n{buttons}"
+
+
 def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
     """Fetches OG data, downloads banner image, and sends preview options to group (with 1h cache)."""
     try:
@@ -3157,7 +3194,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         cached = database.get_cached_og(urlhash)
         if cached:
             created_at = cached.get("created_at", 0)
-            if time.time() - created_at < CACHE_MAX_AGE:
+            if time.time() - cached.get("created_at", 0) < CACHE_MAX_AGE:
                 cached_title = cached.get("title", "")
                 cached_image_path = cached.get("image_path")
                 
@@ -3189,13 +3226,10 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     logger.info(f"OG Cache hit for group preview: {url}")
                     cached_warning = cached.get("warning")
                     cached_jina_markdown = cached.get("jina_markdown")
-                    
-                    emoji_prefix = "🌐" if (_is_telegram_url(url) or _is_instagram_url(url)) else ("🤖🌐" if cached_jina_markdown else "🌐")
-                    buttons = _format_preview_buttons(bot, accid, from_id, urlhash)
-                    if cached_warning:
-                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\nWarning: {cached_warning}\n\n{buttons}"
-                    else:
-                        caption = f"{emoji_prefix} [{cached_title}]({url})\n\n{buttons}"
+                    caption = _format_group_link_caption(
+                        url, cached_title, urlhash, bot, accid, from_id,
+                        warning=cached_warning, jina_markdown=cached_jina_markdown
+                    )
 
                     if cached_image_path:
                         _send(bot, accid, chat_id, caption, file=cached_image_path)
@@ -3246,12 +3280,10 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         if jina_markdown:
             _save_jina_preview_to_cache(url, urlhash, title, jina_markdown)
             
-        emoji_prefix = "🌐" if (_is_telegram_url(url) or _is_instagram_url(url)) else ("🤖🌐" if jina_markdown else "🌐")
-        buttons = _format_preview_buttons(bot, accid, from_id, urlhash)
-        if warning:
-            caption = f"{emoji_prefix} [{title}]({url})\n\nWarning: {warning}\n\n{buttons}"
-        else:
-            caption = f"{emoji_prefix} [{title}]({url})\n\n{buttons}"
+        caption = _format_group_link_caption(
+            url, title, urlhash, bot, accid, from_id,
+            warning=warning, jina_markdown=jina_markdown
+        )
         
         # 6. Download image if exists, saving to persistent cache folder
         img_cache_path = None

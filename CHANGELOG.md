@@ -2,6 +2,15 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.6] - 2026-09-04
+
+### Improved
+- **Clean Instagram Preview Format & Post Captions:**
+  - Placed Instagram post captions/descriptions directly beneath the image thumbnail and preceding the source author link (`🌐 [Instagram (@user)](url)`).
+  - Expanded Instagram caption preservation up to 500 characters while normalizing whitespace and line breaks.
+  - Removed interactive action buttons (`/tldr`, `/preview`, `/webxdc`, `/keep`) for Instagram preview cards to provide a clean, distraction-free photo card experience.
+  - Retained standard interactive preview buttons for non-Instagram websites.
+
 ## [2.9.5] - 2026-09-04
 
 ### Fixed

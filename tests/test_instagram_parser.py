@@ -123,8 +123,8 @@ class TestFetchInstagramOgData(unittest.TestCase):
 
     @patch("bot._urlopen")
     def test_long_caption_truncation(self, mock_urlopen):
-        """Long caption is truncated to 200 chars with ellipsis in title."""
-        long_desc = "Word " * 60
+        """Long caption is truncated to 500 chars with ellipsis in title."""
+        long_desc = "Word " * 150
         html = f"""
         <html>
         <head>
@@ -138,7 +138,7 @@ class TestFetchInstagramOgData(unittest.TestCase):
         title, _, _ = bot._fetch_instagram_og_data("https://instagram.com/p/12345/")
 
         self.assertIn("…", title)
-        self.assertLessEqual(len(title), len("Author: ") + 200 + 1)
+        self.assertLessEqual(len(title), len("Author: ") + 500 + 1)
 
     @patch("bot._urlopen")
     def test_html_entity_unescaping(self, mock_urlopen):
@@ -360,6 +360,68 @@ class TestInstagramCacheMissOnMissingImage(unittest.TestCase):
         mock_get_og.assert_called_once_with("https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/")
         mock_dl.assert_called_once()
         mock_send.assert_called_once()
+
+
+class TestInstagramCaptionFormatting(unittest.TestCase):
+    """Verify that Instagram group/chat previews show description before author link and omit buttons."""
+
+    def test_instagram_with_caption_and_no_buttons(self):
+        url = "https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/"
+        title = "Instagram (@kotkefir98): Очень красивый котик спит на солнышке"
+        urlhash = "b37f7382"
+        mock_bot = MagicMock()
+
+        caption = bot._format_group_link_caption(url, title, urlhash, mock_bot, 1, 10)
+
+        expected = (
+            "Очень красивый котик спит на солнышке\n\n"
+            "🌐 [Instagram (@kotkefir98)](https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/)"
+        )
+        self.assertEqual(caption, expected)
+        self.assertNotIn("/tldr", caption)
+        self.assertNotIn("/preview", caption)
+        self.assertNotIn("/webxdc", caption)
+        self.assertNotIn("/keep", caption)
+
+    def test_instagram_without_caption_and_no_buttons(self):
+        url = "https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/"
+        title = "Instagram (@kotkefir98)"
+        urlhash = "b37f7382"
+        mock_bot = MagicMock()
+
+        caption = bot._format_group_link_caption(url, title, urlhash, mock_bot, 1, 10)
+
+        expected = "🌐 [Instagram (@kotkefir98)](https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/)"
+        self.assertEqual(caption, expected)
+        self.assertNotIn("/tldr", caption)
+        self.assertNotIn("/preview", caption)
+
+    def test_instagram_with_warning(self):
+        url = "https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/"
+        title = "Instagram (@kotkefir98): Post caption"
+        urlhash = "b37f7382"
+        mock_bot = MagicMock()
+
+        caption = bot._format_group_link_caption(url, title, urlhash, mock_bot, 1, 10, warning="403 Forbidden")
+
+        self.assertIn("Post caption", caption)
+        self.assertIn("🌐 [Instagram (@kotkefir98)](https://www.instagram.com/kotkefir98/p/Dc2nawoo8la/)", caption)
+        self.assertIn("Warning: 403 Forbidden", caption)
+        self.assertNotIn("/tldr", caption)
+
+    def test_non_instagram_retains_buttons(self):
+        url = "https://habr.com/ru/articles/123456/"
+        title = "Great Article"
+        urlhash = "abc12345"
+        mock_bot = MagicMock()
+
+        with patch("bot._is_dc_admin", return_value=False):
+            caption = bot._format_group_link_caption(url, title, urlhash, mock_bot, 1, 10)
+
+        self.assertIn("🌐 [Great Article](https://habr.com/ru/articles/123456/)", caption)
+        self.assertIn("/tldr_abc12345", caption)
+        self.assertIn("/preview_abc12345", caption)
+        self.assertIn("/webxdc_abc12345", caption)
 
 
 if __name__ == "__main__":

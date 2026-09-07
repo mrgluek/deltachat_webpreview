@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.9.8] - 2026-09-07
+
+### Added
+- **Configurable Display Name & Status Text**:
+  - `on_init` now checks `DISPLAY_NAME` and `STATUS_TEXT` environment variables with `/data/options.json` fallback instead of overwriting display name with static strings.
+
 ## [2.9.7] - 2026-09-05
 
 ### Performance

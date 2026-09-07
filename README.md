@@ -58,6 +58,8 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 
 | Variable | Description | Default |
 | --- | --- | --- |
+| `DISPLAY_NAME` | Custom display name for the Delta Chat bot profile. | `WebPreview Bot` |
+| `STATUS_TEXT` | Custom bio/status description for the Delta Chat bot profile. | `I generate single-file HTML web previews in chats and groups...` |
 | `ALLOWED_BOT_EMAILS` | Comma-separated list of allowed bot emails. | *(Empty)* |
 | `OGINSTAGRAM_HOST` | Hostname of the [OGInstagram](https://github.com/seirenkr/OGInstagram) proxy instance for Instagram post/reel/profile embeds. | `oginstagram.com` |
 | `JINA_API_KEY` | Optional API Key for Jina Reader (`r.jina.ai`) to raise rate limits (from 20 req/min to 500+). | *(Empty)* |

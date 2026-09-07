@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.7"
+VERSION = "2.9.8"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -6119,8 +6119,29 @@ def on_init(bot, args):
     accounts = bot.rpc.get_all_account_ids()
     if accounts:
         dc_accid = accounts[0]
-        bot.rpc.set_config(dc_accid, "displayname", "WebPreview Bot")
-        bot.rpc.set_config(dc_accid, "selfstatus", "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url> or /archive <url>, or send /help for commands.")
+        bot_name = os.environ.get("DISPLAY_NAME")
+        if not bot_name and os.path.exists("/data/options.json"):
+            try:
+                with open("/data/options.json", "r", encoding="utf-8") as f:
+                    opts = json.load(f)
+                    bot_name = opts.get("display_name", "").strip()
+            except Exception:
+                pass
+        if not bot_name:
+            bot_name = "WebPreview Bot"
+        bot.rpc.set_config(dc_accid, "displayname", bot_name)
+
+        status_text = os.environ.get("STATUS_TEXT")
+        if not status_text and os.path.exists("/data/options.json"):
+            try:
+                with open("/data/options.json", "r", encoding="utf-8") as f:
+                    opts = json.load(f)
+                    status_text = opts.get("status_text", "").strip()
+            except Exception:
+                pass
+        if not status_text:
+            status_text = "I generate single-file HTML web previews in chats and groups.\n\nSend: /preview <url> or /archive <url>, or send /help for commands."
+        bot.rpc.set_config(dc_accid, "selfstatus", status_text)
         
         # Configure storage and auto-cleanup
         delete_after = os.environ.get("DELETE_DEVICE_AFTER", "3600")

@@ -54,7 +54,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.8"
+VERSION = "2.9.9"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -1295,6 +1295,73 @@ def _is_internal_or_invalid_url(url: str) -> bool:
         
     return False
 
+def _is_valid_image_url(image_url: str | None) -> bool:
+    """
+    Checks if an image URL is a valid, downloadable public HTTP/HTTPS URL.
+    Rejects:
+      - None, empty, or non-string values
+      - Non-HTTP/HTTPS schemes (blob:, data:, javascript:, file:, about:, etc.)
+      - URLs without a valid hostname
+      - Localhost, loopback, private, reserved, or internal hosts/IPs
+        (unless matching explicitly configured OGINSTAGRAM_HOST)
+      - SVG vector images
+    """
+    if not image_url or not isinstance(image_url, str):
+        return False
+
+    url_clean = image_url.strip()
+    url_lower = url_clean.lower()
+
+    if url_lower.startswith(("blob:", "data:", "javascript:", "file:", "about:")):
+        return False
+
+    try:
+        parsed = urllib.parse.urlparse(url_clean)
+        if parsed.scheme.lower() not in ("http", "https"):
+            return False
+
+        host = parsed.hostname
+        if not host:
+            return False
+
+        host = host.lower()
+
+        # Allow explicitly configured OGINSTAGRAM_HOST (e.g. internal docker container)
+        is_configured_og = False
+        if OGINSTAGRAM_HOST:
+            og_host = OGINSTAGRAM_HOST.lower()
+            if "://" in og_host:
+                og_host = og_host.split("://", 1)[1]
+            og_host = og_host.split("/")[0].split(":")[0]
+            if og_host and (host == og_host or host.endswith("." + og_host)):
+                is_configured_og = True
+
+        if not is_configured_og:
+            if host in ("localhost", "0.0.0.0"):
+                return False
+
+            local_suffixes = (".local", ".lan", ".home", ".internal", ".onion", ".test", ".invalid", ".localhost")
+            if host.endswith(local_suffixes):
+                return False
+
+            try:
+                ip_str = host.strip("[]")
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                    return False
+            except ValueError:
+                # Not an IP address
+                pass
+
+        # Reject SVG images
+        path = urllib.parse.unquote(parsed.path).lower()
+        if path.endswith(".svg"):
+            return False
+
+        return True
+    except Exception:
+        return False
+
 def _decode_html(html_bytes: bytes, response_headers=None) -> str:
     """
     Decodes html_bytes by detecting the charset from response headers or
@@ -1358,6 +1425,9 @@ def compress_image(image_bytes: bytes, max_width=800, quality=70) -> bytes:
 
 def _download_image_bytes(image_url: str) -> bytes | None:
     """Downloads image bytes trying standard and fallback User-Agents."""
+    if not _is_valid_image_url(image_url):
+        logger.debug(f"Skipping invalid or non-fetchable image URL: {image_url}")
+        return None
     is_bot_service = any(k in image_url.lower() for k in ("instagram", "kkclip", "vxinsta", "tiktok", "twitter", "x.com", "fxtwitter", "vxtwitter", "rapidcdn"))
     user_agents = [BOT_USER_AGENT, STANDARD_USER_AGENT, NON_MOZILLA_USER_AGENT] if is_bot_service else [STANDARD_USER_AGENT, BOT_USER_AGENT, NON_MOZILLA_USER_AGENT]
     for ua in user_agents:
@@ -1386,6 +1456,9 @@ def _inline_soup_images(soup, url: str):
         if not img_src:
             img.decompose()
             continue
+        if img_src.lower().startswith(('blob:', 'javascript:')):
+            img.decompose()
+            continue
         if img_src.startswith('data:'):
             # Clean up responsive attributes anyway
             for attr in ['srcset', 'sizes', 'data-src', 'data-srcset']:
@@ -1394,6 +1467,9 @@ def _inline_soup_images(soup, url: str):
             continue
             
         absolute_img_url = urllib.parse.urljoin(url, img_src)
+        if not _is_valid_image_url(absolute_img_url):
+            img.decompose()
+            continue
         success = False
         try:
             img_bytes = _download_image_bytes(absolute_img_url)
@@ -2321,10 +2397,12 @@ def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None,
         markdown_content = md_match.group(1).strip()
 
     if markdown_content:
-        # Match markdown image, e.g. ![alt](url)
-        img_match = re.search(r'!\[[^\]]*\]\(([^)\s]+)', markdown_content)
-        if img_match:
-            image_url = img_match.group(1).strip().strip('"\'')
+        # Match markdown image, e.g. ![alt](url) - find first valid candidate
+        for img_match in re.finditer(r'!\[[^\]]*\]\(([^)\s]+)', markdown_content):
+            candidate_url = img_match.group(1).strip().strip('"\'')
+            if _is_valid_image_url(candidate_url):
+                image_url = candidate_url
+                break
 
     return title, image_url, markdown_content, warning
 
@@ -2854,9 +2932,10 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, s
         
         if img_m:
             import html
-            image_url = html.unescape(img_m.group(2).strip())
-            image_url = urllib.parse.urljoin(url, image_url)
-
+            candidate_url = html.unescape(img_m.group(2).strip())
+            candidate_url = urllib.parse.urljoin(url, candidate_url)
+            if _is_valid_image_url(candidate_url):
+                image_url = candidate_url
             
         return title, image_url
 
@@ -2951,7 +3030,7 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, s
             title = f"URL Source: {url}"
             hard_failure_code = None
             
-        if jina_image:
+        if jina_image and _is_valid_image_url(jina_image):
             image_url = jina_image
         if jina_markdown and ("alternative front-end to YouTube" in jina_markdown or "alternative frontend to YouTube" in jina_markdown):
             is_invidious = True
@@ -3058,14 +3137,9 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
     Downloads an image URL and saves it in the persistent cache directory.
     Returns absolute path of the cached file, or None if failed.
     """
-    # Skip SVG images as they are vector format and Pillow cannot process them as raster preview thumbnails
-    try:
-        parsed_url = urllib.parse.urlparse(image_url)
-        if parsed_url.path.lower().endswith(".svg"):
-            logger.info(f"Skipping SVG image as preview: {image_url}")
-            return None
-    except Exception:
-        pass
+    if not _is_valid_image_url(image_url):
+        logger.info(f"Skipping invalid or non-fetchable image URL for preview: {image_url}")
+        return None
 
     is_bot_service = any(
         k in image_url.lower() for k in ("instagram", "kkclip", "vxinsta", "tiktok", "twitter", "x.com", "fxtwitter", "vxtwitter", "rapidcdn")

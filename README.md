@@ -145,7 +145,7 @@ The repository ships with a `tests/` directory containing 56 unit tests:
 | `tests/test_telegram_parser.py` | `_is_telegram_url`, `_fetch_telegram_og_data` – static preview parsing, truncation, newlines |
 | `tests/test_url_validation.py` | `_is_internal_or_invalid_url` – valid domains, private IPs, blocked TLDs |
 | `tests/test_invidious.py` | `_extract_youtube_id_from_invidious`, `_clean_domain`, Invidious database helpers |
-| `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, SVG skip, octet-stream logic, cache saving, OG fallback |
+| `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, `_is_valid_image_url` (skipping `blob:`, `data:`, localhost, internal IPs, SVGs), octet-stream logic, cache saving, OG fallback |
 | `tests/test_webpreview.py` | `/webpreview` command, DB status checks, and `on_new_message` auto-preview toggling |
 | `tests/test_image_compression.py` | Animated GIF / WebP frame iteration, animation preservation, and image resizing |
 

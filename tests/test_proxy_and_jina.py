@@ -238,6 +238,60 @@ class TestDownloadCachedImage(unittest.TestCase):
             bot._download_cached_image("https://example.com/logo", "testsvg")
         )
 
+    @patch("bot._urlopen")
+    def test_skips_blob_url(self, mock_urlopen):
+        self.assertIsNone(
+            bot._download_cached_image(
+                "blob:http://localhost/d0686c8a8871ed1d43ba7d90c8ea94c6", "testblob"
+            )
+        )
+        mock_urlopen.assert_not_called()
+
+    @patch("bot._urlopen")
+    def test_skips_blob_url_https(self, mock_urlopen):
+        self.assertIsNone(
+            bot._download_cached_image(
+                "blob:https://chat.example.com/3f82ab7c-e092-48df-9f37-124b4249a5b6", "testblob2"
+            )
+        )
+        mock_urlopen.assert_not_called()
+
+    @patch("bot._urlopen")
+    def test_skips_data_url(self, mock_urlopen):
+        self.assertIsNone(
+            bot._download_cached_image(
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "testdata",
+            )
+        )
+        mock_urlopen.assert_not_called()
+
+    @patch("bot._urlopen")
+    def test_skips_localhost_and_internal_ips(self, mock_urlopen):
+        for local_url in [
+            "http://localhost/image.png",
+            "http://127.0.0.1/image.png",
+            "http://192.168.1.100/image.png",
+            "http://10.0.0.5/image.png",
+            "http://169.254.169.254/latest/meta-data",
+            "http://router.home/image.png",
+            "http://server.local/image.png",
+        ]:
+            self.assertIsNone(
+                bot._download_cached_image(local_url, "testlocal"),
+                msg=f"Expected {local_url} to be skipped",
+            )
+        mock_urlopen.assert_not_called()
+
+    @patch("bot._urlopen")
+    def test_skips_javascript_and_file_urls(self, mock_urlopen):
+        for bad_url in ["javascript:alert(1)", "file:///etc/passwd", "about:blank"]:
+            self.assertIsNone(
+                bot._download_cached_image(bad_url, "testbad"),
+                msg=f"Expected {bad_url} to be skipped",
+            )
+        mock_urlopen.assert_not_called()
+
 
 class TestCheckUrlHeaders(unittest.TestCase):
     """Tests for _check_url_headers octet-stream allow/reject logic."""
@@ -319,6 +373,20 @@ class TestInlineSoupImages(unittest.TestCase):
         
         self.assertIsNone(soup.find("img"))
 
+    def test_decomposes_blob_and_javascript_images(self):
+        from bs4 import BeautifulSoup
+
+        html = (
+            '<div>'
+            '<img src="blob:http://localhost/d0686c8a8871ed1d43ba7d90c8ea94c6" />'
+            '<img src="javascript:alert(1)" />'
+            '</div>'
+        )
+        soup = BeautifulSoup(html, "html.parser")
+        bot._inline_soup_images(soup, "https://example.com")
+
+        self.assertEqual(len(soup.find_all("img")), 0)
+
 
 class TestGetOgPreviewData(unittest.TestCase):
     """Tests for _get_og_preview_data Jina fallback."""
@@ -338,6 +406,77 @@ class TestGetOgPreviewData(unittest.TestCase):
         self.assertEqual(title, "Jina Title")
         self.assertEqual(jina_markdown, "Jina MD")
         self.assertIsNone(image_url)
+
+
+class TestParseJinaResponseImages(unittest.TestCase):
+    """Tests for image extraction filtering in _parse_jina_response."""
+
+    def test_skips_blob_image_and_finds_valid_image(self):
+        text = (
+            "Title: Example Page\n"
+            "Markdown Content:\n"
+            "![Avatar](blob:http://localhost/d0686c8a8871ed1d43ba7d90c8ea94c6)\n\n"
+            "# Article Title\n\n"
+            "![Article Image](https://example.com/valid_image.jpg)\n"
+        )
+        title, image_url, md, warning = bot._parse_jina_response(text)
+        self.assertEqual(title, "Example Page")
+        self.assertEqual(image_url, "https://example.com/valid_image.jpg")
+
+    def test_skips_when_only_blob_images(self):
+        text = (
+            "Title: Example Page\n"
+            "Markdown Content:\n"
+            "![Avatar](blob:http://localhost/d0686c8a8871ed1d43ba7d90c8ea94c6)\n"
+        )
+        title, image_url, md, warning = bot._parse_jina_response(text)
+        self.assertEqual(title, "Example Page")
+        self.assertIsNone(image_url)
+
+    def test_skips_svg_and_picks_next_image(self):
+        text = (
+            "Title: Vector Page\n"
+            "Markdown Content:\n"
+            "![Icon](https://example.com/icon.svg)\n\n"
+            "![Photo](https://example.com/hero.png)\n"
+        )
+        title, image_url, md, warning = bot._parse_jina_response(text)
+        self.assertEqual(image_url, "https://example.com/hero.png")
+
+
+class TestIsValidImageUrl(unittest.TestCase):
+    """Tests for _is_valid_image_url validation helper."""
+
+    def test_valid_http_https_urls(self):
+        self.assertTrue(bot._is_valid_image_url("https://example.com/photo.jpg"))
+        self.assertTrue(bot._is_valid_image_url("http://cdn.site.org/images/pic.webp?q=80"))
+        self.assertTrue(bot._is_valid_image_url("https://kkinstagram.com/p/123/img.jpeg"))
+
+    def test_invalid_schemes(self):
+        self.assertFalse(bot._is_valid_image_url("blob:http://localhost/abc"))
+        self.assertFalse(bot._is_valid_image_url("blob:https://example.com/uuid"))
+        self.assertFalse(bot._is_valid_image_url("data:image/png;base64,abc"))
+        self.assertFalse(bot._is_valid_image_url("javascript:alert(1)"))
+        self.assertFalse(bot._is_valid_image_url("file:///etc/hosts"))
+        self.assertFalse(bot._is_valid_image_url("ftp://example.com/photo.jpg"))
+
+    def test_internal_and_localhost_urls(self):
+        self.assertFalse(bot._is_valid_image_url("http://localhost/pic.jpg"))
+        self.assertFalse(bot._is_valid_image_url("http://127.0.0.1/pic.jpg"))
+        self.assertFalse(bot._is_valid_image_url("http://192.168.1.1/pic.jpg"))
+        self.assertFalse(bot._is_valid_image_url("http://10.0.0.1/pic.jpg"))
+        self.assertFalse(bot._is_valid_image_url("http://169.254.169.254/latest/meta-data"))
+        self.assertFalse(bot._is_valid_image_url("http://nas.local/pic.jpg"))
+        self.assertFalse(bot._is_valid_image_url("http://router.home/pic.jpg"))
+
+    def test_svg_rejection(self):
+        self.assertFalse(bot._is_valid_image_url("https://example.com/logo.svg"))
+        self.assertFalse(bot._is_valid_image_url("https://example.com/logo.svg?v=123"))
+
+    def test_none_and_empty(self):
+        self.assertFalse(bot._is_valid_image_url(None))
+        self.assertFalse(bot._is_valid_image_url(""))
+        self.assertFalse(bot._is_valid_image_url("   "))
 
 
 class TestDoPreviewCacheOptimization(unittest.TestCase):

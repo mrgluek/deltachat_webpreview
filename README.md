@@ -100,7 +100,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/help` — Show available commands and greeting info.
 - `/initadmin` — Claim administrative ownership (private chat only).
 - `/transports` — Show configured mail relays & stats (Admin only).
-- `/addtransport` — Add a backup mail relay (Admin only).
+- `/addtransport` — Add a backup mail relay (Admin only, private 1:1 chat only).
 - `/rmtransport <addr>` — Remove a mail relay (Admin only).
 - `/setprimary <addr>` — Switch the primary mail relay (Admin only).
 - `/resilient` — Toggle resilient sending mode across all relays (Admin only).
@@ -124,7 +124,7 @@ Admin functions can be performed directly through chat commands, or managed via 
 ### Set Administrator
 
 ```bash
-docker compose exec webpreview_bot python set_admin.py --email your@email.com
+docker compose exec webpreview_bot python set_admin.py
 ```
 
 ### Transport (Mail Relay) CLI Initialization
@@ -137,13 +137,15 @@ Although we recommend using `/addtransport` in chat, you can also add a backup r
 
 ## Development & Testing
 
-The repository ships with a `tests/` directory containing 56 unit tests:
+The repository ships with a comprehensive `tests/` directory with `unittest` suites:
 
 | File | What it covers |
 |---|---|
+| `tests/test_database.py` | Config roundtrip, admin fingerprinting, buffered transport statistics, and 30-day record retention pruning |
+| `tests/test_transport_commands.py` | Transport commands, private chat enforcement for `/addtransport` and `/initadmin`, `/resilient` toggle, and error sanitization |
+| `tests/test_url_validation.py` | `_is_internal_or_invalid_url` – valid domains, private IPs, DNS resolution/rebinding SSRF protection, and `SafeRedirectHandler` |
 | `tests/test_instagram_parser.py` | `_is_instagram_url`, `_fetch_instagram_og_data` – OGInstagram parsing, alt text, direct media fallback |
 | `tests/test_telegram_parser.py` | `_is_telegram_url`, `_fetch_telegram_og_data` – static preview parsing, truncation, newlines |
-| `tests/test_url_validation.py` | `_is_internal_or_invalid_url` – valid domains, private IPs, blocked TLDs |
 | `tests/test_invidious.py` | `_extract_youtube_id_from_invidious`, `_clean_domain`, Invidious database helpers |
 | `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, `_is_valid_image_url` (skipping `blob:`, `data:`, localhost, internal IPs, SVGs), octet-stream logic, cache saving, OG fallback |
 | `tests/test_webpreview.py` | `/webpreview` command, DB status checks, and `on_new_message` auto-preview toggling |

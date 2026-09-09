@@ -15,6 +15,7 @@ import urllib.request
 import urllib.parse
 import hashlib
 import ipaddress
+import socket
 
 from deltachat2 import events, MsgData
 from deltabot_cli import BotCli
@@ -47,6 +48,7 @@ DC_CONTACT_ID_SELF = 1
 
 # Rate limiting: {from_id: last_request_timestamp}
 _user_rate_limits: dict[int, float] = {}
+_rate_limit_lock = threading.Lock()
 RATE_LIMIT_SECONDS = 15
 
 # Cache settings
@@ -54,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.9.9"
+VERSION = "2.10.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -254,6 +256,95 @@ def _should_use_proxy(url: str) -> bool:
         pass
     return False
 
+def _is_internal_or_invalid_url(url: str) -> bool:
+    """
+    Checks if a URL has an internal, private, reserved or invalid domain/IP address.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return True
+            
+        host = host.lower()
+        
+        # Allow explicitly configured OGINSTAGRAM_HOST (e.g. internal docker container)
+        if OGINSTAGRAM_HOST:
+            og_host = OGINSTAGRAM_HOST.lower()
+            if "://" in og_host:
+                og_host = og_host.split("://", 1)[1]
+            og_host = og_host.split("/")[0].split(":")[0]
+            if og_host and (host == og_host or host.endswith("." + og_host)):
+                return False
+
+        # 1. Check obvious invalid/test hostnames
+        if host in ("localhost", "example", "example.com", "example.org", "example.net", "example.edu"):
+            return True
+            
+        # 1b. Check if host has a dot or is localhost / valid IP
+        if "." not in host and host != "localhost":
+            is_ip = False
+            try:
+                ip_str = host.strip("[]")
+                ipaddress.ip_address(ip_str)
+                is_ip = True
+            except ValueError:
+                pass
+            if not is_ip:
+                return True
+            
+        # 2. Check local domain suffixes
+        local_suffixes = (".local", ".lan", ".home", ".internal", ".onion", ".test", ".invalid", ".localhost")
+        if host.endswith(local_suffixes):
+            return True
+            
+        # 3. Check if hostname is an IP address (IPv4 or IPv6) and check if it's private/loopback/link-local/reserved/unspecified
+        try:
+            ip_str = host.strip("[]")
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+                return True
+        except ValueError:
+            # Not an IP address, which is fine
+            pass
+
+        # 4. Resolve domain name to verify it does not point to private/loopback/reserved IP (SSRF / DNS rebinding protection)
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+            addr_info = socket.getaddrinfo(ascii_host, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+            for _, _, _, _, sockaddr in addr_info:
+                ip_str = sockaddr[0]
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+                    return True
+        except (socket.gaierror, socket.herror, UnicodeError, OSError):
+            # Network unavailable, resolution timeout, or invalid host in offline test environment; continue with static checks
+            pass
+            
+    except ValueError as e:
+        logger.debug(f"Invalid URL hostname syntax {url}: {e}")
+        return True
+    except Exception as e:
+        logger.warning(f"Error checking internal/invalid URL {url}: {e}")
+        return True # Treat as invalid if parsing failed
+        
+    return False
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """
+    HTTP redirect handler that validates target redirect locations against SSRF.
+    Rejects redirects to private, loopback, or internal networks.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target_url = urllib.parse.urljoin(req.full_url, newurl)
+        if _is_internal_or_invalid_url(target_url):
+            logger.warning(f"Blocked redirect to internal/invalid URL: {target_url}")
+            raise urllib.error.HTTPError(target_url, 403, "Redirect to internal/invalid URL forbidden", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+# Install SafeRedirectHandler as default global opener for urllib.request.urlopen
+urllib.request.install_opener(urllib.request.build_opener(SafeRedirectHandler))
+
 def _copy_req(req_or_url):
     """Create a fresh Request copy without any attached proxy tunneling state."""
     if isinstance(req_or_url, urllib.request.Request):
@@ -268,6 +359,7 @@ def _urlopen(req_or_url, timeout=None):
     """
     urlopen wrapper that dynamically routes specific domains through a proxy.
     Falls back to direct connection if the configured proxy fails (e.g. 403, timeout, connection refused).
+    Enforces SSRF validation against internal targets on redirects.
     """
     url = req_or_url.full_url if isinstance(req_or_url, urllib.request.Request) else req_or_url
     try:
@@ -283,7 +375,7 @@ def _urlopen(req_or_url, timeout=None):
         if JINA_PROXY_URL:
             logger.info(f"Routing Jina request for {url} through Jina proxy: {JINA_PROXY_URL}")
             proxy_handler = urllib.request.ProxyHandler({'http': JINA_PROXY_URL, 'https': JINA_PROXY_URL})
-            opener = urllib.request.build_opener(proxy_handler)
+            opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
             try:
                 return opener.open(req_or_url, timeout=timeout)
             except Exception as e:
@@ -315,7 +407,7 @@ def _urlopen(req_or_url, timeout=None):
         if is_ig:
             logger.info(f"Routing Instagram request for {url} through Instagram proxy: {INSTAGRAM_PROXY_URL}")
             proxy_handler = urllib.request.ProxyHandler({'http': INSTAGRAM_PROXY_URL, 'https': INSTAGRAM_PROXY_URL})
-            opener = urllib.request.build_opener(proxy_handler)
+            opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
             try:
                 return opener.open(req_or_url, timeout=timeout)
             except Exception as e:
@@ -329,7 +421,7 @@ def _urlopen(req_or_url, timeout=None):
         if proxy:
             logger.info(f"Routing archive request for {url} through proxy: {proxy}")
             proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
-            opener = urllib.request.build_opener(proxy_handler)
+            opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
             try:
                 return opener.open(req_or_url, timeout=timeout)
             except Exception as e:
@@ -340,7 +432,7 @@ def _urlopen(req_or_url, timeout=None):
     if _should_use_proxy(url):
         logger.info(f"Routing request for {url} through proxy: {PROXY_URL}")
         proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
-        opener = urllib.request.build_opener(proxy_handler)
+        opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
         try:
             return opener.open(req_or_url, timeout=timeout)
         except Exception as e:
@@ -1243,58 +1335,6 @@ def _download_file(url: str, output_path: str) -> tuple[bool, str]:
         except:
             pass
 
-def _is_internal_or_invalid_url(url: str) -> bool:
-    """
-    Checks if a URL has an internal, private, reserved or invalid domain/IP address.
-    """
-    try:
-        parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname
-        if not host:
-            return True
-            
-        host = host.lower()
-        
-        # 1. Check obvious invalid/test hostnames
-        if host in ("localhost", "example", "example.com", "example.org", "example.net", "example.edu"):
-            return True
-            
-        # 1b. Check if host has a dot or is localhost / valid IP
-        if "." not in host and host != "localhost":
-            is_ip = False
-            try:
-                ip_str = host.strip("[]")
-                ipaddress.ip_address(ip_str)
-                is_ip = True
-            except ValueError:
-                pass
-            if not is_ip:
-                return True
-            
-        # 2. Check local domain suffixes
-        local_suffixes = (".local", ".lan", ".home", ".internal", ".onion", ".test", ".invalid", ".localhost")
-        if host.endswith(local_suffixes):
-            return True
-            
-        # 3. Check if hostname is an IP address (IPv4 or IPv6) and check if it's private/loopback/link-local/reserved
-        try:
-            ip_str = host.strip("[]")
-            ip = ipaddress.ip_address(ip_str)
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-                return True
-        except ValueError:
-            # Not an IP address, which is fine
-            pass
-            
-    except ValueError as e:
-        logger.debug(f"Invalid URL hostname syntax {url}: {e}")
-        return True
-    except Exception as e:
-        logger.warning(f"Error checking internal/invalid URL {url}: {e}")
-        return True # Treat as invalid if parsing failed
-        
-    return False
-
 def _is_valid_image_url(image_url: str | None) -> bool:
     """
     Checks if an image URL is a valid, downloadable public HTTP/HTTPS URL.
@@ -1889,7 +1929,7 @@ def _is_anubis_blocked(filepath: str) -> bool:
         logger.warning(f"Error checking Anubis status on file {filepath}: {e}")
     return False
 
-_processed_msg_ids = set()
+_processed_msg_ids = collections.OrderedDict()
 _processed_msg_lock = threading.Lock()
 
 def _is_duplicate_msg(msg_id: int, handler: str) -> bool:
@@ -1897,12 +1937,9 @@ def _is_duplicate_msg(msg_id: int, handler: str) -> bool:
         key = f"{handler}_{msg_id}"
         if key in _processed_msg_ids:
             return True
-        _processed_msg_ids.add(key)
-        if len(_processed_msg_ids) > 1000:
-            # Simple cleanup, keep only the latest 500 to avoid memory leak
-            latest = list(_processed_msg_ids)[-500:]
-            _processed_msg_ids.clear()
-            _processed_msg_ids.update(latest)
+        _processed_msg_ids[key] = True
+        while len(_processed_msg_ids) > 1000:
+            _processed_msg_ids.popitem(last=False)
         return False
 
 def _is_bot_blocked(bot, accid, msg) -> bool:
@@ -2023,10 +2060,16 @@ def _is_rate_limited(bot, accid, from_id) -> bool:
     if _is_dc_admin(bot, accid, from_id):
         return False
     now = time.time()
-    last = _user_rate_limits.get(from_id, 0)
-    if now - last < RATE_LIMIT_SECONDS:
-        return True
-    _user_rate_limits[from_id] = now
+    with _rate_limit_lock:
+        last = _user_rate_limits.get(from_id, 0)
+        if now - last < RATE_LIMIT_SECONDS:
+            return True
+        _user_rate_limits[from_id] = now
+        if len(_user_rate_limits) > 1000:
+            cutoff = now - 3600
+            expired = [uid for uid, ts in _user_rate_limits.items() if ts < cutoff]
+            for uid in expired:
+                _user_rate_limits.pop(uid, None)
     return False
 
 def _is_yt_bot_in_chat(bot, accid, chat_id) -> bool:
@@ -3475,7 +3518,7 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
     except Exception as e:
         logger.error(f"Error packing downloaded file: {e}")
         _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Error processing downloaded file: {e}")
+        _send(bot, accid, chat_id, "❌ Error processing downloaded file. Please try again later.")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -4763,7 +4806,7 @@ def _do_ai_query(
     except Exception as e:
         logger.error(f"Error in /ai query: {e}")
         _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, f"❌ Error generating AI answer: {e}")
+        _send(bot, accid, chat_id, "❌ Error generating AI answer. Please try again later.")
 
 
 def _handle_ai_command(bot, accid, event):
@@ -5364,11 +5407,59 @@ def transports_command(bot, accid, event):
     reply += f"Total transports: {len(transport_addrs)}"
     _send(bot, accid, msg.chat_id, reply)
 
+def _parse_chat_info_is_private(chat_info) -> bool:
+    if isinstance(chat_info, dict):
+        chat_type = chat_info.get("chatType") or chat_info.get("chat_type")
+        if isinstance(chat_type, str) and chat_type.lower() == "single":
+            return True
+        type_val = chat_info.get("type")
+        if type_val in (1, "1"):
+            return True
+    else:
+        chat_type = getattr(chat_info, "chat_type", None) or getattr(chat_info, "chatType", None)
+        if isinstance(chat_type, str) and chat_type.lower() == "single":
+            return True
+        type_val = getattr(chat_info, "type", None)
+        if type_val in (1, "1"):
+            return True
+    return False
+
+def _is_private_chat(bot, accid, chat_id) -> bool:
+    # 1. Try get_basic_chat_info
+    try:
+        chat_info = bot.rpc.get_basic_chat_info(accid, chat_id)
+        if chat_info:
+            return _parse_chat_info_is_private(chat_info)
+    except Exception as e:
+        logger.debug(f"get_basic_chat_info failed: {e}")
+
+    # 2. Fallback to get_full_chat_by_id
+    try:
+        chat_info = bot.rpc.get_full_chat_by_id(accid, chat_id)
+        if chat_info:
+            return _parse_chat_info_is_private(chat_info)
+    except Exception as e:
+        logger.debug(f"get_full_chat_by_id failed: {e}")
+
+    # 3. Ultimate fallback: get_chat_contacts length check
+    try:
+        contacts = bot.rpc.get_chat_contacts(accid, chat_id)
+        if isinstance(contacts, list) and len(contacts) == 1:
+            return True
+    except Exception as e:
+        logger.error(f"get_chat_contacts failed: {e}")
+
+    return False
+
 @dc_cli.on(events.NewMessage(command="/addtransport"))
 def addtransport_command(bot, accid, event):
     msg = event.msg
     if not _is_dc_admin(bot, accid, msg.from_id):
         _send(bot, accid, msg.chat_id, "❌ Only the bot administrator can use /addtransport.")
+        return
+
+    if not _is_private_chat(bot, accid, msg.chat_id):
+        _send(bot, accid, msg.chat_id, "❌ For security reasons, /addtransport can only be used in a private 1:1 chat with the bot.")
         return
 
     payload = event.payload.strip() if event.payload else ""
@@ -5396,7 +5487,8 @@ def addtransport_command(bot, accid, event):
             bot.rpc.add_or_update_transport(accid, {"addr": addr, "password": password})
             _send(bot, accid, msg.chat_id, f"✅ Backup transport `{addr}` added.")
     except Exception as e:
-        _send(bot, accid, msg.chat_id, f"❌ Failed to add transport: {e}")
+        logger.error(f"Failed to add transport: {e}")
+        _send(bot, accid, msg.chat_id, "❌ Failed to add transport. Check server logs for details.")
 
 @dc_cli.on(events.NewMessage(command="/setprimary"))
 def setprimary_command(bot, accid, event):
@@ -5414,7 +5506,8 @@ def setprimary_command(bot, accid, event):
         bot.rpc.set_config(accid, "configured_addr", addr)
         _send(bot, accid, msg.chat_id, f"✅ Primary address (`configured_addr`) is now `{addr}`.")
     except Exception as e:
-        _send(bot, accid, msg.chat_id, f"❌ Failed to set primary address: {e}")
+        logger.error(f"Failed to set primary address: {e}")
+        _send(bot, accid, msg.chat_id, "❌ Failed to set primary address. Check server logs for details.")
 
 @dc_cli.on(events.NewMessage(command="/resilient"))
 def resilient_command(bot, accid, event):
@@ -5441,7 +5534,8 @@ def resilient_command(bot, accid, event):
         else:
             _send(bot, accid, msg.chat_id, "❌ Invalid argument. Use '/resilient on', '/resilient off', or '/resilient' to get status.")
     except Exception as e:
-        _send(bot, accid, msg.chat_id, f"❌ Failed to update resilient mode: {e}")
+        logger.error(f"Failed to update resilient mode: {e}")
+        _send(bot, accid, msg.chat_id, "❌ Failed to update resilient mode. Check server logs for details.")
 
 @dc_cli.on(events.NewMessage(command="/rmtransport"))
 def rmtransport_command(bot, accid, event):
@@ -5468,18 +5562,24 @@ def rmtransport_command(bot, accid, event):
             _send(bot, accid, msg.chat_id, f"❌ Transport `{addr}` not found.")
             return
     except Exception as e:
-        _send(bot, accid, msg.chat_id, f"❌ Failed to check transports: {e}")
+        logger.error(f"Failed to check transports: {e}")
+        _send(bot, accid, msg.chat_id, "❌ Failed to check transports. Check server logs for details.")
         return
 
     try:
         bot.rpc.delete_transport(accid, addr)
         _send(bot, accid, msg.chat_id, f"✅ Transport `{addr}` removed.")
     except Exception as e:
-        _send(bot, accid, msg.chat_id, f"❌ Failed to remove transport: {e}")
+        logger.error(f"Failed to remove transport: {e}")
+        _send(bot, accid, msg.chat_id, "❌ Failed to remove transport. Check server logs for details.")
 
 @dc_cli.on(events.NewMessage(command="/initadmin"))
 def initadmin_command(bot, accid, event):
     msg = event.msg
+    if not _is_private_chat(bot, accid, msg.chat_id):
+        _send(bot, accid, msg.chat_id, "❌ For security reasons, /initadmin can only be used in a private 1:1 chat with the bot.")
+        return
+
     admin_email = database.get_config("admin_dc_email")
     admin_fp = database.get_admin_fingerprint()
 
@@ -5667,51 +5767,8 @@ def invidious_list_command(bot, accid, event):
             reply += f"{idx}. `{dom}`\n"
         _send(bot, accid, msg.chat_id, reply)
     except Exception as e:
-        _send(bot, accid, msg.chat_id, f"❌ Failed to list Invidious domains: {e}")
-
-def _parse_chat_info_is_private(chat_info) -> bool:
-    if isinstance(chat_info, dict):
-        chat_type = chat_info.get("chatType") or chat_info.get("chat_type")
-        if isinstance(chat_type, str) and chat_type.lower() == "single":
-            return True
-        type_val = chat_info.get("type")
-        if type_val in (1, "1"):
-            return True
-    else:
-        chat_type = getattr(chat_info, "chat_type", None) or getattr(chat_info, "chatType", None)
-        if isinstance(chat_type, str) and chat_type.lower() == "single":
-            return True
-        type_val = getattr(chat_info, "type", None)
-        if type_val in (1, "1"):
-            return True
-    return False
-
-def _is_private_chat(bot, accid, chat_id) -> bool:
-    # 1. Try get_basic_chat_info
-    try:
-        chat_info = bot.rpc.get_basic_chat_info(accid, chat_id)
-        if chat_info:
-            return _parse_chat_info_is_private(chat_info)
-    except Exception as e:
-        logger.debug(f"get_basic_chat_info failed: {e}")
-
-    # 2. Fallback to get_full_chat_by_id
-    try:
-        chat_info = bot.rpc.get_full_chat_by_id(accid, chat_id)
-        if chat_info:
-            return _parse_chat_info_is_private(chat_info)
-    except Exception as e:
-        logger.debug(f"get_full_chat_by_id failed: {e}")
-
-    # 3. Ultimate fallback: get_chat_contacts length check
-    try:
-        contacts = bot.rpc.get_chat_contacts(accid, chat_id)
-        if isinstance(contacts, list) and len(contacts) == 1:
-            return True
-    except Exception as e:
-        logger.error(f"get_chat_contacts failed: {e}")
-
-    return False
+        logger.error(f"Failed to list Invidious domains: {e}")
+        _send(bot, accid, msg.chat_id, "❌ Failed to list Invidious domains. Check server logs for details.")
 
 # ── General Event Listener ──
 
@@ -5903,93 +5960,95 @@ def _setup_resilient_mode(bot):
         if len(transports) <= 1:
             return original_send_msg(account_id, chat_id, msg_data)
 
-        initial_addr = None
-        try:
-            initial_addr = bot.rpc.get_config(account_id, "configured_addr") or bot.rpc.get_config(account_id, "addr")
-        except Exception:
-            pass
+        with resilient_lock:
+            initial_addr = None
+            try:
+                initial_addr = bot.rpc.get_config(account_id, "configured_addr") or bot.rpc.get_config(account_id, "addr")
+            except Exception:
+                pass
 
-        # 1. Send the message normally via the current primary transport (non-blocking queueing)
-        try:
-            msg_id = original_send_msg(account_id, chat_id, msg_data)
-            bot.logger.info(f"Resilient send: initial msg queued with ID {msg_id} on transport {initial_addr}.")
-        except Exception as send_err:
-            bot.logger.error(f"Resilient send: failed to queue initial message: {send_err}")
-            return None
+            # 1. Send the message normally via the current primary transport (non-blocking queueing)
+            try:
+                msg_id = original_send_msg(account_id, chat_id, msg_data)
+                bot.logger.info(f"Resilient send: initial msg queued with ID {msg_id} on transport {initial_addr}.")
+            except Exception as send_err:
+                bot.logger.error(f"Resilient send: failed to queue initial message: {send_err}")
+                return None
 
         # Background worker to handle resending to other transports sequentially
         def bg_resend_worker(m_id, init_addr, t_list):
             bot.logger.info(f"Resilient send: starting background sender for msg {m_id}")
             with resilient_lock:
-                bot.logger.info(f"Resilient send bg: waiting for initial delivery of msg {m_id} on {init_addr}...")
-                start_time = time.time()
-                delivered = False
-                while time.time() - start_time < 10:
-                    try:
-                        msg_snapshot = bot.rpc.get_message(account_id, m_id)
-                        state = msg_snapshot.get('state') if isinstance(msg_snapshot, dict) else getattr(msg_snapshot, 'state', None)
-                        if state in (26, 28):
-                            bot.logger.info(f"Resilient send bg: initial msg {m_id} delivered successfully on {init_addr}.")
-                            delivered = True
-                            break
-                        if state == 24:
-                            bot.logger.warning(f"Resilient send bg: initial msg {m_id} failed on {init_addr}.")
-                            break
-                    except Exception as poll_err:
-                        bot.logger.debug(f"Resilient send bg initial poll error: {poll_err}")
-                    time.sleep(0.5)
+                try:
+                    bot.logger.info(f"Resilient send bg: waiting for initial delivery of msg {m_id} on {init_addr}...")
+                    start_time = time.time()
+                    delivered = False
+                    while time.time() - start_time < 10:
+                        try:
+                            msg_snapshot = bot.rpc.get_message(account_id, m_id)
+                            state = msg_snapshot.get('state') if isinstance(msg_snapshot, dict) else getattr(msg_snapshot, 'state', None)
+                            if state in (26, 28):
+                                bot.logger.info(f"Resilient send bg: initial msg {m_id} delivered successfully on {init_addr}.")
+                                delivered = True
+                                break
+                            if state == 24:
+                                bot.logger.warning(f"Resilient send bg: initial msg {m_id} failed on {init_addr}.")
+                                break
+                        except Exception as poll_err:
+                            bot.logger.debug(f"Resilient send bg initial poll error: {poll_err}")
+                        time.sleep(0.5)
 
-                if not delivered:
-                    bot.logger.warning(f"Resilient send bg: initial msg {m_id} did not deliver on {init_addr} within timeout.")
+                    if not delivered:
+                        bot.logger.warning(f"Resilient send bg: initial msg {m_id} did not deliver on {init_addr} within timeout.")
 
-                # 2. Resend on all other transports
-                for t in t_list:
-                    t_addr = t.get('addr') if isinstance(t, dict) else getattr(t, 'addr', None)
-                    if not t_addr or (init_addr and t_addr.lower() == init_addr.lower()):
-                        continue
+                    # 2. Resend on all other transports
+                    for t in t_list:
+                        t_addr = t.get('addr') if isinstance(t, dict) else getattr(t, 'addr', None)
+                        if not t_addr or (init_addr and t_addr.lower() == init_addr.lower()):
+                            continue
 
-                    bot.logger.info(f"Resilient send bg: switching primary transport to {t_addr}")
-                    try:
-                        bot.rpc.set_config(account_id, "configured_addr", t_addr)
-                        time.sleep(1)
-                    except Exception as switch_err:
-                        bot.logger.error(f"Resilient send bg: failed to switch transport to {t_addr}: {switch_err}")
-                        continue
+                        bot.logger.info(f"Resilient send bg: switching primary transport to {t_addr}")
+                        try:
+                            bot.rpc.set_config(account_id, "configured_addr", t_addr)
+                            time.sleep(1)
+                        except Exception as switch_err:
+                            bot.logger.error(f"Resilient send bg: failed to switch transport to {t_addr}: {switch_err}")
+                            continue
 
-                    try:
-                        bot.logger.info(f"Resilient send bg: resending msg {m_id} on transport {t_addr}...")
-                        bot.rpc.resend_messages(account_id, [m_id])
+                        try:
+                            bot.logger.info(f"Resilient send bg: resending msg {m_id} on transport {t_addr}...")
+                            bot.rpc.resend_messages(account_id, [m_id])
 
-                        # Wait up to 10 seconds for the resent message to be delivered/failed
-                        start_time = time.time()
-                        delivered = False
-                        while time.time() - start_time < 10:
-                            try:
-                                msg_snapshot = bot.rpc.get_message(account_id, m_id)
-                                state = msg_snapshot.get('state') if isinstance(msg_snapshot, dict) else getattr(msg_snapshot, 'state', None)
-                                if state in (26, 28):
-                                    bot.logger.info(f"Resilient send bg: msg {m_id} delivered successfully on {t_addr}.")
-                                    delivered = True
-                                    break
-                                if state == 24:
-                                    bot.logger.warning(f"Resilient send bg: msg {m_id} failed on {t_addr}.")
-                                    break
-                            except Exception as poll_err:
-                                bot.logger.debug(f"Resilient send bg poll error: {poll_err}")
-                            time.sleep(0.5)
+                            # Wait up to 10 seconds for the resent message to be delivered/failed
+                            start_time = time.time()
+                            delivered = False
+                            while time.time() - start_time < 10:
+                                try:
+                                    msg_snapshot = bot.rpc.get_message(account_id, m_id)
+                                    state = msg_snapshot.get('state') if isinstance(msg_snapshot, dict) else getattr(msg_snapshot, 'state', None)
+                                    if state in (26, 28):
+                                        bot.logger.info(f"Resilient send bg: msg {m_id} delivered successfully on {t_addr}.")
+                                        delivered = True
+                                        break
+                                    if state == 24:
+                                        bot.logger.warning(f"Resilient send bg: msg {m_id} failed on {t_addr}.")
+                                        break
+                                except Exception as poll_err:
+                                    bot.logger.debug(f"Resilient send bg poll error: {poll_err}")
+                                time.sleep(0.5)
 
-                        if not delivered:
-                            bot.logger.warning(f"Resilient send bg: msg {m_id} did not deliver on {t_addr} within timeout.")
-                    except Exception as resend_err:
-                        bot.logger.error(f"Resilient send bg: failed to resend message on transport {t_addr}: {resend_err}")
-
-                # 3. Restore the initial primary transport configuration
-                if init_addr:
-                    try:
-                        bot.logger.info(f"Resilient send bg: restoring initial primary transport to {init_addr}")
-                        bot.rpc.set_config(account_id, "configured_addr", init_addr)
-                    except Exception as restore_err:
-                        bot.logger.error(f"Resilient send bg: failed to restore transport to {init_addr}: {restore_err}")
+                            if not delivered:
+                                bot.logger.warning(f"Resilient send bg: msg {m_id} did not deliver on {t_addr} within timeout.")
+                        except Exception as resend_err:
+                            bot.logger.error(f"Resilient send bg: failed to resend message on transport {t_addr}: {resend_err}")
+                finally:
+                    # 3. Restore the initial primary transport configuration
+                    if init_addr:
+                        try:
+                            bot.logger.info(f"Resilient send bg: restoring initial primary transport to {init_addr}")
+                            bot.rpc.set_config(account_id, "configured_addr", init_addr)
+                        except Exception as restore_err:
+                            bot.logger.error(f"Resilient send bg: failed to restore transport to {init_addr}: {restore_err}")
 
         # Start the background thread for resilient sending
         threading.Thread(target=bg_resend_worker, args=(msg_id, initial_addr, transports), daemon=True).start()
@@ -6387,6 +6446,9 @@ def _cache_cleaner_loop():
         try:
             # Clear expired cache entries from the database
             database.clear_expired_cache(CACHE_MAX_AGE)
+            # Prune old preview stats and API logs (retention 30 days) and flush buffered stats
+            database.cleanup_old_records(retention_days=30)
+            database.flush_transport_stats()
 
             if not os.path.exists(CACHE_DIR):
                 time.sleep(3600)

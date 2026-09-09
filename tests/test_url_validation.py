@@ -75,6 +75,46 @@ class TestUrlValidation(unittest.TestCase):
     def test_documentation_ipv6(self):
         self._check("http://[2001:db8::1]", True)
 
+    def test_unspecified_ipv4(self):
+        self._check("http://0.0.0.0", True)
+
+    # ── DNS resolution / rebinding SSRF protection ───────────────────────────
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_dns_resolving_to_private_ip(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (2, 1, 6, "", ("192.168.1.50", 80))
+        ]
+        self._check("https://attacker-domain.com", True)
+
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_dns_resolving_to_loopback_ip(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (2, 1, 6, "", ("127.0.0.1", 80))
+        ]
+        self._check("https://nip.io", True)
+
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_dns_resolving_to_public_ip(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (2, 1, 6, "", ("93.184.216.34", 80))
+        ]
+        self._check("https://public-site.org", False)
+
+    # ── SafeRedirectHandler Tests ───────────────────────────────────────────
+    def test_safe_redirect_blocks_private_url(self):
+        handler = bot.SafeRedirectHandler()
+        req = unittest.mock.MagicMock()
+        req.full_url = "https://public-site.com/redirect"
+        with self.assertRaises(bot.urllib.error.HTTPError):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://127.0.0.1/admin")
+
+    def test_safe_redirect_blocks_relative_redirect_to_internal(self):
+        handler = bot.SafeRedirectHandler()
+        req = unittest.mock.MagicMock()
+        req.full_url = "http://127.0.0.1/landing"
+        with self.assertRaises(bot.urllib.error.HTTPError):
+            handler.redirect_request(req, None, 302, "Found", {}, "/secret")
+
 
 if __name__ == "__main__":
     unittest.main()

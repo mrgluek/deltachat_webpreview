@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.10.1"
+VERSION = "2.11.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -476,6 +476,76 @@ def _detect_image_mime(data: bytes, filename: str = "") -> str | None:
             return "image/bmp"
     return None
 
+def _detect_audio_mime(data: bytes, filename: str = "", declared_mime: str = "") -> str | None:
+    """Detect audio MIME type from magic header bytes, file extension, or declared MIME."""
+    if declared_mime:
+        dm = declared_mime.lower().strip().split(';')[0].strip()
+        if dm in ("audio/ogg", "audio/opus", "application/ogg"):
+            return "audio/ogg"
+        if dm in ("audio/mp3", "audio/mpeg", "audio/mpg"):
+            return "audio/mp3"
+        if dm in ("audio/wav", "audio/x-wav", "audio/wave"):
+            return "audio/wav"
+        if dm in ("audio/aac", "audio/x-aac"):
+            return "audio/aac"
+        if dm in ("audio/mp4", "audio/m4a", "audio/x-m4a", "audio/x-mp4"):
+            return "audio/mp4"
+        if dm in ("audio/flac", "audio/x-flac"):
+            return "audio/flac"
+        if dm in ("audio/webm", "audio/weba"):
+            return "audio/webm"
+        if dm in ("audio/aiff", "audio/x-aiff"):
+            return "audio/aiff"
+        if dm.startswith("audio/"):
+            return dm
+
+    if data:
+        if data.startswith(b'OggS'):
+            return "audio/ogg"
+        if data.startswith(b'ID3') or (len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0 and (data[1] & 0x06) != 0):
+            return "audio/mp3"
+        if data.startswith(b'RIFF') and len(data) >= 12 and data[8:12] == b'WAVE':
+            return "audio/wav"
+        if data.startswith(b'fLaC'):
+            return "audio/flac"
+        if len(data) >= 8 and data[4:8] == b'ftyp':
+            brand = data[8:12]
+            if brand in (b'M4A ', b'M4B ', b'mp41', b'mp42', b'isom', b'dash'):
+                return "audio/mp4"
+        if len(data) >= 4 and data[:4] == b'\x1a\x45\xdf\xa3':
+            return "audio/webm"
+        if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xF6) == 0xF0:
+            return "audio/aac"
+
+    if filename:
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in ('.ogg', '.opus', '.oga', '.spx'):
+            return "audio/ogg"
+        if ext in ('.mp3', '.mp2', '.mp1'):
+            return "audio/mp3"
+        if ext in ('.m4a', '.mp4a'):
+            return "audio/mp4"
+        if ext in ('.aac',):
+            return "audio/aac"
+        if ext in ('.wav', '.wave'):
+            return "audio/wav"
+        if ext in ('.flac',):
+            return "audio/flac"
+        if ext in ('.weba',):
+            return "audio/webm"
+        if ext in ('.aiff', '.aif', '.aifc'):
+            return "audio/aiff"
+        if ext in ('.wma',):
+            return "audio/x-ms-wma"
+
+    return None
+
+MAX_MEDIA_BYTES = 20 * 1024 * 1024  # 20 MB limit
+
+class MediaTooLargeError(Exception):
+    """Raised when an audio or image attachment exceeds the 20 MB limit."""
+    pass
+
 def _get_int_field(obj, *keys) -> int | None:
     """Safely extract integer field from object or dict."""
     if not obj:
@@ -488,50 +558,78 @@ def _get_int_field(obj, *keys) -> int | None:
             return int(val)
     return None
 
-def _download_and_read_msg_file(bot, accid, msg, timeout: float = 15.0) -> tuple[bytes | None, str]:
-    """Ensures a message's attachment is downloaded and reads its bytes."""
+def _download_and_read_media_file(bot, accid, msg, timeout: float = 30.0) -> tuple[bytes | None, str | None, str | None]:
+    """Ensures a message's attachment (image or audio) is downloaded and reads its bytes.
+    Returns: (data, mime, media_type) where media_type is 'image', 'audio', or None.
+    Raises MediaTooLargeError if the file exceeds MAX_MEDIA_BYTES (20 MB).
+    """
     if not msg:
-        return None, "image/jpeg"
+        return None, None, None
+
+    # Fast size rejection if message already knows file_bytes
+    raw_fb = getattr(msg, "file_bytes", None) if not isinstance(msg, dict) else msg.get("file_bytes")
+    file_bytes = raw_fb if isinstance(raw_fb, int) and not isinstance(raw_fb, bool) else 0
+    if file_bytes > MAX_MEDIA_BYTES:
+        raise MediaTooLargeError(f"Attachment size ({file_bytes} bytes) exceeds the 20 MB limit.")
+
+    raw_declared_mime = getattr(msg, "file_mime", None) if not isinstance(msg, dict) else msg.get("file_mime")
+    declared_mime = raw_declared_mime if isinstance(raw_declared_mime, str) else ""
 
     # 1. If file path is already present and exists, read it
     file_path = getattr(msg, "file", None) if not isinstance(msg, dict) else msg.get("file")
     if isinstance(file_path, (str, bytes, os.PathLike)) and os.path.exists(file_path):
         try:
+            sz = os.path.getsize(file_path)
+            if sz > MAX_MEDIA_BYTES:
+                raise MediaTooLargeError(f"Attachment size ({sz} bytes) exceeds the 20 MB limit.")
             with open(file_path, "rb") as f:
-                data = f.read(16 * 1024 * 1024)
-            mime = _detect_image_mime(data, str(file_path))
-            if mime:
-                return data, mime
+                data = f.read(MAX_MEDIA_BYTES + 1)
+            if len(data) > MAX_MEDIA_BYTES:
+                raise MediaTooLargeError("Attachment size exceeds the 20 MB limit.")
+
+            img_mime = _detect_image_mime(data, str(file_path))
+            if img_mime:
+                return data, img_mime, "image"
+            aud_mime = _detect_audio_mime(data, str(file_path), declared_mime=declared_mime)
+            if aud_mime:
+                return data, aud_mime, "audio"
+        except MediaTooLargeError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to read image file from message: {e}")
+            logger.warning(f"Failed to read media file from message: {e}")
 
     # 2. Check if we can trigger an on-demand download via RPC
     msg_id = _get_int_field(msg, "id", "message_id", "messageId")
     if not msg_id or not bot or not hasattr(bot, "rpc"):
-        return None, "image/jpeg"
+        return None, None, None
 
     raw_vt = getattr(msg, "view_type", None) if not isinstance(msg, dict) else msg.get("view_type")
-    view_type = raw_vt.lower() if isinstance(raw_vt, str) else ""
+    if isinstance(raw_vt, str):
+        view_type = raw_vt.lower()
+    elif isinstance(raw_vt, int) and not isinstance(raw_vt, bool):
+        view_type = str(raw_vt)
+    else:
+        view_type = ""
 
     raw_fn = getattr(msg, "file_name", None) if not isinstance(msg, dict) else msg.get("file_name")
     file_name = raw_fn.lower() if isinstance(raw_fn, str) else ""
 
-    raw_fb = getattr(msg, "file_bytes", None) if not isinstance(msg, dict) else msg.get("file_bytes")
-    file_bytes = raw_fb if isinstance(raw_fb, int) and not isinstance(raw_fb, bool) else 0
-
     raw_ds = getattr(msg, "download_state", None) if not isinstance(msg, dict) else msg.get("download_state")
     d_state = raw_ds.lower() if isinstance(raw_ds, str) else ""
 
-    has_potential_image = (
-        any(t in view_type for t in ("image", "gif", "sticker", "file", "2", "3", "4", "5"))
-        or any(file_name.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic"))
+    has_potential_media = (
+        any(t in view_type for t in ("image", "gif", "sticker", "file", "audio", "voice", "2", "3", "4", "5", "40", "50", "51"))
+        or any(file_name.endswith(ext) for ext in (
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic",
+            ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav", ".flac", ".weba", ".oga", ".aiff"
+        ))
         or file_bytes > 0
         or d_state in ("available", "inprogress")
         or isinstance(file_path, (str, bytes, os.PathLike))
     )
 
-    if not has_potential_image:
-        return None, "image/jpeg"
+    if not has_potential_media:
+        return None, None, None
 
     try:
         if hasattr(bot.rpc, "download_full_message"):
@@ -545,31 +643,62 @@ def _download_and_read_msg_file(bot, accid, msg, timeout: float = 15.0) -> tuple
     while time.time() - start_time < timeout:
         try:
             curr_msg = bot.rpc.get_message(accid, msg_id)
+            cur_fb = getattr(curr_msg, "file_bytes", None) if not isinstance(curr_msg, dict) else curr_msg.get("file_bytes")
+            if isinstance(cur_fb, int) and not isinstance(cur_fb, bool) and cur_fb > MAX_MEDIA_BYTES:
+                raise MediaTooLargeError(f"Attachment size ({cur_fb} bytes) exceeds the 20 MB limit.")
+
             cur_path = getattr(curr_msg, "file", None) if not isinstance(curr_msg, dict) else curr_msg.get("file")
             if isinstance(cur_path, (str, bytes, os.PathLike)) and os.path.exists(cur_path):
+                sz = os.path.getsize(cur_path)
+                if sz > MAX_MEDIA_BYTES:
+                    raise MediaTooLargeError(f"Attachment size ({sz} bytes) exceeds the 20 MB limit.")
                 with open(cur_path, "rb") as f:
-                    data = f.read(16 * 1024 * 1024)
-                mime = _detect_image_mime(data, str(cur_path))
-                if mime:
-                    return data, mime
+                    data = f.read(MAX_MEDIA_BYTES + 1)
+                if len(data) > MAX_MEDIA_BYTES:
+                    raise MediaTooLargeError("Attachment size exceeds the 20 MB limit.")
+
+                cur_dec_mime = getattr(curr_msg, "file_mime", None) if not isinstance(curr_msg, dict) else curr_msg.get("file_mime")
+                img_mime = _detect_image_mime(data, str(cur_path))
+                if img_mime:
+                    return data, img_mime, "image"
+                aud_mime = _detect_audio_mime(data, str(cur_path), declared_mime=cur_dec_mime or declared_mime)
+                if aud_mime:
+                    return data, aud_mime, "audio"
+
             raw_cur_ds = getattr(curr_msg, "download_state", None) if not isinstance(curr_msg, dict) else curr_msg.get("download_state")
             cur_d_state = raw_cur_ds.lower() if isinstance(raw_cur_ds, str) else ""
             if cur_d_state == "failure":
                 logger.warning(f"Download failed for msg {msg_id}")
                 break
+        except MediaTooLargeError:
+            raise
         except Exception as e:
             logger.warning(f"Error while polling downloaded msg {msg_id}: {e}")
             break
         time.sleep(0.3)
 
+    return None, None, None
+
+def _download_and_read_msg_file(bot, accid, msg, timeout: float = 30.0) -> tuple[bytes | None, str]:
+    """Backward-compatible helper ensuring attachment is downloaded and returning image tuple."""
+    try:
+        data, mime, mtype = _download_and_read_media_file(bot, accid, msg, timeout=timeout)
+        if data and mtype == "image":
+            return data, mime or "image/jpeg"
+    except MediaTooLargeError:
+        raise
+    except Exception:
+        pass
     return None, "image/jpeg"
 
-def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str]:
-    """Extract image bytes and mime type from direct message attachment, quoted message, or parent reply."""
-    # 1. Check direct message attachment (and download on-demand if needed)
-    data, mime = _download_and_read_msg_file(bot, accid, msg)
+def _extract_media_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str | None, str | None]:
+    """Extract media bytes, mime type, and media type ('image' or 'audio') from direct attachment, quote, or parent reply.
+    Raises MediaTooLargeError if media exceeds MAX_MEDIA_BYTES.
+    """
+    # 1. Check direct message attachment
+    data, mime, mtype = _download_and_read_media_file(bot, accid, msg, timeout=30.0)
     if data:
-        return data, mime
+        return data, mime, mtype
 
     # 2. Check quote image or quoted message
     quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
@@ -577,37 +706,72 @@ def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
         quote_img = getattr(quote, "image", None) or (quote.get("image") if isinstance(quote, dict) else None)
         if quote_img and isinstance(quote_img, (str, bytes, os.PathLike)) and os.path.exists(quote_img):
             try:
+                sz = os.path.getsize(quote_img)
+                if sz > MAX_MEDIA_BYTES:
+                    raise MediaTooLargeError("Quoted attachment size exceeds 20 MB limit.")
                 with open(quote_img, "rb") as f:
-                    data = f.read(16 * 1024 * 1024)
+                    data = f.read(MAX_MEDIA_BYTES + 1)
+                if len(data) > MAX_MEDIA_BYTES:
+                    raise MediaTooLargeError("Quoted attachment size exceeds 20 MB limit.")
                 mime = _detect_image_mime(data, str(quote_img))
                 if mime:
-                    return data, mime
+                    return data, mime, "image"
+            except MediaTooLargeError:
+                raise
             except Exception as e:
                 logger.warning(f"Failed to read image file from quote: {e}")
 
-        # Check quoted message ID via RPC (and download on-demand if needed)
+        # Check quoted message ID via RPC
         quote_msg_id = _get_int_field(quote, "message_id", "messageId")
         if quote_msg_id and bot and hasattr(bot, "rpc"):
             try:
                 q_msg = bot.rpc.get_message(accid, quote_msg_id)
-                data, mime = _download_and_read_msg_file(bot, accid, q_msg)
+                data, mime, mtype = _download_and_read_media_file(bot, accid, q_msg, timeout=30.0)
                 if data:
-                    return data, mime
+                    return data, mime, mtype
+            except MediaTooLargeError:
+                raise
             except Exception as e:
-                logger.warning(f"Failed to fetch quoted message for image extraction: {e}")
+                logger.warning(f"Failed to fetch quoted message for media extraction: {e}")
 
-    # 3. Fallback: check parent message if message is a reply (and download on-demand if needed)
+    # 3. Fallback: check parent message if message is a reply
     parent_id = _get_int_field(msg, "parent_id", "parentId")
     if parent_id and bot and hasattr(bot, "rpc"):
         try:
             p_msg = bot.rpc.get_message(accid, parent_id)
-            data, mime = _download_and_read_msg_file(bot, accid, p_msg)
+            data, mime, mtype = _download_and_read_media_file(bot, accid, p_msg, timeout=30.0)
             if data:
-                return data, mime
+                return data, mime, mtype
+        except MediaTooLargeError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to fetch parent message for image extraction: {e}")
+            logger.warning(f"Failed to fetch parent message for media extraction: {e}")
 
+    return None, None, None
+
+def _extract_image_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str]:
+    """Extract image bytes and mime type from direct message attachment, quoted message, or parent reply."""
+    try:
+        data, mime, mtype = _extract_media_from_msg_or_quote(bot, accid, msg)
+        if data and mtype == "image":
+            return data, mime or "image/jpeg"
+    except MediaTooLargeError:
+        raise
+    except Exception:
+        pass
     return None, "image/jpeg"
+
+def _extract_audio_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str | None]:
+    """Extract audio bytes and mime type from direct message attachment, quoted message, or parent reply."""
+    try:
+        data, mime, mtype = _extract_media_from_msg_or_quote(bot, accid, msg)
+        if data and mtype == "audio":
+            return data, mime or "audio/ogg"
+    except MediaTooLargeError:
+        raise
+    except Exception:
+        pass
+    return None, None
 
 def _call_gemini_api(
     prompt: str,
@@ -615,9 +779,14 @@ def _call_gemini_api(
     temperature: float = 0.3,
     image_bytes: bytes | None = None,
     image_mime: str = "image/jpeg",
+    media_bytes: bytes | None = None,
+    media_mime: str | None = None,
 ) -> str | None:
     """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging."""
-    if not GEMINI_API_KEY or (not prompt and not image_bytes):
+    target_media_bytes = media_bytes if media_bytes is not None else image_bytes
+    target_media_mime = media_mime or image_mime or "image/jpeg"
+
+    if not GEMINI_API_KEY or (not prompt and not target_media_bytes):
         return None
 
     now = time.time()
@@ -625,8 +794,8 @@ def _call_gemini_api(
     if not active_models:
         active_models = list(GEMINI_MODELS)
 
-    # When image is present, only query multimodal models (skip text-only Gemma models)
-    if image_bytes:
+    # When media (image or audio) is present, only query multimodal models (skip text-only Gemma models)
+    if target_media_bytes:
         mm_active = [m for m in active_models if not m.startswith("gemma-")]
         if mm_active:
             active_models = mm_active
@@ -639,12 +808,12 @@ def _call_gemini_api(
         parts = []
         if prompt:
             parts.append({"text": prompt})
-        if image_bytes:
-            b64_img = base64.b64encode(image_bytes).decode("utf-8")
+        if target_media_bytes:
+            b64_data = base64.b64encode(target_media_bytes).decode("utf-8")
             parts.append({
                 "inline_data": {
-                    "mime_type": image_mime or "image/jpeg",
-                    "data": b64_img
+                    "mime_type": target_media_mime,
+                    "data": b64_data
                 }
             })
 
@@ -749,6 +918,55 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         database.add_cached_tldr(cache_key, res_text)
     return res_text
 
+def _summarize_audio_with_gemini(
+    audio_bytes: bytes,
+    audio_mime: str = "audio/ogg",
+    target_lang: str = "AUTO",
+    user_prompt: str | None = None,
+    cache_key: str | None = None,
+) -> str | None:
+    """Summarizes audio/voice message using Google Gemini API with 24h caching."""
+    if not GEMINI_API_KEY or not audio_bytes:
+        return None
+
+    lang_str = target_lang.strip().upper()
+    full_cache_key = None
+    if cache_key:
+        full_cache_key = f"tldr_{cache_key}_{lang_str.lower()}"
+        cached = database.get_cached_tldr(full_cache_key)
+        if cached:
+            logger.info(f"Returning cached audio TL;DR summary for {full_cache_key}")
+            return cached
+
+    if lang_str in ("AUTO", ""):
+        lang_instruction = "the language spoken in the audio"
+    else:
+        lang_instruction = lang_str
+
+    if user_prompt and user_prompt.strip():
+        prompt = (
+            f"Listen to the provided audio / voice message and summarize it in {lang_instruction} according to the following instruction: {user_prompt.strip()}\n"
+            "Highlight the key points, decisions, questions, or action items clearly and concisely (in 1-3 paragraphs or key bullet points). "
+            "Do not include meta-commentary, introductory filler, or conversational preamble, output the summary directly."
+        )
+    else:
+        prompt = (
+            f"Listen to the provided audio / voice message and provide a concise, informative summary (TL;DR) of its content in {lang_instruction}. "
+            "Highlight the main topic, key points, decisions, questions, or action items (in 1-3 concise paragraphs or key bullet points). "
+            "Do not include meta-commentary, introductory filler, or conversational preamble, output the summary directly."
+        )
+
+    res_text = _call_gemini_api(
+        prompt,
+        max_tokens=4096,
+        temperature=0.3,
+        media_bytes=audio_bytes,
+        media_mime=audio_mime,
+    )
+    if res_text and full_cache_key:
+        database.add_cached_tldr(full_cache_key, res_text)
+    return res_text
+
 def _ask_gemini_ai(
     query: str,
     context: str | None = None,
@@ -756,11 +974,21 @@ def _ask_gemini_ai(
     query_key: str | None = None,
     image_bytes: bytes | None = None,
     image_mime: str = "image/jpeg",
+    media_bytes: bytes | None = None,
+    media_mime: str | None = None,
+    media_type: str | None = None,
+    audio_bytes: bytes | None = None,
+    audio_mime: str = "audio/ogg",
 ) -> str | None:
-    """Answers a question, explains a topic, or analyzes an image using Google Gemini API with 24h caching."""
+    """Answers a question, explains a topic, analyzes an image, or transcribes audio using Google Gemini API with 24h caching."""
     if not GEMINI_API_KEY:
         return None
-    if not query and not image_bytes and not context:
+
+    target_media_bytes = media_bytes if media_bytes is not None else (audio_bytes if audio_bytes is not None else image_bytes)
+    target_media_mime = media_mime or (audio_mime if audio_bytes is not None else image_mime) or "image/jpeg"
+    target_media_type = media_type or ("audio" if audio_bytes is not None else ("image" if image_bytes is not None else None))
+
+    if not query and not target_media_bytes and not context:
         return None
 
     clean_query = query.strip() if query else ""
@@ -776,11 +1004,29 @@ def _ask_gemini_ai(
             return cached
 
     if lang_str in ("AUTO", ""):
-        lang_instruction = "the language of the question/topic"
+        lang_instruction = "the language of the question/topic or spoken in the audio"
     else:
         lang_instruction = lang_str
 
-    if image_bytes:
+    if target_media_type == "audio":
+        if not clean_query or len(clean_query) < 2:
+            prompt = (
+                f"Listen to the provided audio / voice message and provide a clear transcription and concise overview of what is said in {lang_instruction}.\n"
+                "If the speech is short, provide the full transcription; if it is longer, provide the transcription along with key points.\n"
+                "Provide a direct, accurate response without meta-commentary, introductory filler, or conversational preamble. Output the answer directly."
+            )
+            if clean_context:
+                prompt += f"\n\nAdditional Context:\n{clean_context[:8000]}"
+        else:
+            prompt = (
+                f"Listen to the provided audio / voice message and answer the following question or explain the topic in {lang_instruction}.\n"
+                "Keep the answer as concise as appropriate: if the question calls for a direct, short answer, answer concisely; if it requires detailed explanation, provide an informative response of up to 2-3 paragraphs maximum.\n"
+                "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler. Output the answer directly:\n\n"
+                f"Question / Request:\n{clean_query}"
+            )
+            if clean_context:
+                prompt += f"\n\nContext:\n{clean_context[:8000]}"
+    elif target_media_type == "image":
         if not clean_query or len(clean_query) < 2:
             prompt = (
                 f"Analyze what is depicted in this image in {lang_instruction}.\n"
@@ -819,8 +1065,8 @@ def _ask_gemini_ai(
         prompt,
         max_tokens=4096,
         temperature=0.4,
-        image_bytes=image_bytes,
-        image_mime=image_mime,
+        media_bytes=target_media_bytes,
+        media_mime=target_media_mime,
     )
     if res_text and cache_key:
         database.add_cached_tldr(cache_key, res_text)
@@ -4712,8 +4958,64 @@ def _do_tldr_text(bot, accid, chat_id, req_msg_id, from_id, text: str):
         _send(bot, accid, chat_id, f"❌ Error generating summary: {e}")
 
 
+def _do_tldr_audio(
+    bot,
+    accid,
+    chat_id,
+    req_msg_id,
+    from_id,
+    audio_bytes: bytes,
+    audio_mime: str = "audio/ogg",
+    user_prompt: str | None = None,
+):
+    """Processes TL;DR summarization for audio/voice message in background thread."""
+    if not GEMINI_API_KEY:
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id,
+              "❌ `GEMINI_API_KEY` is not configured.\n"
+              "Please add your Google Gemini API key to `.env` to enable summarization.")
+        return
+
+    if len(audio_bytes) > MAX_MEDIA_BYTES:
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, "❌ Audio file is too large to summarize (maximum 20 MB).")
+        return
+
+    _react(bot, accid, req_msg_id, "⏳")
+
+    try:
+        lang = database.get_chat_lang(chat_id)
+        audio_hash = f"audio_{hashlib.sha256(audio_bytes).hexdigest()[:16]}"
+        prompt_hash = f"_{hashlib.sha256(user_prompt.encode('utf-8')).hexdigest()[:8]}" if user_prompt else ""
+        cache_key = f"{audio_hash}{prompt_hash}"
+
+        summary = _summarize_audio_with_gemini(
+            audio_bytes,
+            audio_mime=audio_mime,
+            target_lang=lang,
+            user_prompt=user_prompt,
+            cache_key=cache_key
+        )
+
+        if not summary:
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, "❌ Failed to generate audio summary via Gemini API.")
+            return
+
+        lang_suffix = f" ({lang})" if lang != "AUTO" else ""
+        reply = f"⚡ **TL;DR (Audio)**{lang_suffix}:\n\n{summary}"
+
+        _send(bot, accid, chat_id, reply)
+        _react(bot, accid, req_msg_id, "☑️")
+        database.add_preview_log(chat_id, from_id, "voice_message", "Voice/Audio Summary", len(summary), 0)
+    except Exception as e:
+        logger.error(f"Error in audio /tldr summarization: {e}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, f"❌ Error generating summary: {e}")
+
+
 def _handle_tldr_command(bot, accid, event):
-    """Processes /tldr command to generate AI summary of an article or message."""
+    """Processes /tldr command to generate AI summary of an article, message, or voice/audio message."""
     msg = event.msg
     if _is_duplicate_msg(msg.id, "tldr"):
         return
@@ -4738,7 +5040,23 @@ def _handle_tldr_command(bot, accid, event):
         t.start()
         return
 
-    # No URL found: check for quoted text or text payload to summarize directly
+    # Check for audio / voice message attachment or quote/reply
+    try:
+        audio_bytes, audio_mime = _extract_audio_from_msg_or_quote(bot, accid, msg)
+        if audio_bytes:
+            t = threading.Thread(
+                target=_do_tldr_audio,
+                args=(bot, accid, msg.chat_id, msg.id, msg.from_id, audio_bytes, audio_mime or "audio/ogg", payload or None),
+                daemon=True
+            )
+            t.start()
+            return
+    except MediaTooLargeError:
+        _react(bot, accid, msg.id, "❌")
+        _send(bot, accid, msg.chat_id, "❌ Audio file is too large to summarize (maximum 20 MB).")
+        return
+
+    # No URL and no audio: check for quoted text or text payload to summarize directly
     quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
     text_to_summarize = ""
     if quote:
@@ -4768,7 +5086,7 @@ def _handle_tldr_command(bot, accid, event):
     _send(bot, accid, msg.chat_id,
           "Usage:\n"
           "• `/tldr <url>` — Generate article summary (TL;DR)\n"
-          "• Reply `/tldr` to any message or link to summarize it.")
+          "• Reply `/tldr` to any message, link, or voice/audio message to summarize it ⚡")
 
 def _do_ai_query(
     bot,
@@ -4782,6 +5100,11 @@ def _do_ai_query(
     title: str | None = None,
     image_bytes: bytes | None = None,
     image_mime: str = "image/jpeg",
+    media_bytes: bytes | None = None,
+    media_mime: str | None = None,
+    media_type: str | None = None,
+    audio_bytes: bytes | None = None,
+    audio_mime: str = "audio/ogg",
 ):
     """Processes AI query in background thread."""
     if not GEMINI_API_KEY:
@@ -4791,12 +5114,21 @@ def _do_ai_query(
               "Please add your Google Gemini API key to `.env` to enable AI queries.")
         return
 
+    target_media_bytes = media_bytes if media_bytes is not None else (audio_bytes if audio_bytes is not None else image_bytes)
+    target_media_mime = media_mime or (audio_mime if audio_bytes is not None else image_mime) or "image/jpeg"
+    target_media_type = media_type or ("audio" if audio_bytes is not None else ("image" if image_bytes is not None else None))
+
+    if target_media_bytes and len(target_media_bytes) > MAX_MEDIA_BYTES:
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, "❌ Media file is too large to process (maximum 20 MB).")
+        return
+
     _react(bot, accid, req_msg_id, "⏳")
 
     try:
         lang = database.get_chat_lang(chat_id)
-        img_hash = hashlib.sha256(image_bytes).hexdigest()[:16] if image_bytes else ""
-        raw_key = f"{prompt}:{context or ''}:{url or ''}:{img_hash}"
+        media_hash = hashlib.sha256(target_media_bytes).hexdigest()[:16] if target_media_bytes else ""
+        raw_key = f"{prompt}:{context or ''}:{url or ''}:{media_hash}:{target_media_type or ''}"
         query_key = hashlib.sha256(raw_key.encode('utf-8')).hexdigest()[:16]
 
         answer = _ask_gemini_ai(
@@ -4804,8 +5136,11 @@ def _do_ai_query(
             context=context,
             target_lang=lang,
             query_key=query_key,
-            image_bytes=image_bytes,
-            image_mime=image_mime,
+            image_bytes=target_media_bytes if target_media_type == "image" else None,
+            image_mime=target_media_mime,
+            media_bytes=target_media_bytes,
+            media_mime=target_media_mime,
+            media_type=target_media_type,
         )
 
         if not answer:
@@ -4822,9 +5157,28 @@ def _do_ai_query(
 
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")
-        log_url = url or ("ai_image" if image_bytes else "ai_query")
-        log_title = title or ("AI Vision Query" if image_bytes else "AI Query")
-        database.add_preview_log(chat_id, from_id, log_url, log_title, len(answer), len(image_bytes) if image_bytes else 0)
+
+        if url:
+            log_url = url
+            log_title = title or "AI URL Query"
+        elif target_media_type == "image":
+            log_url = "ai_image"
+            log_title = title or "AI Vision Query"
+        elif target_media_type == "audio":
+            log_url = "ai_audio"
+            log_title = title or "AI Audio Query"
+        else:
+            log_url = "ai_query"
+            log_title = title or "AI Query"
+
+        database.add_preview_log(
+            chat_id,
+            from_id,
+            log_url,
+            log_title,
+            len(answer),
+            len(target_media_bytes) if target_media_bytes else 0
+        )
     except Exception as e:
         logger.error(f"Error in /ai query: {e}")
         _react(bot, accid, req_msg_id, "❌")
@@ -4832,7 +5186,7 @@ def _do_ai_query(
 
 
 def _handle_ai_command(bot, accid, event):
-    """Processes /ai command to answer a question, analyze topic, or inspect an image."""
+    """Processes /ai command to answer a question, analyze topic, inspect an image, or transcribe audio."""
     msg = event.msg
     if _is_duplicate_msg(msg.id, "ai"):
         return
@@ -4880,7 +5234,7 @@ def _handle_ai_command(bot, accid, event):
 
         def _do_ai_with_url():
             try:
-                image_bytes, image_mime = _extract_image_from_msg_or_quote(bot, accid, msg)
+                media_bytes, media_mime, media_type = _extract_media_from_msg_or_quote(bot, accid, msg)
                 urlhash = database.get_or_create_url_hash(url)
                 cached_og = database.get_cached_og(urlhash)
                 title = cached_og.get("title") if cached_og else None
@@ -4909,22 +5263,36 @@ def _handle_ai_command(bot, accid, event):
                 _do_ai_query(
                     bot, accid, msg.chat_id, msg.id, msg.from_id,
                     prompt=prompt, context=ctx, url=url, title=title,
-                    image_bytes=image_bytes, image_mime=image_mime
+                    media_bytes=media_bytes, media_mime=media_mime, media_type=media_type,
+                    image_bytes=media_bytes if media_type == "image" else None,
+                    image_mime=media_mime if media_type == "image" else "image/jpeg",
                 )
+            except MediaTooLargeError:
+                _react(bot, accid, msg.id, "❌")
+                _send(bot, accid, msg.chat_id, "❌ Media file is too large to process (maximum 20 MB).")
             except Exception as err:
                 logger.error(f"Error in URL handling for /ai: {err}")
                 _do_ai_query(
                     bot, accid, msg.chat_id, msg.id, msg.from_id,
                     prompt=prompt, context=quote_text or None, url=url,
-                    image_bytes=image_bytes, image_mime=image_mime
+                    media_bytes=media_bytes if 'media_bytes' in locals() else None,
+                    media_mime=media_mime if 'media_mime' in locals() else None,
+                    media_type=media_type if 'media_type' in locals() else None,
+                    image_bytes=media_bytes if ('media_bytes' in locals() and locals().get('media_type') == "image") else None,
+                    image_mime=media_mime if ('media_mime' in locals() and locals().get('media_type') == "image") else "image/jpeg",
                 )
 
         threading.Thread(target=_do_ai_with_url, daemon=True).start()
         return
 
-    # No URL: run background thread for prompt / quote / image processing
+    # No URL: run background thread for prompt / quote / media processing
     def _do_ai_async():
-        image_bytes, image_mime = _extract_image_from_msg_or_quote(bot, accid, msg)
+        try:
+            media_bytes, media_mime, media_type = _extract_media_from_msg_or_quote(bot, accid, msg)
+        except MediaTooLargeError:
+            _react(bot, accid, msg.id, "❌")
+            _send(bot, accid, msg.chat_id, "❌ Media file is too large to process (maximum 20 MB).")
+            return
 
         if payload and quote_text:
             prompt = payload
@@ -4935,7 +5303,7 @@ def _handle_ai_command(bot, accid, event):
         elif quote_text:
             prompt = quote_text
             context = None
-        elif image_bytes:
+        elif media_bytes:
             prompt = ""
             context = None
         else:
@@ -4943,10 +5311,11 @@ def _handle_ai_command(bot, accid, event):
                   "Usage:\n"
                   "• `/ai <question or topic>` — Ask AI a question or analyze a topic 🤖\n"
                   "• Send or reply `/ai` to a photo/image to analyze or describe it 🖼️\n"
+                  "• Send or reply `/ai` to a voice/audio message to transcribe or ask questions 🎙️\n"
                   "• Reply `/ai` to any message or link to answer or explain it.")
             return
 
-        if not image_bytes and len(prompt.strip()) < 2:
+        if not media_bytes and len(prompt.strip()) < 2:
             _send(bot, accid, msg.chat_id, "❌ Please provide a question or topic to ask AI.")
             return
 
@@ -4958,8 +5327,11 @@ def _handle_ai_command(bot, accid, event):
             msg.from_id,
             prompt,
             context,
-            image_bytes=image_bytes,
-            image_mime=image_mime,
+            media_bytes=media_bytes,
+            media_mime=media_mime,
+            media_type=media_type,
+            image_bytes=media_bytes if media_type == "image" else None,
+            image_mime=media_mime if media_type == "image" else "image/jpeg",
         )
 
     threading.Thread(target=_do_ai_async, daemon=True).start()
@@ -5201,8 +5573,8 @@ def get_help_text(bot, accid, from_id):
         f"/preview <url> — Generate compressed reader-mode page (recommended)\n"
         f"/webxdc <url> — Generate WebXDC app from webpage 📱\n"
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
-        f"/tldr [url] — Generate AI summary of article or quoted message ⚡\n"
-        f"/ai [text] — Ask AI a question, explain topic, or analyze photo/image 🤖\n"
+        f"/tldr [url] — Generate AI summary of article, quoted text, or voice message ⚡\n"
+        f"/ai [text] — Ask AI a question, transcribe voice, or analyze photo 🤖\n"
         f"/lang [code] — Set summary language for this chat (e.g. /lang RU) 🌐\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/stats — View bot generation statistics\n"

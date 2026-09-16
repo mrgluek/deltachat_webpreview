@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.10.0"
+VERSION = "2.10.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -1387,10 +1387,27 @@ def _is_valid_image_url(image_url: str | None) -> bool:
             try:
                 ip_str = host.strip("[]")
                 ip = ipaddress.ip_address(ip_str)
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+                    ip = ip.ipv4_mapped
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
                     return False
             except ValueError:
                 # Not an IP address
+                pass
+
+            # DNS resolution check (prevent DNS rebinding to internal/private IPs)
+            try:
+                ascii_host = host.encode("idna").decode("ascii")
+                addr_info = socket.getaddrinfo(ascii_host, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+                for _, _, _, _, sockaddr in addr_info:
+                    resolved_ip_str = sockaddr[0]
+                    resolved_ip = ipaddress.ip_address(resolved_ip_str)
+                    if isinstance(resolved_ip, ipaddress.IPv6Address) and resolved_ip.ipv4_mapped:
+                        resolved_ip = resolved_ip.ipv4_mapped
+                    if (resolved_ip.is_private or resolved_ip.is_loopback or resolved_ip.is_link_local or
+                            resolved_ip.is_reserved or resolved_ip.is_multicast or resolved_ip.is_unspecified):
+                        return False
+            except (socket.gaierror, socket.herror, UnicodeError, OSError):
                 pass
 
         # Reject SVG images
@@ -4498,6 +4515,11 @@ def _handle_keep_command(bot, accid, event):
               f"Usage:\n"
               f"• `/keep <url>` — Save URL to {target_service}\n"
               f"• Reply `/keep` to any message containing a link.")
+        return
+
+    if _is_internal_or_invalid_url(url):
+        _react(bot, accid, msg.id, "❌")
+        _send(bot, accid, msg.chat_id, "❌ Failed to process URL.\nReason: Local, internal, or invalid host/IP address.")
         return
 
     _react(bot, accid, msg.id, "🏛️" if not (_is_dc_admin(bot, accid, msg.from_id) and _karakeep_enabled()) else "🔖")

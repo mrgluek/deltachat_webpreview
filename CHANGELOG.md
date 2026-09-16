@@ -2,6 +2,16 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.10.1] - 2026-09-16
+
+### Security
+- **Image URL SSRF & DNS Rebinding Hardening (`_is_valid_image_url`)**:
+  - Added DNS resolution checks and IPv6-mapped IPv4 checks to `_is_valid_image_url()` ensuring candidate preview image hosts do not resolve to private, loopback, link-local, cloud metadata, or reserved IP ranges.
+- **Archive Command URL Protection (`/keep`)**:
+  - Enforced `_is_internal_or_invalid_url` check in `_handle_keep_command` to reject attempts to archive local, internal, or private endpoints.
+- **Dependency Pinning**:
+  - Pinned `qrcode>=7.4.2,<8.0.0`, `readability-lxml>=0.8.1,<1.0.0`, `beautifulsoup4>=4.12.3,<5.0.0`, `Pillow>=10.4.0,<11.0.0`, and `lxml>=5.2.0,<6.0.0` in `requirements.txt`.
+
 ## [2.10.0] - 2026-09-09
 
 ### Security

@@ -116,5 +116,34 @@ class TestUrlValidation(unittest.TestCase):
             handler.redirect_request(req, None, 302, "Found", {}, "/secret")
 
 
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_image_url_dns_resolving_to_private_ip(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (2, 1, 6, "", ("10.0.0.1", 80))
+        ]
+        self.assertFalse(bot._is_valid_image_url("https://malicious-cdn.org/avatar.jpg"))
+
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_image_url_dns_resolving_to_loopback_ip(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (2, 1, 6, "", ("127.0.0.1", 80))
+        ]
+        self.assertFalse(bot._is_valid_image_url("https://rebinding.evil.org/photo.png"))
+
+    def test_keep_command_rejects_internal_urls(self):
+        mock_bot = unittest.mock.MagicMock()
+        mock_event = unittest.mock.MagicMock()
+        mock_event.msg.id = 100
+        mock_event.msg.chat_id = 200
+        mock_event.msg.from_id = 300
+        mock_event.payload = "http://127.0.0.1:8080/admin"
+
+        bot._handle_keep_command(mock_bot, 1, mock_event)
+        mock_bot.rpc.send_reaction.assert_called_with(1, 100, ["❌"])
+        sent_text = mock_bot.rpc.send_msg.call_args[0][2].text
+        self.assertIn("Local, internal, or invalid", sent_text)
+
+
 if __name__ == "__main__":
     unittest.main()
+

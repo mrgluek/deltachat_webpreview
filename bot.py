@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.11.0"
+VERSION = "2.12.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -2375,6 +2375,43 @@ def _is_handled_by_yt_bot(url: str) -> bool:
     ]
     if any(domain in url_lower for domain in other_media_domains):
         return True
+    return False
+
+def _is_tg_bridge_in_chat(bot, accid, chat_id) -> bool:
+    """Check if the Telegram Bridge bot is present in the specified chat."""
+    try:
+        contacts = bot.rpc.get_chat_contacts(accid, chat_id)
+        if not contacts:
+            return False
+        for contact_id in contacts:
+            if contact_id <= 9:  # Skip system contacts
+                continue
+            contact = bot.rpc.get_contact(accid, contact_id)
+            display_name = getattr(contact, "display_name", "") or getattr(contact, "displayname", "")
+            if not display_name and hasattr(contact, "get"):
+                display_name = contact.get("display_name") or contact.get("displayname") or ""
+            
+            display_name_str = str(display_name).lower()
+            if "tg bridge" in display_name_str or "telegram bridge" in display_name_str:
+                return True
+    except Exception as e:
+        logger.warning(f"Error checking if TG Bridge is in chat: {e}")
+    return False
+
+def _is_telegram_post_url(url: str) -> bool:
+    """Return True if the URL points to a specific Telegram channel post."""
+    if not _is_telegram_url(url):
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path.lstrip("/")
+        if path.startswith("s/"):
+            path = path[2:]
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 2 and parts[1].isdigit() and parts[0].lower() != "c":
+            return True
+    except Exception:
+        pass
     return False
 
 # ── Message sending helpers with Failover and Stats ──
@@ -6315,6 +6352,12 @@ def on_new_message(bot, accid, event):
                             _send(bot, accid, msg.chat_id, yt_link)
                             return
                     
+                # Skip if TG Bridge is in the chat and this is a specific Telegram post
+                if _is_tg_bridge_in_chat(bot, accid, msg.chat_id):
+                    if _is_telegram_post_url(url):
+                        logger.info(f"Skipping link auto-preview for {url} since TG Bridge is present and handles it.")
+                        return
+
                 # Rate limiting check
                 if _is_rate_limited(bot, accid, msg.from_id):
                     if is_private:

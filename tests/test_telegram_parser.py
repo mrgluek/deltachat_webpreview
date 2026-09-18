@@ -162,5 +162,82 @@ class TestGetOgPreviewDataTelegramEarlyReturn(unittest.TestCase):
             mock_urlopen.assert_called()
 
 
+class TestTgBridgeDelegation(unittest.TestCase):
+    """Verify delegation of Telegram post links to TG Bridge when present in chat."""
+
+    def test_is_telegram_post_url(self):
+        self.assertTrue(bot._is_telegram_post_url("https://t.me/channel/123"))
+        self.assertTrue(bot._is_telegram_post_url("https://t.me/s/channel/456"))
+        self.assertTrue(bot._is_telegram_post_url("https://telegram.me/channel/789"))
+        self.assertTrue(bot._is_telegram_post_url("https://t.me/durov/100?single"))
+        # Invalid / channel root / private channel numeric
+        self.assertFalse(bot._is_telegram_post_url("https://t.me/channel"))
+        self.assertFalse(bot._is_telegram_post_url("https://t.me/c/123456/10"))
+        self.assertFalse(bot._is_telegram_post_url("https://example.com/channel/123"))
+
+    def test_is_tg_bridge_in_chat_true(self):
+        mock_bot = MagicMock()
+        mock_bot.rpc.get_chat_contacts.return_value = [10, 20]
+        c1 = MagicMock()
+        c1.display_name = "Alice"
+        c2 = MagicMock()
+        c2.display_name = "TG Bridge"
+        mock_bot.rpc.get_contact.side_effect = lambda accid, cid: c1 if cid == 10 else c2
+
+        self.assertTrue(bot._is_tg_bridge_in_chat(mock_bot, 1, 100))
+
+    def test_is_tg_bridge_in_chat_false(self):
+        mock_bot = MagicMock()
+        mock_bot.rpc.get_chat_contacts.return_value = [10]
+        c1 = MagicMock()
+        c1.display_name = "Alice"
+        mock_bot.rpc.get_contact.return_value = c1
+
+        self.assertFalse(bot._is_tg_bridge_in_chat(mock_bot, 1, 100))
+
+    @patch("bot._do_group_link_preview")
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._is_duplicate_msg", return_value=False)
+    @patch("bot._is_bot_blocked", return_value=False)
+    @patch("bot._is_tg_bridge_in_chat", return_value=True)
+    def test_on_new_message_skips_telegram_post_if_tg_bridge_in_chat(
+        self, mock_tg_bridge, mock_blocked, mock_dup, mock_rate, mock_preview
+    ):
+        mock_bot = MagicMock()
+        mock_event = MagicMock()
+        mock_event.msg.id = 1
+        mock_event.msg.is_info = False
+        mock_event.msg.from_id = 42
+        mock_event.msg.chat_id = 99
+        mock_event.msg.text = "Check this out https://t.me/channel/123"
+
+        with patch.object(bot, "dc_accid", 1):
+            bot.on_new_message(mock_bot, 1, mock_event)
+
+        mock_preview.assert_not_called()
+
+    @patch("threading.Thread")
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._is_duplicate_msg", return_value=False)
+    @patch("bot._is_bot_blocked", return_value=False)
+    @patch("bot._is_tg_bridge_in_chat", return_value=False)
+    def test_on_new_message_processes_telegram_post_if_no_tg_bridge(
+        self, mock_tg_bridge, mock_blocked, mock_dup, mock_rate, mock_thread
+    ):
+        mock_bot = MagicMock()
+        mock_event = MagicMock()
+        mock_event.msg.id = 1
+        mock_event.msg.is_info = False
+        mock_event.msg.from_id = 42
+        mock_event.msg.chat_id = 99
+        mock_event.msg.text = "Check this out https://t.me/channel/123"
+
+        with patch.object(bot, "dc_accid", 1):
+            bot.on_new_message(mock_bot, 1, mock_event)
+
+        mock_thread.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
+

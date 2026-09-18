@@ -237,6 +237,48 @@ class TestTgBridgeDelegation(unittest.TestCase):
 
         mock_thread.assert_called_once()
 
+    @patch("bot._do_group_link_preview")
+    @patch("bot._is_rate_limited", return_value=False)
+    @patch("bot._is_duplicate_msg", return_value=False)
+    @patch("bot._is_bot_blocked", return_value=False)
+    @patch("bot._is_tg_bridge_in_chat", return_value=False)
+    def test_on_new_message_skips_bot_card_prefixes(
+        self, mock_tg_bridge, mock_blocked, mock_dup, mock_rate, mock_preview
+    ):
+        """Messages starting with bot prefixes like 📰, 🌐, 🤖, 📷, 💬 must never be auto-parsed."""
+        mock_bot = MagicMock()
+        with patch.object(bot, "dc_accid", 1):
+            for prefix in ("📰", "🌐", "🤖", "📷", "💬"):
+                mock_event = MagicMock()
+                mock_event.msg.id = 10
+                mock_event.msg.is_info = False
+                mock_event.msg.from_id = 42
+                mock_event.msg.chat_id = 99
+                mock_event.msg.text = f"{prefix} **Pavel Durov**\n\nCheck post https://t.me/durov/42"
+                bot.on_new_message(mock_bot, 1, mock_event)
+                mock_preview.assert_not_called()
+
+    def test_is_bot_blocked_detects_contact_is_bot(self):
+        """_is_bot_blocked should check contact.is_bot if msg.is_bot is not True."""
+        mock_bot = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.is_bot = False
+        mock_msg.from_id = 77
+
+        # When contact is a bot
+        bot_contact = MagicMock()
+        bot_contact.is_bot = True
+        bot_contact.address = "tgbot@example.org"
+        mock_bot.rpc.get_contact.return_value = bot_contact
+        self.assertTrue(bot._is_bot_blocked(mock_bot, 1, mock_msg))
+
+        # When contact is a human user
+        human_contact = MagicMock()
+        human_contact.is_bot = False
+        human_contact.address = "human@example.org"
+        mock_bot.rpc.get_contact.return_value = human_contact
+        self.assertFalse(bot._is_bot_blocked(mock_bot, 1, mock_msg))
+
 
 if __name__ == "__main__":
     unittest.main()

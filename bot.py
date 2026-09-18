@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 3600  # 1 hour
 
-VERSION = "2.12.0"
+VERSION = "2.12.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -2207,7 +2207,15 @@ def _is_duplicate_msg(msg_id: int, handler: str) -> bool:
 
 def _is_bot_blocked(bot, accid, msg) -> bool:
     """Return True if the message is from a bot and that bot is NOT whitelisted in ALLOWED_BOT_EMAILS."""
-    if not getattr(msg, 'is_bot', False):
+    is_bot = getattr(msg, 'is_bot', False) is True
+    if not is_bot:
+        try:
+            c = bot.rpc.get_contact(accid, msg.from_id)
+            if getattr(c, 'is_bot', False) is True:
+                is_bot = True
+        except Exception:
+            pass
+    if not is_bot:
         return False
         
     allowed_bots_env = os.environ.get("ALLOWED_BOT_EMAILS", "")
@@ -6301,8 +6309,8 @@ def on_new_message(bot, accid, event):
                 _send(bot, accid, msg.chat_id, help_text)
                 database.set_config(greeted_key, "1")
 
-        # 2. Automatically parse URLs sent in chat (if not starting with a slash command and previews enabled)
-        if not text.startswith("/") and not database.is_webpreview_disabled(msg.chat_id):
+        # 2. Automatically parse URLs sent in chat (if not starting with a slash command or bot card prefix and previews enabled)
+        if not text.startswith(("/", "📰", "🌐", "🤖", "📷", "💬")) and not database.is_webpreview_disabled(msg.chat_id):
             url_match = re.search(r'(https?://[^\s<>"]+)', text)
             if url_match:
                 raw_url = _strip_url_trailing_junk(url_match.group(1))

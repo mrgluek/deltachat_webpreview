@@ -134,6 +134,9 @@ class TestDatabase(unittest.TestCase):
         # Insert 1 old and 1 recent api_log
         cursor.execute("INSERT INTO api_log (service, created_at) VALUES (?, ?)", ("jina", old_time))
         cursor.execute("INSERT INTO api_log (service, created_at) VALUES (?, ?)", ("jina", recent_time))
+        # Insert 1 old and 1 recent cache_log
+        cursor.execute("INSERT INTO cache_log (cache_type, hit, created_at) VALUES (?, ?, ?)", ("og", 1, old_time))
+        cursor.execute("INSERT INTO cache_log (cache_type, hit, created_at) VALUES (?, ?, ?)", ("og", 1, recent_time))
         conn.commit()
         conn.close()
 
@@ -141,6 +144,7 @@ class TestDatabase(unittest.TestCase):
         pruned = database.cleanup_old_records(retention_days=30)
         self.assertEqual(pruned["preview_stats"], 1)
         self.assertEqual(pruned["api_log"], 1)
+        self.assertEqual(pruned["cache_log"], 1)
 
         # Verify only recent rows remain
         conn = database._connect()
@@ -149,7 +153,45 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(cursor.fetchone()[0], 1)
         cursor.execute("SELECT COUNT(*) FROM api_log")
         self.assertEqual(cursor.fetchone()[0], 1)
+        cursor.execute("SELECT COUNT(*) FROM cache_log")
+        self.assertEqual(cursor.fetchone()[0], 1)
         conn.close()
+
+    def test_cache_stats_and_logging(self):
+        # Empty stats
+        empty_s = database.get_cache_stats()
+        self.assertEqual(empty_s["total_24h"], 0)
+        self.assertEqual(empty_s["hits_24h"], 0)
+        self.assertEqual(empty_s["misses_24h"], 0)
+        self.assertEqual(empty_s["hit_ratio_24h"], 0.0)
+
+        # Log hits and misses
+        database.log_cache_event("og", True)
+        database.log_cache_event("og", True)
+        database.log_cache_event("og", False)
+        database.log_cache_event("article", True)
+        database.log_cache_event("tldr", False)
+
+        stats = database.get_cache_stats()
+        self.assertEqual(stats["total_24h"], 5)
+        self.assertEqual(stats["hits_24h"], 3)
+        self.assertEqual(stats["misses_24h"], 2)
+        self.assertAlmostEqual(stats["hit_ratio_24h"], 60.0)
+        self.assertEqual(stats["all_time_hits"], 3)
+
+        # Breakdown
+        self.assertEqual(stats["breakdown"]["og"]["hits"], 2)
+        self.assertEqual(stats["breakdown"]["og"]["misses"], 1)
+        self.assertEqual(stats["breakdown"]["og"]["total"], 3)
+        self.assertAlmostEqual(stats["breakdown"]["og"]["ratio"], 66.666, places=2)
+
+        self.assertEqual(stats["breakdown"]["article"]["hits"], 1)
+        self.assertEqual(stats["breakdown"]["article"]["total"], 1)
+        self.assertEqual(stats["breakdown"]["article"]["ratio"], 100.0)
+
+        self.assertEqual(stats["breakdown"]["tldr"]["hits"], 0)
+        self.assertEqual(stats["breakdown"]["tldr"]["total"], 1)
+        self.assertEqual(stats["breakdown"]["tldr"]["ratio"], 0.0)
 
 
 if __name__ == "__main__":

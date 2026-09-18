@@ -124,6 +124,18 @@ def init_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_log_service ON api_log(service)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_log_created_at ON api_log(created_at)')
         
+        # Cache hit/miss log table for tracking cache performance
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cache_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cache_type TEXT,
+                hit INTEGER,
+                created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_cache_log_created_at ON cache_log(created_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_cache_log_type ON cache_log(cache_type)')
+
         conn.commit()
         conn.close()
 
@@ -345,6 +357,8 @@ def cleanup_old_records(retention_days: int = 30) -> dict[str, int]:
             cleaned["preview_stats"] = cursor.rowcount
             cursor.execute("DELETE FROM api_log WHERE created_at < ?", (cutoff,))
             cleaned["api_log"] = cursor.rowcount
+            cursor.execute("DELETE FROM cache_log WHERE created_at < ?", (cutoff,))
+            cleaned["cache_log"] = cursor.rowcount
             conn.commit()
         finally:
             conn.close()
@@ -416,6 +430,72 @@ def get_api_stats() -> dict:
                 "jina_24h": jina_24h,
                 "gemini_total": gemini_total,
                 "gemini_24h": gemini_24h,
+            }
+        finally:
+            conn.close()
+
+def log_cache_event(cache_type: str, hit: bool):
+    """Record a cache hit or miss event."""
+    with _lock:
+        conn = _connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO cache_log (cache_type, hit, created_at) VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER))",
+                (cache_type, 1 if hit else 0)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+def get_cache_stats() -> dict:
+    """Get cache efficiency statistics for the last 24h."""
+    with _lock:
+        conn = _connect()
+        try:
+            cursor = conn.cursor()
+            now = int(time.time())
+            cutoff_24h = now - 86400
+
+            cursor.execute("SELECT hit, COUNT(*) FROM cache_log WHERE created_at >= ? GROUP BY hit", (cutoff_24h,))
+            rows = cursor.fetchall()
+            hits_24h = 0
+            misses_24h = 0
+            for hit_val, cnt in rows:
+                if hit_val == 1:
+                    hits_24h = cnt
+                else:
+                    misses_24h = cnt
+            total_24h = hits_24h + misses_24h
+            hit_ratio_24h = (hits_24h / total_24h * 100.0) if total_24h > 0 else 0.0
+
+            cursor.execute(
+                "SELECT cache_type, hit, COUNT(*) FROM cache_log WHERE created_at >= ? GROUP BY cache_type, hit",
+                (cutoff_24h,)
+            )
+            breakdown_rows = cursor.fetchall()
+            breakdown = {}
+            for c_type, hit_val, cnt in breakdown_rows:
+                if c_type not in breakdown:
+                    breakdown[c_type] = {"hits": 0, "misses": 0, "total": 0, "ratio": 0.0}
+                if hit_val == 1:
+                    breakdown[c_type]["hits"] = cnt
+                else:
+                    breakdown[c_type]["misses"] = cnt
+                breakdown[c_type]["total"] = breakdown[c_type]["hits"] + breakdown[c_type]["misses"]
+                if breakdown[c_type]["total"] > 0:
+                    breakdown[c_type]["ratio"] = (breakdown[c_type]["hits"] / breakdown[c_type]["total"]) * 100.0
+
+            cursor.execute("SELECT COUNT(*) FROM cache_log WHERE hit = 1")
+            all_time_hits = cursor.fetchone()[0]
+
+            return {
+                "total_24h": total_24h,
+                "hits_24h": hits_24h,
+                "misses_24h": misses_24h,
+                "hit_ratio_24h": hit_ratio_24h,
+                "breakdown": breakdown,
+                "all_time_hits": all_time_hits,
             }
         finally:
             conn.close()

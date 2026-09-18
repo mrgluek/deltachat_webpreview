@@ -125,6 +125,29 @@ class TestTransportCommands(unittest.TestCase):
         self.assertEqual(database.get_config("resilient"), "0")
         self.assertIn("Resilient sending mode disabled", mock_send.call_args[0][3])
 
+    @patch("bot._send")
+    @patch("bot._is_dc_admin")
+    def test_stats_command_displays_cache_efficiency(self, mock_is_admin, mock_send):
+        mock_is_admin.return_value = True
+
+        # When no requests in cache
+        bot.stats_command(self.mock_bot, self.accid, self.mock_event)
+        self.assertIn("Cache efficiency (last 24h): no requests", mock_send.call_args[0][3])
+
+        # Log some cache hits and misses
+        database.log_cache_event("og", True)
+        database.log_cache_event("og", False)
+        database.log_cache_event("article", True)
+        database.log_cache_event("tldr", True)
+
+        mock_send.reset_mock()
+        bot.stats_command(self.mock_bot, self.accid, self.mock_event)
+        msg_text = mock_send.call_args[0][3]
+        self.assertIn("Cache efficiency (last 24h): 75.0% (3/4)", msg_text)
+        self.assertIn("OG preview cards: 1/2 (50.0%)", msg_text)
+        self.assertIn("Reader & WebXDC: 1/1 (100.0%)", msg_text)
+        self.assertIn("TL;DR AI summaries: 1/1 (100.0%)", msg_text)
+
 
 if __name__ == "__main__":
     unittest.main()

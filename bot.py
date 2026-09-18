@@ -54,9 +54,9 @@ RATE_LIMIT_SECONDS = 15
 # Cache settings
 CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_MAX_AGE = 3600  # 1 hour
-
-VERSION = "2.12.1"
+CACHE_MAX_AGE = 86400  # 24 hours
+ 
+VERSION = "2.13.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -891,7 +891,9 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
         cached = database.get_cached_tldr(cache_key)
         if cached:
             logger.info(f"Returning cached TL;DR summary for {cache_key}")
+            database.log_cache_event("tldr", True)
             return cached
+        database.log_cache_event("tldr", False)
 
     truncated = clean_text[:20000]
     if lang_str in ("AUTO", ""):
@@ -936,7 +938,9 @@ def _summarize_audio_with_gemini(
         cached = database.get_cached_tldr(full_cache_key)
         if cached:
             logger.info(f"Returning cached audio TL;DR summary for {full_cache_key}")
+            database.log_cache_event("tldr", True)
             return cached
+        database.log_cache_event("tldr", False)
 
     if lang_str in ("AUTO", ""):
         lang_instruction = "the language spoken in the audio"
@@ -1001,7 +1005,9 @@ def _ask_gemini_ai(
         cached = database.get_cached_tldr(cache_key)
         if cached:
             logger.info(f"Returning cached AI answer for {cache_key}")
+            database.log_cache_event("tldr", True)
             return cached
+        database.log_cache_event("tldr", False)
 
     if lang_str in ("AUTO", ""):
         lang_instruction = "the language of the question/topic or spoken in the audio"
@@ -3642,6 +3648,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                         f"📝 [{title_text}]({url})\n\n"
                         f"💾 /download_{urlhash}"
                     )
+                    database.log_cache_event("og", True)
                     _send(bot, accid, chat_id, caption)
                     return
                   # Verify that if there is a cached image path, the file still exists on disk.
@@ -3649,6 +3656,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                 is_missing_ig_image = not cached_image_path and _is_instagram_url(url)
                 if not is_missing_ig_image and (not cached_image_path or os.path.exists(cached_image_path)):
                     logger.info(f"OG Cache hit for group preview: {url}")
+                    database.log_cache_event("og", True)
                     cached_warning = cached.get("warning")
                     cached_jina_markdown = cached.get("jina_markdown")
                     caption = _format_group_link_caption(
@@ -3664,6 +3672,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         
         # 4. Cache Miss - Fetch OG tags or file info
         logger.info(f"OG Cache miss for group preview: {url}. Fetching from network.")
+        database.log_cache_event("og", False)
         
         is_file, filename, size = _detect_and_get_file_info(url)
         if is_file:
@@ -3751,6 +3760,7 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
         
         if time.time() - created_at < CACHE_MAX_AGE and os.path.exists(filepath):
             logger.info(f"Cache hit for URL download: {url}. Sending cached file: {filepath}")
+            database.log_cache_event("article", True)
             _react(bot, accid, req_msg_id, "⏳")
             
             caption = f"📝 {title}\n\n🔗 {url}"
@@ -3758,7 +3768,8 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
             _react(bot, accid, req_msg_id, "☑️")
             database.add_preview_log(chat_id, from_id, url, title, filesize, False)
             return
-            
+
+    database.log_cache_event("article", False)
     # 1. React with loading icon
     _react(bot, accid, req_msg_id, "⏳")
     
@@ -3960,6 +3971,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         
         if time.time() - created_at < CACHE_MAX_AGE and os.path.exists(filepath):
             logger.info(f"Cache hit for URL: {url} (mode={mode}). Sending cached preview: {filepath}")
+            database.log_cache_event("article", True)
             _react(bot, accid, req_msg_id, "⏳")
             
             jina_md = cached_og.get("jina_markdown") if cached_og else None
@@ -3969,6 +3981,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             database.add_preview_log(chat_id, from_id, url, title, filesize, 1 if mode == "archive" else 0)
             return
 
+    database.log_cache_event("article", False)
     # 0.5 Pre-check URL Content-Length and Content-Type to avoid downloading heavy/binary payloads
     # Only check if we don't have a fresh cached OG indicating it's a valid webpage
     if not is_fresh_og:
@@ -5690,6 +5703,7 @@ def donate_command(bot, accid, event):
 def stats_command(bot, accid, event):
     s = database.get_stats()
     api_s = database.get_api_stats()
+    c_s = database.get_cache_stats()
     usage = shutil.disk_usage(CACHE_DIR)
     free_gb = usage.free / (1024**3)
     total_gb = usage.total / (1024**3)
@@ -5700,6 +5714,24 @@ def stats_command(bot, accid, event):
     reply = (
         f"📊 **WebPreview Bot Statistics**\n\n"
         f"Total previews generated (last 24h): {s['total']} ({s['last_24h']})\n"
+    )
+
+    if c_s["total_24h"] > 0:
+        reply += f"Cache efficiency (last 24h): {c_s['hit_ratio_24h']:.1f}% ({c_s['hits_24h']}/{c_s['total_24h']})\n"
+        bd = c_s.get("breakdown", {})
+        if "og" in bd:
+            og_info = bd["og"]
+            reply += f"  • OG preview cards: {og_info['hits']}/{og_info['total']} ({og_info['ratio']:.1f}%)\n"
+        if "article" in bd:
+            art_info = bd["article"]
+            reply += f"  • Reader & WebXDC: {art_info['hits']}/{art_info['total']} ({art_info['ratio']:.1f}%)\n"
+        if "tldr" in bd:
+            tldr_info = bd["tldr"]
+            reply += f"  • TL;DR AI summaries: {tldr_info['hits']}/{tldr_info['total']} ({tldr_info['ratio']:.1f}%)\n"
+    else:
+        reply += f"Cache efficiency (last 24h): no requests\n"
+
+    reply += (
         f"JINA AI requests (last 24h): {api_s['jina_total']} ({api_s['jina_24h']})\n"
         f"Gemini AI requests (last 24h): {api_s['gemini_total']} ({api_s['gemini_24h']})\n"
         f"Total file bandwidth: {_format_size(s['total_size'])}\n"

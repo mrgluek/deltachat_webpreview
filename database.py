@@ -425,11 +425,19 @@ def get_api_stats() -> dict:
             cursor.execute("SELECT COUNT(*) FROM api_log WHERE service = 'gemini' AND created_at >= ?", (h24_ago,))
             gemini_24h = cursor.fetchone()[0]
 
+            cursor.execute("SELECT COUNT(*) FROM api_log WHERE service = 'openrouter'")
+            openrouter_total = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM api_log WHERE service = 'openrouter' AND created_at >= ?", (h24_ago,))
+            openrouter_24h = cursor.fetchone()[0]
+
             return {
                 "jina_total": jina_total,
                 "jina_24h": jina_24h,
                 "gemini_total": gemini_total,
                 "gemini_24h": gemini_24h,
+                "openrouter_total": openrouter_total,
+                "openrouter_24h": openrouter_24h,
             }
         finally:
             conn.close()

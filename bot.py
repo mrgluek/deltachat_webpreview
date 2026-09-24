@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.13.2"
+VERSION = "2.14.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -91,12 +91,19 @@ JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
 
 # Gemini AI key & fallback models (opt-in via env)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
-_raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it,gemini-2.5-flash-lite")
+_raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it")
 GEMINI_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/") for m in _raw_models.split(",") if m.strip()]
 if not GEMINI_MODELS:
-    GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash-lite"]
+    GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 GEMINI_MODEL = GEMINI_MODELS[0]
 _GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
+
+# OpenRouter fallback (opt-in via env), queried after all Gemini models fail
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip().strip("'\"")
+OPENROUTER_MODELS = [m.strip().strip("'\"") for m in os.environ.get("OPENROUTER_MODELS", "openrouter/free").split(",") if m.strip()] or ["openrouter/free"]
+
+def _ai_available() -> bool:
+    return bool(GEMINI_API_KEY or OPENROUTER_API_KEY)
 
 # OGInstagram embed proxy settings (opt-in via env, https://github.com/seirenkr/OGInstagram)
 OGINSTAGRAM_HOST = os.environ.get("OGINSTAGRAM_HOST", "oginstagram.com").strip().rstrip("/")
@@ -782,12 +789,36 @@ def _call_gemini_api(
     media_bytes: bytes | None = None,
     media_mime: str | None = None,
 ) -> str | None:
-    """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging."""
+    """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging.
+    Falls back to OpenRouter (OPENROUTER_MODELS) when every Gemini model fails."""
     target_media_bytes = media_bytes if media_bytes is not None else image_bytes
     target_media_mime = media_mime or image_mime or "image/jpeg"
 
-    if not GEMINI_API_KEY or (not prompt and not target_media_bytes):
+    if not _ai_available() or (not prompt and not target_media_bytes):
         return None
+
+    if GEMINI_API_KEY:
+        res_text = _call_gemini_models(prompt, max_tokens, temperature, target_media_bytes, target_media_mime)
+        if res_text:
+            return res_text
+    if OPENROUTER_API_KEY:
+        return _call_openrouter_api(prompt, max_tokens, temperature, target_media_bytes, target_media_mime)
+    return None
+
+def _trim_incomplete_sentence(res_text: str) -> str:
+    if not res_text.rstrip().endswith(('.', '!', '?', '"', "'", ')', '»', '”')):
+        last_p = max(res_text.rfind('.'), res_text.rfind('!'), res_text.rfind('?'))
+        if last_p > 50:
+            res_text = res_text[:last_p + 1].strip()
+    return res_text
+
+def _call_gemini_models(
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    target_media_bytes: bytes | None,
+    target_media_mime: str,
+) -> str | None:
 
     now = time.time()
     active_models = [m for m in GEMINI_MODELS if _GEMINI_MODEL_COOLDOWNS.get(m, 0) <= now]
@@ -846,11 +877,7 @@ def _call_gemini_api(
                     if parts and "text" in parts[0]:
                         res_text = parts[0]["text"].strip()
                         if res_text:
-                            if not res_text.rstrip().endswith(('.', '!', '?', '"', "'", ')', '»', '”')):
-                                last_p = max(res_text.rfind('.'), res_text.rfind('!'), res_text.rfind('?'))
-                                if last_p > 50:
-                                    res_text = res_text[:last_p + 1].strip()
-                            return res_text
+                            return _trim_incomplete_sentence(res_text)
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
@@ -865,6 +892,10 @@ def _call_gemini_api(
                 logger.warning(f"Gemini API model '{model_name}' unavailable or high demand (HTTP {e.code}). Placing on 5-minute cooldown and falling back...")
                 _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
                 continue
+            elif e.code == 404:
+                logger.error(f"Gemini API model '{model_name}' not found (HTTP 404). Placing on 24-hour cooldown. Details: {err_body}")
+                _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 86400
+                continue
             else:
                 logger.error(f"Gemini API HTTP Error {e.code}: {e.reason} for model '{model_name}'. Details: {err_body}")
                 continue
@@ -875,9 +906,67 @@ def _call_gemini_api(
 
     return None
 
+def _call_openrouter_api(
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    target_media_bytes: bytes | None,
+    target_media_mime: str,
+) -> str | None:
+    """Invokes OpenRouter chat completions (OpenAI-compatible) as the last-resort fallback. Images only, no audio."""
+    if target_media_bytes and not target_media_mime.startswith("image/"):
+        logger.warning(f"OpenRouter fallback skipped: media type '{target_media_mime}' is not supported.")
+        return None
+
+    if target_media_bytes:
+        b64_data = base64.b64encode(target_media_bytes).decode("utf-8")
+        content = [{"type": "image_url", "image_url": {"url": f"data:{target_media_mime};base64,{b64_data}"}}]
+        if prompt:
+            content.insert(0, {"type": "text", "text": prompt})
+    else:
+        content = prompt
+
+    for model_name in OPENROUTER_MODELS:
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        try:
+            database.log_api_call("openrouter")
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=json.dumps(payload).encode('utf-8'),
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+                    'X-Title': 'Delta Chat WebPreview Bot',
+                }
+            )
+            with _urlopen(req, timeout=60) as resp:
+                body = json.loads(resp.read().decode('utf-8'))
+            choices = body.get("choices") or []
+            res_text = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+            if res_text:
+                logger.info(f"OpenRouter fallback answered via '{body.get('model', model_name)}'")
+                return _trim_incomplete_sentence(res_text)
+            logger.warning(f"OpenRouter model '{model_name}' returned an empty response: {str(body)[:300]}")
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+            logger.warning(f"OpenRouter HTTP Error {e.code} for model '{model_name}'. Details: {err_body[:500]}")
+        except Exception as e:
+            logger.warning(f"OpenRouter call timed out or failed for model '{model_name}': {e}")
+
+    return None
+
 def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang: str = "EN", short_paragraph: bool = False, url_key: str | None = None) -> str | None:
     """Summarizes text using Google Gemini API with 24h caching."""
-    if not GEMINI_API_KEY or not text or not text.strip():
+    if not _ai_available() or not text or not text.strip():
         return None
     
     clean_text = text.strip()
@@ -928,7 +1017,7 @@ def _summarize_audio_with_gemini(
     cache_key: str | None = None,
 ) -> str | None:
     """Summarizes audio/voice message using Google Gemini API with 24h caching."""
-    if not GEMINI_API_KEY or not audio_bytes:
+    if not _ai_available() or not audio_bytes:
         return None
 
     lang_str = target_lang.strip().upper()
@@ -985,7 +1074,7 @@ def _ask_gemini_ai(
     audio_mime: str = "audio/ogg",
 ) -> str | None:
     """Answers a question, explains a topic, analyzes an image, or transcribes audio using Google Gemini API with 24h caching."""
-    if not GEMINI_API_KEY:
+    if not _ai_available():
         return None
 
     target_media_bytes = media_bytes if media_bytes is not None else (audio_bytes if audio_bytes is not None else image_bytes)
@@ -1103,7 +1192,7 @@ def _format_preview_caption(title: str, url: str, mode: str, chat_id: int, jina_
     """Format caption for /preview and /webxdc, including 1-paragraph TL;DR if Gemini API is available."""
     clean_title = (title or "Webpage").replace("[", "(").replace("]", ")")
     tldr = None
-    if GEMINI_API_KEY:
+    if _ai_available():
         article_text = jina_markdown
         if not article_text or not article_text.strip():
             try:
@@ -4909,11 +4998,11 @@ def _handle_jina_command(bot, accid, event):
 
 def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
     """Processes TL;DR summarization for a URL in background thread."""
-    if not GEMINI_API_KEY:
+    if not _ai_available():
         _react(bot, accid, req_msg_id, "❌")
         _send(bot, accid, chat_id,
-              "❌ `GEMINI_API_KEY` is not configured.\n"
-              "Please add your Google Gemini API key to `.env` to enable summarization.")
+              "❌ Neither `GEMINI_API_KEY` nor `OPENROUTER_API_KEY` is configured.\n"
+              "Please add a Google Gemini or OpenRouter API key to `.env` to enable summarization.")
         return
 
     if _is_internal_or_invalid_url(url):
@@ -4985,11 +5074,11 @@ def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
 
 def _do_tldr_text(bot, accid, chat_id, req_msg_id, from_id, text: str):
     """Processes TL;DR summarization for plain or quoted message text in background thread."""
-    if not GEMINI_API_KEY:
+    if not _ai_available():
         _react(bot, accid, req_msg_id, "❌")
         _send(bot, accid, chat_id,
-              "❌ `GEMINI_API_KEY` is not configured.\n"
-              "Please add your Google Gemini API key to `.env` to enable summarization.")
+              "❌ Neither `GEMINI_API_KEY` nor `OPENROUTER_API_KEY` is configured.\n"
+              "Please add a Google Gemini or OpenRouter API key to `.env` to enable summarization.")
         return
 
     _react(bot, accid, req_msg_id, "⏳")
@@ -5027,11 +5116,11 @@ def _do_tldr_audio(
     user_prompt: str | None = None,
 ):
     """Processes TL;DR summarization for audio/voice message in background thread."""
-    if not GEMINI_API_KEY:
+    if not _ai_available():
         _react(bot, accid, req_msg_id, "❌")
         _send(bot, accid, chat_id,
-              "❌ `GEMINI_API_KEY` is not configured.\n"
-              "Please add your Google Gemini API key to `.env` to enable summarization.")
+              "❌ Neither `GEMINI_API_KEY` nor `OPENROUTER_API_KEY` is configured.\n"
+              "Please add a Google Gemini or OpenRouter API key to `.env` to enable summarization.")
         return
 
     if len(audio_bytes) > MAX_MEDIA_BYTES:
@@ -5165,11 +5254,11 @@ def _do_ai_query(
     audio_mime: str = "audio/ogg",
 ):
     """Processes AI query in background thread."""
-    if not GEMINI_API_KEY:
+    if not _ai_available():
         _react(bot, accid, req_msg_id, "❌")
         _send(bot, accid, chat_id,
-              "❌ `GEMINI_API_KEY` is not configured.\n"
-              "Please add your Google Gemini API key to `.env` to enable AI queries.")
+              "❌ Neither `GEMINI_API_KEY` nor `OPENROUTER_API_KEY` is configured.\n"
+              "Please add a Google Gemini or OpenRouter API key to `.env` to enable AI queries.")
         return
 
     target_media_bytes = media_bytes if media_bytes is not None else (audio_bytes if audio_bytes is not None else image_bytes)
@@ -5747,6 +5836,7 @@ def stats_command(bot, accid, event):
     reply += (
         f"JINA AI requests (last 24h): {api_s['jina_total']} ({api_s['jina_24h']})\n"
         f"Gemini AI requests (last 24h): {api_s['gemini_total']} ({api_s['gemini_24h']})\n"
+        f"OpenRouter AI requests (last 24h): {api_s['openrouter_total']} ({api_s['openrouter_24h']})\n"
         f"Total file bandwidth: {_format_size(s['total_size'])}\n"
     )
 

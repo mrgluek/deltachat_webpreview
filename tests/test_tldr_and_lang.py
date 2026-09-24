@@ -162,6 +162,7 @@ class TestTldrAndLang(unittest.TestCase):
         )
         self.assertEqual(caption, expected)
 
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
     @patch.object(bot, "GEMINI_API_KEY", "")
     def test_format_preview_caption_without_gemini_key(self):
         caption = bot._format_preview_caption(
@@ -173,6 +174,7 @@ class TestTldrAndLang(unittest.TestCase):
         )
         self.assertEqual(caption, "🔗 [My Page](https://example.com)")
 
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
     @patch.object(bot, "GEMINI_API_KEY", "")
     @patch("bot._send")
     def test_handle_tldr_command_no_key(self, mock_send):
@@ -622,6 +624,63 @@ class TestTldrAndLang(unittest.TestCase):
         finally:
             if os.path.exists(tmp_jpg):
                 os.remove(tmp_jpg)
+
+
+class TestOpenRouterFallback(unittest.TestCase):
+    def setUp(self):
+        bot._GEMINI_MODEL_COOLDOWNS.clear()
+
+    @staticmethod
+    def _resp(body):
+        m = MagicMock()
+        m.__enter__.return_value.read.return_value = json.dumps(body).encode()
+        return m
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_MODELS", ["openrouter/free"])
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-x"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_falls_back_to_openrouter_when_gemini_fails(self, mock_urlopen, _log):
+        import urllib.error
+        gemini_err = urllib.error.HTTPError("u", 503, "Unavailable", {}, None)
+        mock_urlopen.side_effect = [gemini_err, self._resp({"model": "x:free", "choices": [{"message": {"content": "Fallback answer."}}]})]
+        self.assertEqual(bot._call_gemini_api("hi"), "Fallback answer.")
+        req = mock_urlopen.call_args_list[1][0][0]
+        self.assertIn("openrouter.ai", req.full_url)
+        self.assertEqual(json.loads(req.data)["model"], "openrouter/free")
+        self.assertEqual(req.get_header("Authorization"), "Bearer or_key")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-gone"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_gemini_404_gets_long_cooldown(self, mock_urlopen, _log):
+        import urllib.error, time
+        mock_urlopen.side_effect = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        self.assertIsNone(bot._call_gemini_api("hi"))
+        self.assertGreater(bot._GEMINI_MODEL_COOLDOWNS["gemini-gone"], time.time() + 3600)
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_MODELS", ["openrouter/free"])
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._urlopen")
+    def test_openrouter_only_with_image(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._resp({"choices": [{"message": {"content": "A cat."}}]})
+        self.assertEqual(bot._call_gemini_api("describe", image_bytes=b"img", image_mime="image/png"), "A cat.")
+        content = json.loads(mock_urlopen.call_args[0][0].data)["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "describe"})
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._urlopen")
+    def test_openrouter_skips_audio(self, mock_urlopen):
+        self.assertIsNone(bot._call_gemini_api("sum", media_bytes=b"ogg", media_mime="audio/ogg"))
+        mock_urlopen.assert_not_called()
 
 
 if __name__ == "__main__":

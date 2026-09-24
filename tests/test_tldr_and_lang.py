@@ -758,5 +758,44 @@ class TestAIModelTag(unittest.TestCase):
         self.assertTrue(caption.startswith("⚡ TL;DR *(openrouter-model:free)*: Short summary."))
 
 
+class TestGeminiChainLimits(unittest.TestCase):
+    def setUp(self):
+        bot._GEMINI_MODEL_COOLDOWNS.clear()
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_MODELS", ["gemma-4-26b-a4b-it"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_thought_parts_are_dropped(self, mock_urlopen, _log):
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps({"candidates": [{"content": {"parts": [
+            {"text": "*   Question: ... Draft 1 ...", "thought": True},
+            {"text": "Я — большая языковая модель."},
+        ]}}]}).encode()
+        mock_urlopen.return_value = ok
+        self.assertEqual(bot._call_gemini_api("hi"), "Я — большая языковая модель.")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_MODELS", ["a", "b", "c", "d"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_stops_after_two_timeouts(self, mock_urlopen, _log):
+        mock_urlopen.side_effect = TimeoutError("The read operation timed out")
+        self.assertIsNone(bot._call_gemini_api("hi"))
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_TIME_BUDGET", 0)
+    @patch.object(bot, "GEMINI_MODELS", ["a"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_time_budget_exhausted(self, mock_urlopen, _log):
+        self.assertIsNone(bot._call_gemini_api("hi"))
+        mock_urlopen.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

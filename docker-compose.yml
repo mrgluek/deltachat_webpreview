@@ -28,6 +28,7 @@ services:
       - JINA_PROXY_URL=${JINA_PROXY_URL:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-}
+      - GEMINI_TIME_BUDGET=${GEMINI_TIME_BUDGET:-30}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENROUTER_MODELS=${OPENROUTER_MODELS:-openrouter/free}
       - GEMINI_MODELS=${GEMINI_MODELS:-gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it}

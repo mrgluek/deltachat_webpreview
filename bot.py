@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.15.0"
+VERSION = "2.15.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -97,6 +97,11 @@ if not GEMINI_MODELS:
     GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 GEMINI_MODEL = GEMINI_MODELS[0]
 _GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
+
+# Total seconds the whole Gemini chain may spend before handing over to OpenRouter
+GEMINI_TIME_BUDGET = float(os.environ.get("GEMINI_TIME_BUDGET", "30") or 30)
+# Consecutive Gemini timeouts that mean Google is overloaded, so the rest of the chain is skipped
+GEMINI_MAX_TIMEOUTS = 2
 
 # OpenRouter fallback (opt-in via env), queried after all Gemini models fail
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip().strip("'\"")
@@ -854,7 +859,16 @@ def _call_gemini_models(
         else:
             active_models = [m for m in GEMINI_MODELS if not m.startswith("gemma-")]
 
+    deadline = time.time() + GEMINI_TIME_BUDGET
+    timeouts_in_row = 0
     for model_name in active_models:
+        remaining = deadline - time.time()
+        if remaining < 3:
+            logger.warning(f"Gemini time budget ({GEMINI_TIME_BUDGET:.0f}s) exhausted before '{model_name}', giving up on Gemini.")
+            break
+        if timeouts_in_row >= GEMINI_MAX_TIMEOUTS:
+            logger.warning(f"Gemini timed out {timeouts_in_row} times in a row, skipping the rest of the chain.")
+            break
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         
         parts = []
@@ -890,15 +904,16 @@ def _call_gemini_models(
                     'x-goog-api-key': GEMINI_API_KEY
                 }
             )
-            with _urlopen(req, timeout=20) as resp:
+            with _urlopen(req, timeout=min(20, remaining)) as resp:
                 body = json.loads(resp.read().decode('utf-8'))
+                timeouts_in_row = 0
                 candidates = body.get("candidates", [])
                 if candidates:
                     parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts and "text" in parts[0]:
-                        res_text = parts[0]["text"].strip()
-                        if res_text:
-                            return AIText(_trim_incomplete_sentence(res_text), model_name)
+                    # Thinking models (e.g. Gemma 4) return their reasoning as separate parts flagged "thought"
+                    res_text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+                    if res_text:
+                        return AIText(_trim_incomplete_sentence(res_text), model_name)
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
@@ -923,6 +938,8 @@ def _call_gemini_models(
         except Exception as e:
             logger.warning(f"Gemini API call timed out or failed for model '{model_name}': {e}. Placing on 5-minute cooldown and falling back...")
             _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 300
+            if isinstance(e, TimeoutError) or "timed out" in str(e):
+                timeouts_in_row += 1
             continue
 
     return None

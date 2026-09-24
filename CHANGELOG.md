@@ -2,6 +2,12 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.15.1] - 2026-09-24
+
+### Fixed
+- **Minutes-Long AI Replies During Gemini Outages**: Each Gemini model could wait 20s, so a chain of timing-out models took about 2 minutes before reaching the OpenRouter fallback. The whole Gemini chain now has a total time budget (`GEMINI_TIME_BUDGET`, default 30s) and stops after 2 timeouts in a row.
+- **Gemma Reasoning Leaked into Answers**: Gemma 4 returns its reasoning as separate response parts flagged `thought`, and the bot showed that reasoning instead of the answer. Reasoning parts are now dropped.
+
 ## [2.15.0] - 2026-09-24
 
 ### Added

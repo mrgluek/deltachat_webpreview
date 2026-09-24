@@ -118,6 +118,8 @@ In group chats where multiple bots are present, you can address this bot specifi
 - `/help@web` or `/help@wp`
 - `/stats@web` or `/stats@wp`
 
+A plain `/help` sent in a group chat is answered in a private 1:1 chat with the sender, so several bots don't flood the group with help texts. Use `/help@web` to show the help in the group itself.
+
 ## Admin Management
 
 Admin functions can be performed directly through chat commands, or managed via the server CLI:

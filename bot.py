@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.13.0"
+VERSION = "2.13.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -5674,11 +5674,24 @@ def get_help_text(bot, accid, from_id):
 
     return help_text
 
+HELP_PRIVATE_NOTE = "\n\n💬 Sent privately because you asked in a group. Use /help@web there to show it to everyone."
+
+def _get_help_chat_id(bot, accid, msg):
+    """Plain /help in a group is answered privately to the sender so several bots
+    don't flood the group; /help@<bot> is still answered in the group itself."""
+    cmd = msg.text.split(maxsplit=1)[0] if msg.text else ""
+    if "@" in cmd or _is_private_chat(bot, accid, msg.chat_id):
+        return msg.chat_id
+    return bot.rpc.create_chat_by_contact_id(accid, msg.from_id)
+
 @dc_cli.on(events.NewMessage(command="/help"))
 def help_command(bot, accid, event):
     msg = event.msg
     help_text = get_help_text(bot, accid, msg.from_id)
-    _send(bot, accid, msg.chat_id, help_text)
+    chat_id = _get_help_chat_id(bot, accid, msg)
+    if chat_id != msg.chat_id:
+        help_text += HELP_PRIVATE_NOTE
+    _send(bot, accid, chat_id, help_text)
 
 @dc_cli.on(events.NewMessage(command="/source"))
 def source_command(bot, accid, event):
@@ -6820,7 +6833,8 @@ def setup_custom_command_parser(bot, allowed_prefixes):
         else:
             original_parse_command(accid, event)
             
-            if event.command in ("/help", "/stats"):
+            # /help is not suppressed: plain /help in a group is answered privately (see help_command)
+            if event.command == "/stats":
                 try:
                     chat = bot.rpc.get_chat(accid, event.msg.chat_id)
                     is_group = getattr(chat, "chat_type", "Single") != "Single"

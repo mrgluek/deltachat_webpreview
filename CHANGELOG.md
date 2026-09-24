@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.13.1] - 2026-09-24
+
+### Changed
+- **Private `/help` in Groups**: A plain `/help` sent in a group chat is now answered in a private 1:1 chat with the sender instead of the group, so several bots don't flood it with help texts (the reply ends with a note on how to show it in the group). Addressed `/help@web` is still answered in the group. Previously a plain `/help` was answered in the group, or silently ignored when other bots were present.
+
 ## [2.13.0] - 2026-09-18
 
 ### Added & Improved

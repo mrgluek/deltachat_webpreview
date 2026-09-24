@@ -797,5 +797,43 @@ class TestGeminiChainLimits(unittest.TestCase):
         mock_urlopen.assert_not_called()
 
 
+class TestOpenRouterModelChoice(unittest.TestCase):
+    @staticmethod
+    def _resp(body):
+        m = MagicMock()
+        m.__enter__.return_value.read.return_value = json.dumps(body).encode()
+        return m
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_MODELS", ["openrouter/free"])
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._urlopen")
+    def test_safety_classifier_answer_is_discarded(self, mock_urlopen, _log):
+        mock_urlopen.side_effect = [
+            self._resp({"model": "nvidia/nemotron-3.5-content-safety:free", "choices": [{"message": {"content": "User Safety: safe"}}]}),
+            self._resp({"model": "nvidia/nemotron-3-super-120b-a12b:free", "choices": [{"message": {"content": "Real answer."}}]}),
+        ]
+        res = bot._call_gemini_api("hi")
+        self.assertEqual(res, "Real answer.")
+        self.assertEqual(res.model, "nvidia/nemotron-3-super-120b-a12b:free")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_MODELS", ["blocked:free", "good:free"])
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._urlopen")
+    def test_403_moves_to_next_model(self, mock_urlopen, _log):
+        import urllib.error
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError("u", 403, "Forbidden", {}, None),
+            self._resp({"model": "good:free", "choices": [{"message": {"content": "OK answer."}}]}),
+        ]
+        self.assertEqual(bot._call_gemini_api("hi").model, "good:free")
+
+    def test_default_list_ends_with_router(self):
+        self.assertEqual(bot._DEFAULT_OPENROUTER_MODELS.split(",")[-1], "openrouter/free")
+
+
 if __name__ == "__main__":
     unittest.main()

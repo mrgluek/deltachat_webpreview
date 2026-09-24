@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.15.1"
+VERSION = "2.15.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -105,7 +105,12 @@ GEMINI_MAX_TIMEOUTS = 2
 
 # OpenRouter fallback (opt-in via env), queried after all Gemini models fail
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip().strip("'\"")
-OPENROUTER_MODELS = [m.strip().strip("'\"") for m in os.environ.get("OPENROUTER_MODELS", "openrouter/free").split(",") if m.strip()] or ["openrouter/free"]
+_DEFAULT_OPENROUTER_MODELS = "nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b:free,qwen/qwen3.8-27b:free,google/gemma-4-31b-it:free,dots-studio/dots-3-note-preview:free,openrouter/free"
+OPENROUTER_MODELS = [m.strip().strip("'\"") for m in (os.environ.get("OPENROUTER_MODELS") or _DEFAULT_OPENROUTER_MODELS).split(",") if m.strip()]
+# Total seconds the OpenRouter fallback chain may spend
+OPENROUTER_TIME_BUDGET = 60
+# openrouter/free can route to moderation classifiers that answer "User Safety: safe" instead of the question
+_OPENROUTER_REJECT_MODEL_RE = re.compile(r"safety|guard", re.IGNORECASE)
 
 def _ai_available() -> bool:
     return bool(GEMINI_API_KEY or OPENROUTER_API_KEY)
@@ -968,9 +973,14 @@ def _call_openrouter_api(
     # so keep reasoning short, add headroom, and retry an empty answer once (it is re-routed each time)
     attempts = [m for m in OPENROUTER_MODELS for _ in range(2)]
     failed: set[str] = set()
+    deadline = time.time() + OPENROUTER_TIME_BUDGET
     for model_name in attempts:
         if model_name in failed:
             continue
+        remaining = deadline - time.time()
+        if remaining < 3:
+            logger.warning(f"OpenRouter time budget ({OPENROUTER_TIME_BUDGET}s) exhausted before '{model_name}'.")
+            break
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": content}],
@@ -989,10 +999,13 @@ def _call_openrouter_api(
                     'X-Title': 'Delta Chat WebPreview Bot',
                 }
             )
-            with _urlopen(req, timeout=60) as resp:
+            with _urlopen(req, timeout=min(30, remaining)) as resp:
                 body = json.loads(resp.read().decode('utf-8'))
             choices = body.get("choices") or []
             res_text = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+            if res_text and _OPENROUTER_REJECT_MODEL_RE.search(body.get("model") or ""):
+                logger.warning(f"OpenRouter routed '{model_name}' to classifier '{body.get('model')}', discarding: {res_text[:100]}")
+                continue
             if res_text:
                 logger.info(f"OpenRouter fallback answered via '{body.get('model', model_name)}'")
                 return AIText(_trim_incomplete_sentence(res_text), body.get("model") or model_name)
@@ -1005,7 +1018,7 @@ def _call_openrouter_api(
             except Exception:
                 pass
             logger.warning(f"OpenRouter HTTP Error {e.code} for model '{model_name}'. Details: {err_body[:500]}")
-            if e.code in (401, 402, 403):
+            if e.code in (401, 402):
                 return None
             failed.add(model_name)
         except Exception as e:

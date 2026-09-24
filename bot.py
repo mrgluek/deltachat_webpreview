@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.14.0"
+VERSION = "2.14.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -926,12 +926,19 @@ def _call_openrouter_api(
     else:
         content = prompt
 
-    for model_name in OPENROUTER_MODELS:
+    # openrouter/free may route to a reasoning model that burns the whole token budget on thinking,
+    # so keep reasoning short, add headroom, and retry an empty answer once (it is re-routed each time)
+    attempts = [m for m in OPENROUTER_MODELS for _ in range(2)]
+    failed: set[str] = set()
+    for model_name in attempts:
+        if model_name in failed:
+            continue
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": content}],
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens + 2048,
+            "reasoning": {"effort": "low", "exclude": True},
         }
         try:
             database.log_api_call("openrouter")
@@ -952,6 +959,7 @@ def _call_openrouter_api(
                 logger.info(f"OpenRouter fallback answered via '{body.get('model', model_name)}'")
                 return _trim_incomplete_sentence(res_text)
             logger.warning(f"OpenRouter model '{model_name}' returned an empty response: {str(body)[:300]}")
+            continue
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
@@ -959,8 +967,12 @@ def _call_openrouter_api(
             except Exception:
                 pass
             logger.warning(f"OpenRouter HTTP Error {e.code} for model '{model_name}'. Details: {err_body[:500]}")
+            if e.code in (401, 402, 403):
+                return None
+            failed.add(model_name)
         except Exception as e:
             logger.warning(f"OpenRouter call timed out or failed for model '{model_name}': {e}")
+            failed.add(model_name)
 
     return None
 

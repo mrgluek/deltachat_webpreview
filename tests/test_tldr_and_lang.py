@@ -682,6 +682,29 @@ class TestOpenRouterFallback(unittest.TestCase):
         self.assertIsNone(bot._call_gemini_api("sum", media_bytes=b"ogg", media_mime="audio/ogg"))
         mock_urlopen.assert_not_called()
 
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_MODELS", ["openrouter/free"])
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._urlopen")
+    def test_openrouter_retries_empty_answer_once(self, mock_urlopen, _log):
+        mock_urlopen.side_effect = [
+            self._resp({"choices": [{"finish_reason": "length", "message": {"content": None}}]}),
+            self._resp({"choices": [{"message": {"content": "Second try."}}]}),
+        ]
+        self.assertEqual(bot._call_gemini_api("hi"), "Second try.")
+        self.assertEqual(json.loads(mock_urlopen.call_args[0][0].data)["reasoning"]["effort"], "low")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_MODELS", ["openrouter/free"])
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_API_KEY", "")
+    @patch("bot._urlopen")
+    def test_openrouter_does_not_retry_timeout(self, mock_urlopen, _log):
+        mock_urlopen.side_effect = TimeoutError("read timed out")
+        self.assertIsNone(bot._call_gemini_api("hi"))
+        self.assertEqual(mock_urlopen.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,7 +56,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.14.1"
+VERSION = "2.15.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -780,6 +780,27 @@ def _extract_audio_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
         pass
     return None, None
 
+class AIText(str):
+    """AI answer text that remembers which model produced it."""
+    model: str | None = None
+
+    def __new__(cls, text: str, model: str | None = None):
+        obj = super().__new__(cls, text)
+        obj.model = model
+        return obj
+
+def _ai_model_tag(text) -> str:
+    """Markdown suffix naming the model that produced an AI answer, e.g. ' *(gemini-3.8-flash)*'."""
+    model = getattr(text, "model", None)
+    return f" *({model})*" if model else ""
+
+def _get_cached_ai(cache_key: str) -> "AIText | None":
+    entry = database.get_cached_tldr_entry(cache_key)
+    return AIText(entry[0], entry[1]) if entry else None
+
+def _cache_ai(cache_key: str, text: str):
+    database.add_cached_tldr(cache_key, text, getattr(text, "model", None))
+
 def _call_gemini_api(
     prompt: str,
     max_tokens: int = 4096,
@@ -788,7 +809,7 @@ def _call_gemini_api(
     image_mime: str = "image/jpeg",
     media_bytes: bytes | None = None,
     media_mime: str | None = None,
-) -> str | None:
+) -> AIText | None:
     """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging.
     Falls back to OpenRouter (OPENROUTER_MODELS) when every Gemini model fails."""
     target_media_bytes = media_bytes if media_bytes is not None else image_bytes
@@ -877,7 +898,7 @@ def _call_gemini_models(
                     if parts and "text" in parts[0]:
                         res_text = parts[0]["text"].strip()
                         if res_text:
-                            return _trim_incomplete_sentence(res_text)
+                            return AIText(_trim_incomplete_sentence(res_text), model_name)
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
@@ -957,7 +978,7 @@ def _call_openrouter_api(
             res_text = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
             if res_text:
                 logger.info(f"OpenRouter fallback answered via '{body.get('model', model_name)}'")
-                return _trim_incomplete_sentence(res_text)
+                return AIText(_trim_incomplete_sentence(res_text), body.get("model") or model_name)
             logger.warning(f"OpenRouter model '{model_name}' returned an empty response: {str(body)[:300]}")
             continue
         except urllib.error.HTTPError as e:
@@ -989,7 +1010,7 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
     cache_key = None
     if url_key:
         cache_key = f"{url_key}_{lang_str.lower()}_{'short' if short_paragraph else 'full'}"
-        cached = database.get_cached_tldr(cache_key)
+        cached = _get_cached_ai(cache_key)
         if cached:
             logger.info(f"Returning cached TL;DR summary for {cache_key}")
             database.log_cache_event("tldr", True)
@@ -1018,7 +1039,7 @@ def _summarize_text_with_gemini(text: str, title: str | None = None, target_lang
 
     res_text = _call_gemini_api(prompt, max_tokens=max_tokens, temperature=0.3)
     if res_text and cache_key:
-        database.add_cached_tldr(cache_key, res_text)
+        _cache_ai(cache_key, res_text)
     return res_text
 
 def _summarize_audio_with_gemini(
@@ -1036,7 +1057,7 @@ def _summarize_audio_with_gemini(
     full_cache_key = None
     if cache_key:
         full_cache_key = f"tldr_{cache_key}_{lang_str.lower()}"
-        cached = database.get_cached_tldr(full_cache_key)
+        cached = _get_cached_ai(full_cache_key)
         if cached:
             logger.info(f"Returning cached audio TL;DR summary for {full_cache_key}")
             database.log_cache_event("tldr", True)
@@ -1069,7 +1090,7 @@ def _summarize_audio_with_gemini(
         media_mime=audio_mime,
     )
     if res_text and full_cache_key:
-        database.add_cached_tldr(full_cache_key, res_text)
+        _cache_ai(full_cache_key, res_text)
     return res_text
 
 def _ask_gemini_ai(
@@ -1103,7 +1124,7 @@ def _ask_gemini_ai(
     cache_key = None
     if query_key:
         cache_key = f"ai_{query_key}_{lang_str.lower()}"
-        cached = database.get_cached_tldr(cache_key)
+        cached = _get_cached_ai(cache_key)
         if cached:
             logger.info(f"Returning cached AI answer for {cache_key}")
             database.log_cache_event("tldr", True)
@@ -1176,7 +1197,7 @@ def _ask_gemini_ai(
         media_mime=target_media_mime,
     )
     if res_text and cache_key:
-        database.add_cached_tldr(cache_key, res_text)
+        _cache_ai(cache_key, res_text)
     return res_text
 
 def _extract_url_from_msg_or_payload(payload: str, msg) -> str | None:
@@ -1222,7 +1243,7 @@ def _format_preview_caption(title: str, url: str, mode: str, chat_id: int, jina_
             tldr = _summarize_text_with_gemini(article_text, title=clean_title, target_lang=lang, short_paragraph=True, url_key=url_key)
         
     if tldr:
-        return f"⚡ TL;DR: {tldr}\n\n🔗 [{clean_title}]({url})"
+        return f"⚡ TL;DR{_ai_model_tag(tldr)}: {tldr}\n\n🔗 [{clean_title}]({url})"
     
     if mode == "webxdc":
         return f"📱 [{clean_title}]({url})"
@@ -5073,7 +5094,7 @@ def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
             
         clean_title = (title or "Article").replace("[", "(").replace("]", ")")
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
-        reply = f"⚡ **TL;DR**{lang_suffix}:\n\n{summary}\n\n🔗 [{clean_title}]({url})"
+        reply = f"⚡ **TL;DR**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}\n\n🔗 [{clean_title}]({url})"
         
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")
@@ -5106,7 +5127,7 @@ def _do_tldr_text(bot, accid, chat_id, req_msg_id, from_id, text: str):
             return
 
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
-        reply = f"⚡ **TL;DR**{lang_suffix}:\n\n{summary}"
+        reply = f"⚡ **TL;DR**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}"
 
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")
@@ -5162,7 +5183,7 @@ def _do_tldr_audio(
             return
 
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
-        reply = f"⚡ **TL;DR (Audio)**{lang_suffix}:\n\n{summary}"
+        reply = f"⚡ **TL;DR (Audio)**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}"
 
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")
@@ -5310,9 +5331,9 @@ def _do_ai_query(
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         if url:
             clean_title = (title or "Link").replace("[", "(").replace("]", ")")
-            reply = f"🤖 **AI**{lang_suffix}:\n\n{answer}\n\n🔗 [{clean_title}]({url})"
+            reply = f"🤖 **AI**{lang_suffix}{_ai_model_tag(answer)}:\n\n{answer}\n\n🔗 [{clean_title}]({url})"
         else:
-            reply = f"🤖 **AI**{lang_suffix}:\n\n{answer}"
+            reply = f"🤖 **AI**{lang_suffix}{_ai_model_tag(answer)}:\n\n{answer}"
 
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")

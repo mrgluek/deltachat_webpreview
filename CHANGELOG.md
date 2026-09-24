@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.15.0] - 2026-09-24
+
+### Added
+- **Model Name in AI Replies**: `/ai`, `/tldr` (links, text and audio) and preview TL;DRs now show which model answered, e.g. `🤖 **AI** *(gemini-3.8-flash)*:` or `⚡ TL;DR *(cohere/north-mini-code:free)*:` when the OpenRouter fallback was used. The model is stored in `tldr_cache` (new `model` column, auto-migrated) so cached answers keep their label; entries cached before this version show no label.
+
 ## [2.14.1] - 2026-09-24
 
 ### Fixed

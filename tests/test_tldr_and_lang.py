@@ -706,5 +706,57 @@ class TestOpenRouterFallback(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_count, 1)
 
 
+class TestAIModelTag(unittest.TestCase):
+    def setUp(self):
+        bot._GEMINI_MODEL_COOLDOWNS.clear()
+        self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+        self._old_db = database.DB_PATH
+        database.DB_PATH = self.db
+        database.init_db()
+
+    def tearDown(self):
+        database.DB_PATH = self._old_db
+        for suffix in ("", "-wal", "-shm"):
+            if os.path.exists(self.db + suffix):
+                os.remove(self.db + suffix)
+
+    def test_tag_formatting(self):
+        self.assertEqual(bot._ai_model_tag(bot.AIText("x", "gemini-3.8-flash")), " *(gemini-3.8-flash)*")
+        self.assertEqual(bot._ai_model_tag("plain"), "")
+        self.assertEqual(bot.AIText("hello", "m"), "hello")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-a", "gemini-b"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_gemini_answer_carries_fallback_model(self, mock_urlopen, _log):
+        import urllib.error
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": "Answer."}]}}]}).encode()
+        mock_urlopen.side_effect = [urllib.error.HTTPError("u", 503, "x", {}, None), ok]
+        self.assertEqual(bot._call_gemini_api("hi").model, "gemini-b")
+
+    @patch("bot._call_gemini_api")
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    def test_model_survives_cache(self, mock_call):
+        mock_call.return_value = bot.AIText("Cached summary text.", "gemini-3.8-flash")
+        text = "A long enough article text to be summarized by the bot. " * 3
+        first = bot._summarize_text_with_gemini(text, url_key="abc")
+        second = bot._summarize_text_with_gemini(text, url_key="abc")
+        self.assertEqual(mock_call.call_count, 1)
+        self.assertEqual(first.model, "gemini-3.8-flash")
+        self.assertEqual(second, "Cached summary text.")
+        self.assertEqual(second.model, "gemini-3.8-flash")
+
+    @patch("bot._summarize_text_with_gemini")
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    def test_preview_caption_shows_model(self, mock_sum):
+        mock_sum.return_value = bot.AIText("Short summary.", "openrouter-model:free")
+        caption = bot._format_preview_caption("T", "https://example.com", "readability", 1, jina_markdown="Text")
+        self.assertTrue(caption.startswith("⚡ TL;DR *(openrouter-model:free)*: Short summary."))
+
+
 if __name__ == "__main__":
     unittest.main()

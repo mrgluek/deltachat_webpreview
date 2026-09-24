@@ -112,6 +112,10 @@ def init_db():
             )
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tldr_cache_created_at ON tldr_cache(created_at)')
+        try:
+            cursor.execute("ALTER TABLE tldr_cache ADD COLUMN model TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # API requests log table for Jina and Gemini tracking
         cursor.execute('''
@@ -365,29 +369,34 @@ def cleanup_old_records(retention_days: int = 30) -> dict[str, int]:
     return cleaned
 
 def get_cached_tldr(cache_key: str, max_age_seconds: int = 86400) -> str | None:
+    entry = get_cached_tldr_entry(cache_key, max_age_seconds)
+    return entry[0] if entry else None
+
+def get_cached_tldr_entry(cache_key: str, max_age_seconds: int = 86400) -> tuple[str, str | None] | None:
+    """Return (summary, model) for a cached AI answer, or None."""
     with _lock:
         conn = _connect()
         try:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT summary FROM tldr_cache WHERE cache_key = ? AND created_at >= CAST(strftime('%s','now') AS INTEGER) - ?",
+                "SELECT summary, model FROM tldr_cache WHERE cache_key = ? AND created_at >= CAST(strftime('%s','now') AS INTEGER) - ?",
                 (cache_key, max_age_seconds)
             )
             row = cursor.fetchone()
-            return row["summary"] if row else None
+            return (row["summary"], row["model"]) if row else None
         finally:
             conn.close()
 
-def add_cached_tldr(cache_key: str, summary: str):
+def add_cached_tldr(cache_key: str, summary: str, model: str | None = None):
     with _lock:
         conn = _connect()
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO tldr_cache (cache_key, summary, created_at)
-                VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER))
-            ''', (cache_key, summary))
+                INSERT OR REPLACE INTO tldr_cache (cache_key, summary, model, created_at)
+                VALUES (?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
+            ''', (cache_key, summary, model))
             conn.commit()
         finally:
             conn.close()

@@ -106,14 +106,14 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/transports` — Show configured mail relays & stats (Admin only).
 - `/addtransport` — Add a backup mail relay (Admin only, private 1:1 chat only).
 - `/rmtransport <addr>` — Remove a mail relay (Admin only).
-
-Relay selection and failover are handled by the Delta Chat core (2.61+): it sends via the newest relay first and falls back to the next one if a relay is unreachable. `/transports` lists relays in that order. The former `/setprimary` and `/resilient` commands are deprecated and only reply with this explanation.
 - `/invidious_add <domain/url>` — Register a custom Invidious instance domain (Admin only).
 - `/invidious_rm <domain/url>` — Deregister an Invidious instance domain (Admin only). *(Note: `/invidious_remove` is also supported as an alias)*
 - `/invidious_list` — List registered Invidious instance domains (Admin only).
 - `/jina <api_key>` — Check Jina AI API key remaining token balance (Admin only; defaults to env-configured key if `<api_key>` is omitted).
 - `/keep <url>` — Save URL to KaraKeep (admin), Web Archive, and Archive.today fallback (Admin command and preview button; also supports quote replies).
 - `/webpreview [on|off]` — Enable or disable automatic link previews in the current chat. Defaults to enabled; accepts `on`/`off`, `1`/`0`, or `true`/`false`.
+
+Relay selection and failover are handled by the Delta Chat core (2.61+): it sends via the newest relay first and falls back to the next one if a relay is unreachable. `/transports` lists relays in that order. The former `/setprimary` and `/resilient` commands are deprecated and only reply with this explanation.
 
 ### Target-Specific Commands in Group Chats
 

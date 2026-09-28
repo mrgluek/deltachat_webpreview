@@ -13,7 +13,7 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
 - ⚡ **Full Page Archiving (`/archive <url>`):** Save complete pages as full interactive archives with JavaScript enabled using `monolith`. Proactively compresses and optimizes heavy base64-encoded image payloads post-generation to keep files tiny.
 - 💬 **Quote Reply Parsing:** Reply with `/preview` or `/archive` (without a URL) to any message containing links, and the bot will automatically extract and capture the first link in the quoted text.
 - ⏱️ **Rate Limiting:** Protects against abuse by rate-limiting regular users (15-second debounce) while allowing admins unlimited generations.
-- 🔄 **Automatic Transport Failover:** Supports multiple mail servers. The bot automatically detects message delivery failures via raw core events, switches `configured_addr` to a backup transport in round-robin fashion, and schedules a resend of the message using exponential backoff (5s, 10s, 20s, 40s...) via an asynchronous timer thread (up to a maximum of 10 attempts per message) to prevent loop propagation and CPU spikes.
+- 🔄 **Multiple Mail Relays:** Supports multiple mail servers. Relay selection and failover are handled by the Delta Chat core (2.61+), which sends via the newest relay first and falls back to the next one if a relay is unreachable.
 - 🛡️ **Secure Administration:** Claim ownership with `/initadmin`. Admins bypass rate limits and have exclusive control over relays and statistics.
 - 🧹 **Automatic Cache Rotation & Efficiency Tracking:** Keeps disk usage low by automatically purging compiled HTML cache previews, banners, and AI summaries older than 24 hours. Tracks granular cache hits and misses in SQLite across OG cards, reader files, and AI summaries, reporting real-time cache efficiency and hit ratios via `/stats`.
 - 💾 **Direct File Downloads:** Automatically detects URLs pointing to document files (PDF, EPUB, DjVu, MS Office, LibreOffice, plain text/data files). Instead of attempting an HTML preview, the bot offers a `/download` command in groups or directly downloads/attaches the file in private chats (up to 50 MB limits, with chunked streaming).
@@ -106,8 +106,8 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/transports` — Show configured mail relays & stats (Admin only).
 - `/addtransport` — Add a backup mail relay (Admin only, private 1:1 chat only).
 - `/rmtransport <addr>` — Remove a mail relay (Admin only).
-- `/setprimary <addr>` — Switch the primary mail relay (Admin only).
-- `/resilient` — Toggle resilient sending mode across all relays (Admin only).
+
+Relay selection and failover are handled by the Delta Chat core (2.61+): it sends via the newest relay first and falls back to the next one if a relay is unreachable. `/transports` lists relays in that order. The former `/setprimary` and `/resilient` commands are deprecated and only reply with this explanation.
 - `/invidious_add <domain/url>` — Register a custom Invidious instance domain (Admin only).
 - `/invidious_rm <domain/url>` — Deregister an Invidious instance domain (Admin only). *(Note: `/invidious_remove` is also supported as an alias)*
 - `/invidious_list` — List registered Invidious instance domains (Admin only).
@@ -148,7 +148,7 @@ The repository ships with a comprehensive `tests/` directory with `unittest` sui
 | File | What it covers |
 |---|---|
 | `tests/test_database.py` | Config roundtrip, admin fingerprinting, buffered transport statistics, and 30-day record retention pruning |
-| `tests/test_transport_commands.py` | Transport commands, private chat enforcement for `/addtransport` and `/initadmin`, `/resilient` toggle, and error sanitization |
+| `tests/test_transport_commands.py` | Transport commands, private chat enforcement for `/addtransport` and `/initadmin`, deprecated `/resilient` and `/setprimary`, and error sanitization |
 | `tests/test_url_validation.py` | `_is_internal_or_invalid_url` – valid domains, private IPs, DNS resolution/rebinding SSRF protection, and `SafeRedirectHandler` |
 | `tests/test_instagram_parser.py` | `_is_instagram_url`, `_fetch_instagram_og_data` – OGInstagram parsing, alt text, direct media fallback |
 | `tests/test_telegram_parser.py` | `_is_telegram_url`, `_fetch_telegram_og_data` – static preview parsing, truncation, newlines |

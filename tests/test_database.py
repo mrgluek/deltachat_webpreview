@@ -55,14 +55,6 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(database.get_admin_fingerprint(), "A1B2C3D4E5F6")
 
     # ── Resilient Mode Flag Tests ───────────────────────────────────────────
-    def test_resilient_flag_toggle(self):
-        self.assertIsNone(database.get_config("resilient"))
-        database.set_config("resilient", "1")
-        self.assertEqual(database.get_config("resilient"), "1")
-        database.set_config("resilient", "0")
-        self.assertEqual(database.get_config("resilient"), "0")
-
-    # ── Transport Statistics Tests (Buffered) ───────────────────────────────
     def test_transport_stats_accumulation_and_flush(self):
         addr1 = "bot1@example.com"
         addr2 = "bot2@example.com"

@@ -103,7 +103,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/donate` — Support project development ❤️.
 - `/help` — Show available commands and greeting info.
 - `/initadmin` — Claim administrative ownership (private chat only).
-- `/transports` — Show configured mail relays & stats (Admin only).
+- `/transports` — Show mail relays: relay used for sending, send queue, incoming status and storage (Admin only).
 - `/addtransport` — Add a backup mail relay (Admin only, private 1:1 chat only).
 - `/rmtransport <addr>` — Remove a mail relay (Admin only).
 - `/invidious_add <domain/url>` — Register a custom Invidious instance domain (Admin only).
@@ -113,7 +113,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/keep <url>` — Save URL to KaraKeep (admin), Web Archive, and Archive.today fallback (Admin command and preview button; also supports quote replies).
 - `/webpreview [on|off]` — Enable or disable automatic link previews in the current chat. Defaults to enabled; accepts `on`/`off`, `1`/`0`, or `true`/`false`.
 
-Relay selection and failover are handled by the Delta Chat core (2.61+): it sends via the newest relay first and falls back to the next one if a relay is unreachable. `/transports` lists relays in that order. The former `/setprimary` and `/resilient` commands are deprecated and only reply with this explanation.
+Relay selection and failover are handled by the Delta Chat core (2.61+): it keeps sending through the relay that last worked and moves to the next one only if it cannot connect, so the relay used for sending can differ from the account's main address. `/transports` shows which relay that is, the core's send queue, and per relay the incoming status, the last received message and mailbox storage. The former `/setprimary` and `/resilient` commands are deprecated and only reply with this explanation.
 
 ### Target-Specific Commands in Group Chats
 

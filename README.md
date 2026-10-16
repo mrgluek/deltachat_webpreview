@@ -173,3 +173,7 @@ If you find this bot useful, consider supporting its development:
 - **Git Repository:** [mrgluek/deltachat_webpreview](https://github.com/mrgluek/deltachat_webpreview)
 - **Forgejo Mirror:** [gluek/deltachat_webpreview](https://git.gluek.info/gluek/deltachat_webpreview)
 - **Donations:** Use the `/donate` command in Delta Chat.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

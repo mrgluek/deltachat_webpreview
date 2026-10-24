@@ -34,12 +34,17 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
    cd deltachat_webpreview
    ```
 
-2. **Initialize Account:**
-   Run the initialization command once to set up the bot's email and password:
+2. **Configure Email and Admin (Optional):**
+   Skip this step and the bot creates its own account at first start: the Delta Chat core (2.62+) picks the fastest chatmail relay from its built-in list and later adds further relays in the background.
+
+   To choose the account yourself, initialize it with an email and password, or with `DCACCOUNT:server.tld` for an account on a specific chatmail relay:
 
    ```bash
    docker compose run --rm webpreview_bot python bot.py init bot-email@example.com your_password
+   docker compose run --rm webpreview_bot python bot.py init DCACCOUNT:server.tld
    ```
+
+   The admin can be set on the server (`docker compose run --rm webpreview_bot python set_admin.py`, see [Admin Management](#admin-management)) or later inside the bot chat with the `/initadmin` command.
 
 3. **Start the Bot:**
 
@@ -49,6 +54,8 @@ Delta Chat bot designed to save web pages as complete, single self-contained HTM
    ```
 
    *Note: If it's a new account, a QR code will be printed to the logs for linking your Delta Chat device.*
+
+   *Updates:* run `./update.sh` (e.g. from cron) to deploy the newest release: the highest `vX.Y.Z` tag, from GitHub or, when GitHub is unreachable, from the Forgejo mirror; `-f` rebuilds the container without changes. Commits on `main` that are not released yet are not deployed. In `.env.local`, `UPDATE_REF=v2.17.1` stays on that release (to roll back; remove it to follow new releases again), `UPDATE_REF=main` follows the branch, and `MONITOR_URL` pings a healthcheck on start, success and failure.
 
 4. **Claim Admin Ownership:**
    Send `/initadmin` to the bot in a private message to become the administrator.
@@ -156,6 +163,7 @@ The repository ships with a comprehensive `tests/` directory with `unittest` sui
 | `tests/test_proxy_and_jina.py` | Proxy routing, Jina headers, `_is_valid_image_url` (skipping `blob:`, `data:`, localhost, internal IPs, SVGs), octet-stream logic, cache saving, OG fallback |
 | `tests/test_webpreview.py` | `/webpreview` command, DB status checks, and `on_new_message` auto-preview toggling |
 | `tests/test_image_compression.py` | Animated GIF / WebP frame iteration, animation preservation, and image resizing |
+| `tests/test_auto_account.py` | Automatic account creation on `serve` without a configured account (mocked RPC) |
 
 To run locally (inside the virtualenv):
 
@@ -164,6 +172,10 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 CI runs automatically on every push and pull-request via GitHub Actions (`.github/workflows/tests.yml`).
+
+### Releasing
+
+Merge into `main`, then tag the merge commit: `git tag -a vX.Y.Z -m "..." <commit> && git push origin vX.Y.Z`. Pushing the tag runs `.github/workflows/release.yml`: it checks that `VERSION` in `bot.py` matches the tag, publishes the GitHub release with that version's `CHANGELOG.md` section, and sends the ntfy notification and the Home Assistant add-on sync. The server's `update.sh` deploys only tagged releases.
 
 
 ## Support & Development

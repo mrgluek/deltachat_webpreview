@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.18.1] - 2026-10-26
+
+### Changed
+- **Download Limit 64 KB Instead of 1 Byte**: The intent was to skip attachments, but with a limit of 1 byte the Delta Chat core treats every incoming message, plain text too, as too large and fetches it later one by one instead of in the normal batch, which delayed previews of links. With 64 KB links arrive at once, while photos and files (over 64 KB) are still not downloaded. `DOWNLOAD_LIMIT` (default now `65536`) still overrides it.
+
 ## [2.18.0] - 2026-10-24
 
 ### Added

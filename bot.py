@@ -57,7 +57,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.18.0"
+VERSION = "2.18.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -6524,7 +6524,9 @@ def on_init(bot, args):
         
         # Configure storage and auto-cleanup
         delete_after = os.environ.get("DELETE_DEVICE_AFTER", "3600")
-        download_limit = os.environ.get("DOWNLOAD_LIMIT", "1")
+        # Attachments over 64 KB are not downloaded automatically. Not 1 byte: the core then also defers
+        # every plain text message (commands, links) to a one-by-one "download later", which delays replies.
+        download_limit = os.environ.get("DOWNLOAD_LIMIT", "65536")
         bot.rpc.set_config(dc_accid, "delete_device_after", delete_after)
         bot.rpc.set_config(dc_accid, "download_limit", download_limit)
         bot.logger.info(f"Storage settings configured: delete_device_after={delete_after}s, download_limit={download_limit} bytes")

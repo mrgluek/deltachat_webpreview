@@ -89,7 +89,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 | `WAYBACK_ACCESS_KEY` | Optional Internet Archive S3 Access Key for authenticated [SPN2 API](https://archive.org/account/s3.php) saves (bypasses anonymous 403 blocks & raises rate limits). | *(Empty)* |
 | `WAYBACK_SECRET_KEY` | Optional Internet Archive S3 Secret Key for authenticated [SPN2 API](https://archive.org/account/s3.php) saves. | *(Empty)* |
 | `DELETE_DEVICE_AFTER` | Local message retention duration (in seconds) in the bot database. | `3600` (1 hour) |
-| `DOWNLOAD_LIMIT` | Automatic download limit for incoming message attachments (in bytes). | `1` (1 byte) |
+| `DOWNLOAD_LIMIT` | Automatic download limit for incoming message attachments (in bytes). At `1` the core also defers every plain text message, which delays replies. | `65536` (64 KB) |
 
 > [!TIP]
 > **Internet Archive SPN2 API (`WAYBACK_ACCESS_KEY` & `WAYBACK_SECRET_KEY`)**:

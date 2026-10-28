@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.18.2"
+VERSION = "2.19.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -6424,7 +6424,7 @@ def ensure_configured_account(bot, args) -> None:
     try:
         bot.rpc.set_config(accid, "bot", "1")
         bot.rpc.init_transports(accid, None)
-        addr = bot.rpc.get_config(accid, "configured_addr")
+        addr = dc_fingerprint.get_self_addr(bot.rpc, accid)
         bot.logger.info(f"Account created: {addr}")
     except Exception as e:
         # serve then exits with "no configured accounts" and the container restart retries

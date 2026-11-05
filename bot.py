@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.19.0"
+VERSION = "2.20.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -90,6 +90,12 @@ WAYBACK_SECRET_KEY = os.environ.get("WAYBACK_SECRET_KEY", "").strip()
 # Jina AI key (opt-in via env)
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "").strip()
 JINA_PROXY_URL = os.environ.get("JINA_PROXY_URL", "").strip()
+JINA_BALANCE_ALERT_INTERVAL = 86400  # At most one private warning per day, across restarts
+_jina_balance_alert_lock = threading.Lock()
+_jina_balance_check_lock = threading.Lock()
+_jina_balance_last_check = None
+JINA_LOW_BALANCE_THRESHOLD = 1_000_000
+JINA_BALANCE_CHECK_INTERVAL = 3600
 
 # Gemini AI key & fallback models (opt-in via env)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
@@ -2852,12 +2858,96 @@ def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None,
 
     return title, image_url, markdown_content, warning
 
+def _notify_jina_balance(balance: int | float | None = None):
+    """Warn privately about low balance, or exhaustion when balance is unknown."""
+    if dc_bot_instance is None or dc_accid is None:
+        return
+
+    with _jina_balance_alert_lock:
+        try:
+            now = time.time()
+            low_balance = balance is not None and balance > 0
+            config_key = "jina_low_balance_alert_sent_at" if low_balance else "jina_balance_alert_sent_at"
+            last_sent = database.get_config(config_key)
+            if last_sent and now - float(last_sent) < JINA_BALANCE_ALERT_INTERVAL:
+                return
+
+            admin_email = database.get_config("admin_dc_email")
+            admin_fp = database.get_admin_fingerprint()
+            if not admin_email and not admin_fp:
+                return
+
+            # get_contact_ids lists key contacts. create_contact would make a keyless
+            # contact with an unencrypted chat, which chatmail relays refuse, so it is
+            # only the last resort for an admin known by address alone.
+            contact_id = next((
+                cid for cid in dc_bot_instance.rpc.get_contact_ids(dc_accid, 0, None if admin_fp else admin_email)
+                if _is_dc_admin(dc_bot_instance, dc_accid, cid)
+            ), None)
+            if not contact_id and not admin_fp:
+                contact_id = dc_bot_instance.rpc.create_contact(dc_accid, admin_email, None)
+            if not contact_id or contact_id <= 9:
+                return
+
+            chat_id = dc_bot_instance.rpc.create_chat_by_contact_id(dc_accid, contact_id)
+            if low_balance:
+                warning = (
+                    f"⚠️ Jina AI token balance is low: {balance:,.0f} tokens "
+                    f"(below {JINA_LOW_BALANCE_THRESHOLD:,})."
+                )
+            elif balance is not None:
+                warning = f"⚠️ Jina AI token balance is exhausted: {balance:,.0f} tokens."
+            else:
+                warning = (
+                    "⚠️ Jina AI Reader returned HTTP 402 (Payment Required). "
+                    "The token balance may be exhausted; Jina previews are currently unavailable."
+                )
+            msg_id = _send(
+                dc_bot_instance, dc_accid, chat_id,
+                warning + "\n\nCheck the balance with /jina and top up at https://jina.ai/.\n"
+                "This warning is sent at most once every 24 hours."
+            )
+            if msg_id:
+                database.set_config(config_key, str(now))
+        except Exception as e:
+            logger.warning(f"Failed to notify administrator about Jina token balance: {e}")
+
+
+def _check_jina_balance():
+    """Check balance on Reader requests, at most once an hour, including failures."""
+    global _jina_balance_last_check
+    if not JINA_API_KEY or dc_bot_instance is None or dc_accid is None:
+        return
+    if not _jina_balance_check_lock.acquire(blocking=False):
+        return
+    try:
+        now = time.monotonic()
+        if (_jina_balance_last_check is not None
+                and now - _jina_balance_last_check < JINA_BALANCE_CHECK_INTERVAL):
+            return
+        _jina_balance_last_check = now
+        check_url = "https://dash.jina.ai/api/v1/api_key/fe_user?" + urllib.parse.urlencode({"api_key": JINA_API_KEY})
+        req = urllib.request.Request(check_url, headers={"User-Agent": STANDARD_USER_AGENT})
+        with _urlopen(req, timeout=10) as response:
+            data = json.loads(response.read(64 * 1024).decode("utf-8"))
+        balance = data["wallet"]["total_balance"]
+        if isinstance(balance, (int, float)) and not isinstance(balance, bool) and balance < JINA_LOW_BALANCE_THRESHOLD:
+            _notify_jina_balance(balance)
+    except Exception as e:
+        # Request URLs contain the API key; do not include exception details.
+        logger.warning("Failed to check Jina token balance (%s)", type(e).__name__)
+    finally:
+        _jina_balance_check_lock.release()
+
+
 def _fetch_from_jina(url: str, return_html: bool = False) -> tuple[str | None, str | None, str | None, str | None]:
     """
     Queries Jina AI Reader to fetch the page metadata and content.
     Returns (title, image_url, content_str, warning).
     If return_html is True, content_str is the raw HTML and other values are None.
     """
+    # In the background: a slow balance API must not delay the reply.
+    threading.Thread(target=_check_jina_balance, name="jina-balance", daemon=True).start()
     jina_url = f"https://r.jina.ai/{url}"
     try:
         logger.info(f"Querying Jina AI Reader for URL: {url} (return_html={return_html})")
@@ -2885,6 +2975,11 @@ def _fetch_from_jina(url: str, return_html: bool = False) -> tuple[str | None, s
             if return_html:
                 return None, None, text, None
             return _parse_jina_response(text)
+    except urllib.error.HTTPError as e:
+        logger.warning(f"Jina AI Reader fetch failed for {url}: {e}")
+        if e.code == 402:
+            _notify_jina_balance()
+        return None, None, None, None
     except Exception as e:
         logger.warning(f"Jina AI Reader fetch failed for {url}: {e}")
         return None, None, None, None

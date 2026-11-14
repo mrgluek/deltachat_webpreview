@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.21.0] - 2026-11-14
+
+### Added
+- **Gemini 4 Hydrogen First in the Chain**: `gemini-4-hydrogen` is now the first model tried for `/tldr`, `/ai` and preview captions. `gemini-3.8-flash` and the older models stay behind it, so if Hydrogen is rate limited, overloaded or times out, the usual fallback applies. The model name is still shown under each AI answer. A `GEMINI_MODELS` set in `.env` overrides the new default.
+
 ## [2.20.1] - 2026-11-05
 
 ### Changed

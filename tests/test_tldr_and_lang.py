@@ -138,7 +138,7 @@ class TestTldrAndLang(unittest.TestCase):
 
     def test_gemini_models_default_chain(self):
         self.assertTrue(len(bot.GEMINI_MODELS) > 0)
-        self.assertEqual(bot.GEMINI_MODELS[0], "gemini-3.8-flash")
+        self.assertEqual(bot.GEMINI_MODELS[0], "gemini-4-hydrogen")
         self.assertIn("gemini-3.8-flash", bot.GEMINI_MODELS)
         self.assertIn("gemini-3.7-flash", bot.GEMINI_MODELS)
 

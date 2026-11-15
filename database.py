@@ -127,6 +127,20 @@ def init_db():
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_log_service ON api_log(service)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_log_created_at ON api_log(created_at)')
+
+        # Per-request token usage of the paid /google searches, for the cost estimate in /stats
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS google_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER DEFAULT (strftime('%s','now')),
+                model TEXT,
+                prompt_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                thought_tokens INTEGER DEFAULT 0,
+                search_queries INTEGER DEFAULT 0
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_usage_created_at ON google_usage(created_at)')
         
         # Cache hit/miss log table for tracking cache performance
         cursor.execute('''
@@ -363,6 +377,9 @@ def cleanup_old_records(retention_days: int = 30) -> dict[str, int]:
             cleaned["api_log"] = cursor.rowcount
             cursor.execute("DELETE FROM cache_log WHERE created_at < ?", (cutoff,))
             cleaned["cache_log"] = cursor.rowcount
+            # Cost history is tiny and the monthly search quota needs it, so it is kept for 400 days
+            cursor.execute("DELETE FROM google_usage WHERE created_at < ?", (now - 400 * 86400,))
+            cleaned["google_usage"] = cursor.rowcount
             conn.commit()
         finally:
             conn.close()
@@ -425,6 +442,31 @@ def count_api_calls_since(service: str, seconds: int) -> int:
                 (service, int(seconds))
             )
             return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+def log_google_usage(model: str, prompt_tokens: int, output_tokens: int, thought_tokens: int, search_queries: int):
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT INTO google_usage (created_at, model, prompt_tokens, output_tokens, thought_tokens, search_queries) "
+                "VALUES (CAST(strftime('%s','now') AS INTEGER), ?, ?, ?, ?, ?)",
+                (model or "", int(prompt_tokens or 0), int(output_tokens or 0), int(thought_tokens or 0), int(search_queries or 0))
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+def get_google_usage(since_ts: int) -> list[tuple]:
+    """Rows (created_at, model, prompt_tokens, output_tokens, thought_tokens, search_queries) since a Unix time."""
+    with _lock:
+        conn = _connect()
+        try:
+            cur = conn.execute(
+                "SELECT created_at, model, prompt_tokens, output_tokens, thought_tokens, search_queries "
+                "FROM google_usage WHERE created_at >= ? ORDER BY created_at", (int(since_ts),))
+            return cur.fetchall()
         finally:
             conn.close()
 

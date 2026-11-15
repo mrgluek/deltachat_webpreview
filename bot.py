@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.28.0"
+VERSION = "2.29.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -903,6 +903,7 @@ def _extract_audio_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
 class AIText(str):
     """AI answer text that remembers which model produced it."""
     model: str | None = None
+    usage: dict | None = None  # token counts and search queries of a /google answer, for the cost estimate
 
     def __new__(cls, text: str, model: str | None = None):
         obj = super().__new__(cls, text)
@@ -990,6 +991,74 @@ def _resolve_grounding_url(uri: str, timeout: float = 4.0) -> str:
     except Exception as e:
         logger.info(f"Could not resolve grounding link: {e}")
     return uri
+
+def _extract_google_usage(body: dict, candidate: dict) -> dict:
+    """Token counts and number of search queries of a Gemini answer. Tool-use prompt tokens are billed as input."""
+    u = body.get("usageMetadata") or {}
+    return {
+        "prompt": int(u.get("promptTokenCount") or 0) + int(u.get("toolUsePromptTokenCount") or 0),
+        "output": int(u.get("candidatesTokenCount") or 0),
+        "thoughts": int(u.get("thoughtsTokenCount") or 0),
+        "queries": len((candidate.get("groundingMetadata") or {}).get("webSearchQueries") or []),
+    }
+
+# USD per 1M tokens (input, output incl. reasoning) from Google's price list, checked 2026-11-15.
+# Some models have an introductory price that ends on a set date: (until_unix, intro_prices, later_prices).
+def _ts(y, m, d):
+    return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp())
+_GEMINI_PRICES = {
+    "gemini-4-hydrogen": ((1.50, 7.50),),
+    "gemini-3.8-flash": (_ts(2027, 1, 1), (0.75, 3.75), (1.50, 7.50)),
+    "gemini-3.6-flash": (_ts(2027, 1, 1), (0.75, 3.75), (1.50, 7.50)),
+    "gemini-3.5-flash-lite": ((0.30, 2.50),),
+    "gemini-3.1-flash-lite": ((0.25, 1.50),),
+    "gemini-4-argon": (_ts(2026, 12, 1), (2.00, 10.00), (4.00, 20.00)),
+    "gemini-4-carbon": (_ts(2026, 12, 1), (2.00, 10.00), (4.00, 20.00)),
+}
+GOOGLE_SEARCH_FREE_PER_MONTH = 5000
+GOOGLE_SEARCH_USD_PER_QUERY = 14 / 1000
+
+def _model_price(model: str, ts: float) -> tuple[float, float]:
+    """(input, output) USD per 1M tokens for a model at a time; an unknown model is priced like Hydrogen."""
+    entry = _GEMINI_PRICES.get(model) or _GEMINI_PRICES["gemini-4-hydrogen"]
+    if len(entry) == 1:
+        return entry[0]
+    until, intro, later = entry
+    return intro if ts < until else later
+
+def _google_token_cost(rows) -> tuple[float, int, int, int]:
+    """(USD for tokens, prompt tokens, output tokens incl. reasoning, search queries) over usage rows."""
+    usd = 0.0
+    p_tot = o_tot = q_tot = 0
+    for created_at, model, p, o, th, q in rows:
+        price_in, price_out = _model_price(model, created_at)
+        usd += (p * price_in + (o + th) * price_out) / 1_000_000
+        p_tot += p
+        o_tot += o + th
+        q_tot += q
+    return usd, p_tot, o_tot, q_tot
+
+def _google_cost_report(now: float | None = None) -> str:
+    """Admin-only /stats block: /google usage and an estimated cost from the logged token counts."""
+    now = now or time.time()
+    month_start = datetime.fromtimestamp(now, timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    rows_30d = database.get_google_usage(int(now) - 30 * 86400)
+    rows_month = database.get_google_usage(int(month_start.timestamp()))
+    rows_24h = [r for r in rows_30d if r[0] >= now - 86400]
+
+    def line(label, rows):
+        usd, p, o, q = _google_token_cost(rows)
+        return f"{label}: {len(rows)} searches, {p:,} in / {o:,} out tokens, {q} search queries, tokens about ${usd:.2f}\n"
+
+    q_month = sum(r[5] for r in rows_month)
+    billable = max(0, q_month - GOOGLE_SEARCH_FREE_PER_MONTH)
+    out = "\n🔎 **/google cost estimate (Admin only)**\n"
+    out += line("Last 24h", rows_24h)
+    out += line("Last 30 days", rows_30d)
+    out += (f"This month: {q_month} of {GOOGLE_SEARCH_FREE_PER_MONTH} free search queries used"
+            f"{f', about ${billable * GOOGLE_SEARCH_USD_PER_QUERY:.2f} for the rest' if billable else ''}\n")
+    out += "Estimate from logged token counts and list prices; the real bill is in AI Studio.\n"
+    return out
 
 def _format_grounding_sources(candidate: dict, limit: int = 3) -> str:
     """Markdown list of the web pages Gemini's Google Search grounding used, or "" when it did not search.
@@ -1128,7 +1197,10 @@ def _call_gemini_models(
                         res_text = _trim_incomplete_sentence(res_text)
                         if search:
                             res_text += _format_grounding_sources(candidates[0])
-                        return AIText(res_text, model_name)
+                        answer = AIText(res_text, model_name)
+                        if search:
+                            answer.usage = _extract_google_usage(body, candidates[0])
+                        return answer
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
@@ -5923,6 +5995,12 @@ def _do_google_query(bot, accid, chat_id, req_msg_id, from_id, query: str):
             database.log_api_call("google")
             answer = _google_answer(query, lang)
             _google_cache_put(cache_key, answer)
+            usage = getattr(answer, "usage", None)
+            if usage:
+                try:
+                    database.log_google_usage(answer.model, usage["prompt"], usage["output"], usage["thoughts"], usage["queries"])
+                except Exception as log_err:
+                    logger.warning(f"Could not log /google usage: {log_err}")
         if not answer:
             _react(bot, accid, req_msg_id, "❌")
             _send(bot, accid, chat_id, "❌ Failed to get a Google-backed answer. Please try again later.")
@@ -6374,6 +6452,12 @@ def stats_command(bot, accid, event):
                 cooldowns.append(f"{m} ({mins_left}m left)")
         if cooldowns:
             reply += f"Gemini cooling down: {', '.join(cooldowns)}\n"
+
+    if is_admin and GEMINI_SEARCH_API_KEY:
+        try:
+            reply += _google_cost_report()
+        except Exception as e:
+            logger.warning(f"Could not build /google cost report: {e}")
 
     if is_admin:
         reply += (

@@ -1264,6 +1264,76 @@ class TestGoogleCostControls(unittest.TestCase):
                     os.remove(db_path + suf)
 
 
+class TestGoogleCostReport(unittest.TestCase):
+    def setUp(self):
+        self.db_path = os.path.join(tempfile.gettempdir(), "test_google_cost.db")
+        self.old = database.DB_PATH
+        database.DB_PATH = self.db_path
+        database.init_db()
+        bot._google_cache.clear()
+
+    def tearDown(self):
+        database.DB_PATH = self.old
+        for suf in ("", "-wal", "-shm"):
+            if os.path.exists(self.db_path + suf):
+                os.remove(self.db_path + suf)
+
+    def test_extract_usage(self):
+        body = {"usageMetadata": {"promptTokenCount": 250, "toolUsePromptTokenCount": 50,
+                                  "candidatesTokenCount": 900, "thoughtsTokenCount": 800}}
+        cand = {"groundingMetadata": {"webSearchQueries": ["a", "b", "c"]}}
+        self.assertEqual(bot._extract_google_usage(body, cand), {"prompt": 300, "output": 900, "thoughts": 800, "queries": 3})
+        self.assertEqual(bot._extract_google_usage({}, {}), {"prompt": 0, "output": 0, "thoughts": 0, "queries": 0})
+
+    def test_prices_follow_dates_and_unknown_models(self):
+        before = bot._ts(2026, 12, 31)
+        after = bot._ts(2027, 1, 2)
+        self.assertEqual(bot._model_price("gemini-3.8-flash", before), (0.75, 3.75))
+        self.assertEqual(bot._model_price("gemini-3.8-flash", after), (1.50, 7.50))
+        self.assertEqual(bot._model_price("gemini-4-hydrogen", after), (1.50, 7.50))
+        self.assertEqual(bot._model_price("some-new-model", before), (1.50, 7.50))
+
+    def test_token_cost(self):
+        now = bot._ts(2026, 11, 15)
+        rows = [(now, "gemini-4-hydrogen", 1_000_000, 100_000, 100_000, 4)]
+        usd, p, o, q = bot._google_token_cost(rows)
+        self.assertAlmostEqual(usd, 1.50 + 0.2 * 7.50)
+        self.assertEqual((p, o, q), (1_000_000, 200_000, 4))
+
+    def test_db_roundtrip_and_report(self):
+        database.log_google_usage("gemini-4-hydrogen", 300, 900, 800, 4)
+        database.log_google_usage("gemini-4-hydrogen", 300, 100, 100, 2)
+        rows = database.get_google_usage(0)
+        self.assertEqual(len(rows), 2)
+        with patch.object(bot, "GOOGLE_SEARCH_FREE_PER_MONTH", 5):
+            report = bot._google_cost_report()
+        self.assertIn("Admin only", report)
+        self.assertIn("2 searches", report)
+        self.assertIn("6 of 5 free search queries", report)
+        self.assertIn("about $0.01 for the rest", report)  # 1 billable query x $0.014
+
+    def test_cleanup_keeps_recent_usage(self):
+        database.log_google_usage("m", 1, 1, 1, 1)
+        database.cleanup_old_records(retention_days=30)
+        self.assertEqual(len(database.get_google_usage(0)), 1)
+
+    @patch("bot._send")
+    @patch("bot._react")
+    @patch.object(bot, "GOOGLE_USER_DAILY_LIMIT", 0)
+    @patch.object(bot, "GOOGLE_DAILY_LIMIT", 0)
+    @patch.object(bot, "GOOGLE_CACHE_MINUTES", 60)
+    @patch("bot._is_dc_admin", return_value=False)
+    @patch("bot._google_answer")
+    def test_usage_logged_once_and_not_for_cached_answer(self, mock_answer, _adm, _react, _send):
+        ans = bot.AIText("A", "gemini-4-hydrogen")
+        ans.usage = {"prompt": 10, "output": 20, "thoughts": 30, "queries": 2}
+        mock_answer.return_value = ans
+        bot._do_google_query(MagicMock(), 1, 5, 1, 9, "same question")
+        bot._do_google_query(MagicMock(), 1, 5, 2, 9, "same question")  # served from the cache
+        self.assertEqual(mock_answer.call_count, 1)
+        self.assertEqual(len(database.get_google_usage(0)), 1)
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

@@ -825,7 +825,7 @@ class TestGeminiTools(unittest.TestCase):
         mock_urlopen.return_value = self._ok()
         bot._call_gemini_api("hi")
         self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
-        bot._call_gemini_api("hi", use_tools=True)
+        bot._call_gemini_api("hi", for_ai=True)
         self.assertEqual(self._tools_sent(mock_urlopen.call_args), [{"code_execution": {}}, {"url_context": {}}])
 
     @patch("bot.database.log_api_call")
@@ -836,7 +836,7 @@ class TestGeminiTools(unittest.TestCase):
     @patch("bot._urlopen")
     def test_off_by_default(self, mock_urlopen, _log):
         mock_urlopen.return_value = self._ok()
-        bot._call_gemini_api("hi", use_tools=True)
+        bot._call_gemini_api("hi", for_ai=True)
         self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
 
     @patch("bot.database.log_api_call")
@@ -847,7 +847,7 @@ class TestGeminiTools(unittest.TestCase):
     @patch("bot._urlopen")
     def test_gemma_gets_no_tools(self, mock_urlopen, _log):
         mock_urlopen.return_value = self._ok()
-        bot._call_gemini_api("hi", use_tools=True)
+        bot._call_gemini_api("hi", for_ai=True)
         self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
 
     @patch("bot.database.log_api_call")
@@ -860,7 +860,7 @@ class TestGeminiTools(unittest.TestCase):
         import urllib.error
         quota = urllib.error.HTTPError("u", 429, "quota", {}, None)
         mock_urlopen.side_effect = [quota, self._ok("plain")]
-        res = bot._call_gemini_api("hi", use_tools=True)
+        res = bot._call_gemini_api("hi", for_ai=True)
         self.assertEqual(res, "plain")
         self.assertEqual(res.model, "gemini-4-hydrogen")
         self.assertEqual(mock_urlopen.call_count, 2)
@@ -870,8 +870,74 @@ class TestGeminiTools(unittest.TestCase):
         self.assertNotIn("gemini-4-hydrogen", bot._GEMINI_MODEL_COOLDOWNS)
         mock_urlopen.side_effect = None
         mock_urlopen.return_value = self._ok("plain again")
-        bot._call_gemini_api("hi", use_tools=True)
+        bot._call_gemini_api("hi", for_ai=True)
         self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
+
+
+class TestGeminiAiKey(unittest.TestCase):
+    """GEMINI_AI_API_KEY serves /ai only; a rejected key falls back to the main key."""
+
+    def setUp(self):
+        bot._GEMINI_MODEL_COOLDOWNS.clear()
+        bot._GEMINI_TOOLS_BACKOFF.clear()
+        bot._GEMINI_KEY_BACKOFF.clear()
+
+    @staticmethod
+    def _ok(text="answer"):
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": text}]}}]}).encode()
+        return ok
+
+    @staticmethod
+    def _key(call):
+        return call.args[0].get_header("X-goog-api-key")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_AI_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "free")
+    @patch("bot._urlopen")
+    def test_ai_uses_paid_key_and_others_use_free(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._ok()
+        bot._call_gemini_api("hi", for_ai=True)
+        self.assertEqual(self._key(mock_urlopen.call_args), "paid")
+        bot._call_gemini_api("hi")
+        self.assertEqual(self._key(mock_urlopen.call_args), "free")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_AI_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen", "gemini-3.8-flash"])
+    @patch.object(bot, "GEMINI_API_KEY", "free")
+    @patch("bot._urlopen")
+    def test_depleted_paid_key_falls_back_to_free_and_is_skipped(self, mock_urlopen, _log):
+        import urllib.error
+        depleted = urllib.error.HTTPError("u", 402, "credits", {}, None)
+        mock_urlopen.side_effect = [depleted, self._ok("from free")]
+        res = bot._call_gemini_api("hi", for_ai=True)
+        self.assertEqual(res, "from free")
+        # One call on the paid key (not one per model), then the free key answered
+        self.assertEqual([self._key(c) for c in mock_urlopen.call_args_list], ["paid", "free"])
+        mock_urlopen.side_effect = None
+        mock_urlopen.return_value = self._ok("again")
+        bot._call_gemini_api("hi", for_ai=True)
+        self.assertEqual(self._key(mock_urlopen.call_args), "free")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_AI_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "free")
+    @patch("bot._urlopen")
+    def test_cooldowns_are_per_key(self, mock_urlopen, _log):
+        import urllib.error
+        limited = urllib.error.HTTPError("u", 429, "limit", {}, None)
+        mock_urlopen.side_effect = [limited, self._ok("from free")]
+        self.assertEqual(bot._call_gemini_api("hi", for_ai=True), "from free")
+        self.assertIn("ai:gemini-4-hydrogen", bot._GEMINI_MODEL_COOLDOWNS)
+        self.assertNotIn("gemini-4-hydrogen", bot._GEMINI_MODEL_COOLDOWNS)
 
 
 class TestOpenRouterModelChoice(unittest.TestCase):

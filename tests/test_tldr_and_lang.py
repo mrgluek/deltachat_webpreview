@@ -1144,6 +1144,25 @@ class TestPdfAndVideoMedia(unittest.TestCase):
         self.assertIn("hydrogen", mock_urlopen.call_args.args[0].full_url)
 
 
+class TestToolsSkippedForPdfAndVideo(unittest.TestCase):
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_TOOLS", ["code_execution"])
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "k")
+    @patch("bot._urlopen")
+    def test_no_tools_with_pdf_or_video(self, mock_urlopen, _log):
+        bot._GEMINI_TOOLS_BACKOFF.clear()
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps({"candidates": [{"content": {"parts": [{"text": "x"}]}}]}).encode()
+        mock_urlopen.return_value = ok
+        for mime in ("application/pdf", "video/mp4"):
+            bot._call_gemini_api("q", media_bytes=b"data", media_mime=mime, for_ai=True)
+            self.assertNotIn("tools", json.loads(mock_urlopen.call_args.args[0].data.decode()))
+        bot._call_gemini_api("q", media_bytes=b"data", media_mime="image/png", for_ai=True)
+        self.assertIn("tools", json.loads(mock_urlopen.call_args.args[0].data.decode()))
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

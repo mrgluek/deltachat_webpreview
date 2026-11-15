@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.27.1] - 2026-11-15
+
+### Fixed
+- **No Wasted Request for PDF and Video**: Gemini's code execution tool rejects PDF and video input with an HTTP 400, so `/ai` on those files made one failed request before the retry without tools. Tools are now left out for them from the start.
+
 ## [2.27.0] - 2026-11-15
 
 ### Added

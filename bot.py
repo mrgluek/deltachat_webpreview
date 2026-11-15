@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.27.0"
+VERSION = "2.27.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -1044,6 +1044,8 @@ def _call_gemini_models(
     # Gemma models take no tools. When a model or key rejects the tools, the same model is retried
     # at once without them, so a free-tier key (no Search) never knocks the model out of the chain.
     tools_cfg = [{"google_search": {}}] if search else ([{name: {}} for name in GEMINI_TOOLS] if for_ai else [])
+    if heavy and not search:
+        tools_cfg = []  # code execution rejects PDF and video input (HTTP 400), so skip the doomed first try
     queue = [
         (m, bool(tools_cfg) and not m.startswith("gemma-") and _GEMINI_TOOLS_BACKOFF.get(key_tag + m, 0) <= now)
         for m in active_models

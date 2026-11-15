@@ -874,8 +874,8 @@ class TestGeminiTools(unittest.TestCase):
         self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
 
 
-class TestGeminiAiKey(unittest.TestCase):
-    """GEMINI_AI_API_KEY serves /ai only; a rejected key falls back to the main key."""
+class TestGoogleSearch(unittest.TestCase):
+    """/google uses GEMINI_SEARCH_API_KEY with the google_search tool only, and never falls back to a key that cannot search."""
 
     def setUp(self):
         bot._GEMINI_MODEL_COOLDOWNS.clear()
@@ -883,61 +883,73 @@ class TestGeminiAiKey(unittest.TestCase):
         bot._GEMINI_KEY_BACKOFF.clear()
 
     @staticmethod
-    def _ok(text="answer"):
+    def _grounded(text="Python 3.15.2 is current."):
         ok = MagicMock()
-        ok.__enter__.return_value.read.return_value = json.dumps(
-            {"candidates": [{"content": {"parts": [{"text": text}]}}]}).encode()
+        ok.__enter__.return_value.read.return_value = json.dumps({"candidates": [{
+            "content": {"parts": [{"text": text}]},
+            "groundingMetadata": {"groundingChunks": [
+                {"web": {"uri": "https://python.org/a", "title": "Python"}},
+                {"web": {"uri": "https://python.org/a", "title": "Dup"}},
+                {"web": {"uri": "https://example.org/b", "title": "Ex [1]"}},
+            ]}}]}).encode()
         return ok
 
     @staticmethod
-    def _key(call):
-        return call.args[0].get_header("X-goog-api-key")
+    def _sent(call):
+        req = call.args[0]
+        return req.get_header("X-goog-api-key"), json.loads(req.data.decode()).get("tools")
 
     @patch("bot.database.log_api_call")
     @patch.object(bot, "OPENROUTER_API_KEY", "")
-    @patch.object(bot, "GEMINI_AI_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_TOOLS", ["code_execution"])
+    @patch.object(bot, "GEMINI_SEARCH_API_KEY", "paid")
     @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
     @patch.object(bot, "GEMINI_API_KEY", "free")
     @patch("bot._urlopen")
-    def test_ai_uses_paid_key_and_others_use_free(self, mock_urlopen, _log):
-        mock_urlopen.return_value = self._ok()
-        bot._call_gemini_api("hi", for_ai=True)
-        self.assertEqual(self._key(mock_urlopen.call_args), "paid")
-        bot._call_gemini_api("hi")
-        self.assertEqual(self._key(mock_urlopen.call_args), "free")
+    def test_search_uses_paid_key_and_only_search_tool(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._grounded()
+        res = bot._google_answer("latest python?", "EN")
+        self.assertEqual(self._sent(mock_urlopen.call_args), ("paid", [{"google_search": {}}]))
+        self.assertIn("Python 3.15.2 is current.", res)
+        # Sources: de-duplicated, brackets in titles neutralised
+        self.assertIn("1. [Python](https://python.org/a)", res)
+        self.assertIn("2. [Ex (1)](https://example.org/b)", res)
+        self.assertNotIn("Dup", res)
 
     @patch("bot.database.log_api_call")
     @patch.object(bot, "OPENROUTER_API_KEY", "")
-    @patch.object(bot, "GEMINI_AI_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_SEARCH_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "free")
+    @patch("bot._urlopen")
+    def test_other_requests_never_use_the_search_key(self, mock_urlopen, _log):
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps({"candidates": [{"content": {"parts": [{"text": "x"}]}}]}).encode()
+        mock_urlopen.return_value = ok
+        bot._call_gemini_api("hi")
+        bot._call_gemini_api("hi", for_ai=True)
+        for call in mock_urlopen.call_args_list:
+            self.assertEqual(call.args[0].get_header("X-goog-api-key"), "free")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "or_key")
+    @patch.object(bot, "GEMINI_SEARCH_API_KEY", "paid")
     @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen", "gemini-3.8-flash"])
     @patch.object(bot, "GEMINI_API_KEY", "free")
     @patch("bot._urlopen")
-    def test_depleted_paid_key_falls_back_to_free_and_is_skipped(self, mock_urlopen, _log):
+    def test_depleted_key_pauses_search_without_fallback(self, mock_urlopen, _log):
         import urllib.error
-        depleted = urllib.error.HTTPError("u", 402, "credits", {}, None)
-        mock_urlopen.side_effect = [depleted, self._ok("from free")]
-        res = bot._call_gemini_api("hi", for_ai=True)
-        self.assertEqual(res, "from free")
-        # One call on the paid key (not one per model), then the free key answered
-        self.assertEqual([self._key(c) for c in mock_urlopen.call_args_list], ["paid", "free"])
-        mock_urlopen.side_effect = None
-        mock_urlopen.return_value = self._ok("again")
-        bot._call_gemini_api("hi", for_ai=True)
-        self.assertEqual(self._key(mock_urlopen.call_args), "free")
+        mock_urlopen.side_effect = urllib.error.HTTPError("u", 402, "credits", {}, None)
+        self.assertIsNone(bot._google_answer("q?"))
+        self.assertEqual(mock_urlopen.call_count, 1)  # one call, not one per model; no free key, no OpenRouter
+        self.assertIsNone(bot._google_answer("q?"))
+        self.assertEqual(mock_urlopen.call_count, 1)  # paused for the hour
 
-    @patch("bot.database.log_api_call")
-    @patch.object(bot, "OPENROUTER_API_KEY", "")
-    @patch.object(bot, "GEMINI_AI_API_KEY", "paid")
-    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
-    @patch.object(bot, "GEMINI_API_KEY", "free")
+    @patch.object(bot, "GEMINI_SEARCH_API_KEY", "")
     @patch("bot._urlopen")
-    def test_cooldowns_are_per_key(self, mock_urlopen, _log):
-        import urllib.error
-        limited = urllib.error.HTTPError("u", 429, "limit", {}, None)
-        mock_urlopen.side_effect = [limited, self._ok("from free")]
-        self.assertEqual(bot._call_gemini_api("hi", for_ai=True), "from free")
-        self.assertIn("ai:gemini-4-hydrogen", bot._GEMINI_MODEL_COOLDOWNS)
-        self.assertNotIn("gemini-4-hydrogen", bot._GEMINI_MODEL_COOLDOWNS)
+    def test_disabled_without_key(self, mock_urlopen):
+        self.assertIsNone(bot._google_answer("q?"))
+        mock_urlopen.assert_not_called()
 
 
 class TestOpenRouterModelChoice(unittest.TestCase):

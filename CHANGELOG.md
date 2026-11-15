@@ -2,13 +2,19 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.24.0] - 2026-11-15
+
+### Added
+- **`/google` Command**: answers a question from live Google Search results (Gemini grounded in Google Search) and lists up to 3 source links. It also works as a reply to any message. It needs the new `GEMINI_SEARCH_API_KEY`, a paid Gemini key, because Search is not available on the free tier; that key is used for `/google` only, while `/ai`, `/tldr`, previews and captions stay on `GEMINI_API_KEY`. There is no fallback to the free key or OpenRouter, since they would answer without searching. If the key is rejected (for example prepaid credits run out) `/google` pauses for an hour. Answers are never cached.
+
+### Changed
+- **`GEMINI_AI_API_KEY` Is Now `GEMINI_SEARCH_API_KEY`**: the paid key no longer serves all of `/ai`; it serves `/google` only, so `/ai` is back on `GEMINI_API_KEY`. Rename the variable in `.env`.
+- The Gemini API key is now sent only in the `x-goog-api-key` header, no longer also in the request URL.
+
 ## [2.23.0] - 2026-11-15
 
 ### Added
-- **Separate Gemini Key for `/ai`**: the new optional `GEMINI_AI_API_KEY` is used only for `/ai`, so a paid key can serve `/ai` while `/tldr`, previews and captions stay on the free `GEMINI_API_KEY`. The two keys have separate per-model cooldowns and share one time budget. If the `/ai` key is rejected (HTTP 401, 402 or 403, for example when prepaid credits run out), `/ai` goes back to the main key for an hour instead of failing.
-
-### Changed
-- The Gemini API key is now sent only in the `x-goog-api-key` header, no longer also in the request URL.
+- **Separate Gemini Key for `/ai`**: the optional `GEMINI_AI_API_KEY` was used only for `/ai`, with separate per-model cooldowns for the two keys and a fall back to the main key for an hour when it was rejected (HTTP 401, 402 or 403). Replaced in 2.24.0 by `GEMINI_SEARCH_API_KEY`.
 
 ## [2.22.0] - 2026-11-15
 

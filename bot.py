@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.23.0"
+VERSION = "2.24.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -99,11 +99,13 @@ JINA_BALANCE_CHECK_INTERVAL = 3600
 
 # Gemini AI key & fallback models (opt-in via env)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
-# Optional second (paid) key used only for /ai; /tldr, previews and captions stay on GEMINI_API_KEY
-GEMINI_AI_API_KEY = os.environ.get("GEMINI_AI_API_KEY", "").strip().strip("'\"")
+# Optional paid key used only by /google (Gemini with Google Search); everything else stays on GEMINI_API_KEY
+GEMINI_SEARCH_API_KEY = os.environ.get("GEMINI_SEARCH_API_KEY", "").strip().strip("'\"")
 # key tag -> time until which that key is not tried (credits depleted or key rejected)
 _GEMINI_KEY_BACKOFF: dict[str, float] = {}
-_AI_KEY_TAG = "ai:"
+_SEARCH_KEY_TAG = "search:"
+# A grounded answer needs a search round, so /google gets more time than the other AI commands
+GEMINI_SEARCH_TIME_BUDGET = 45.0
 _raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-4-hydrogen,gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it")
 GEMINI_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/") for m in _raw_models.split(",") if m.strip()]
 if not GEMINI_MODELS:
@@ -845,28 +847,28 @@ def _call_gemini_api(
     media_bytes: bytes | None = None,
     media_mime: str | None = None,
     for_ai: bool = False,
+    search: bool = False,
 ) -> AIText | None:
     """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging.
     Falls back to OpenRouter (OPENROUTER_MODELS) when every Gemini model fails."""
     target_media_bytes = media_bytes if media_bytes is not None else image_bytes
     target_media_mime = media_mime or image_mime or "image/jpeg"
 
+    if search:
+        # Google Search only works on the paid /google key: no fallback to the free key or OpenRouter,
+        # which would answer without searching and pass that off as a search result.
+        if not GEMINI_SEARCH_API_KEY or not prompt or _GEMINI_KEY_BACKOFF.get(_SEARCH_KEY_TAG, 0) > time.time():
+            return None
+        return _call_gemini_models(prompt, max_tokens, temperature, None, "image/jpeg", False,
+                                   GEMINI_SEARCH_API_KEY, _SEARCH_KEY_TAG, None, True)
+
     if not _ai_available() or (not prompt and not target_media_bytes):
         return None
 
-    if GEMINI_API_KEY or (for_ai and GEMINI_AI_API_KEY):
-        # One time budget for both keys together
-        deadline = time.time() + GEMINI_TIME_BUDGET
-        if for_ai and GEMINI_AI_API_KEY and _GEMINI_KEY_BACKOFF.get(_AI_KEY_TAG, 0) <= time.time():
-            res_text = _call_gemini_models(prompt, max_tokens, temperature, target_media_bytes, target_media_mime,
-                                           for_ai, GEMINI_AI_API_KEY, _AI_KEY_TAG, deadline)
-            if res_text:
-                return res_text
-        if GEMINI_API_KEY:
-            res_text = _call_gemini_models(prompt, max_tokens, temperature, target_media_bytes, target_media_mime,
-                                           for_ai, GEMINI_API_KEY, "", deadline)
-            if res_text:
-                return res_text
+    if GEMINI_API_KEY:
+        res_text = _call_gemini_models(prompt, max_tokens, temperature, target_media_bytes, target_media_mime, for_ai)
+        if res_text:
+            return res_text
     if OPENROUTER_API_KEY:
         return _call_openrouter_api(prompt, max_tokens, temperature, target_media_bytes, target_media_mime)
     return None
@@ -878,6 +880,23 @@ def _trim_incomplete_sentence(res_text: str) -> str:
             res_text = res_text[:last_p + 1].strip()
     return res_text
 
+def _format_grounding_sources(candidate: dict, limit: int = 3) -> str:
+    """Markdown list of the web pages Gemini's Google Search grounding used, or "" when it did not search."""
+    chunks = (candidate.get("groundingMetadata") or {}).get("groundingChunks") or []
+    lines = []
+    seen = set()
+    for chunk in chunks:
+        web = chunk.get("web") or {}
+        uri = web.get("uri")
+        if not uri or uri in seen:
+            continue
+        seen.add(uri)
+        title = (web.get("title") or "source").replace("[", "(").replace("]", ")")
+        lines.append(f"{len(lines) + 1}. [{title}]({uri})")
+        if len(lines) >= limit:
+            break
+    return "\n\nSources:\n" + "\n".join(lines) if lines else ""
+
 def _call_gemini_models(
     prompt: str,
     max_tokens: int,
@@ -888,8 +907,10 @@ def _call_gemini_models(
     api_key: str | None = None,
     key_tag: str = "",
     deadline: float | None = None,
+    search: bool = False,
 ) -> str | None:
-    """key_tag separates the cooldowns of the /ai key ("ai:") from the main key (""), so a limit on one key never blocks the other."""
+    """key_tag separates the cooldowns of the /google key ("search:") from the main key (""), so a limit on one key never blocks the other.
+    search=True is the /google mode: only the google_search tool, a longer time budget, sources appended to the answer."""
     api_key = api_key or GEMINI_API_KEY
     now = time.time()
     active_models = [m for m in GEMINI_MODELS if _GEMINI_MODEL_COOLDOWNS.get(key_tag + m, 0) <= now]
@@ -905,11 +926,11 @@ def _call_gemini_models(
             active_models = [m for m in GEMINI_MODELS if not m.startswith("gemma-")]
 
     if deadline is None:
-        deadline = time.time() + GEMINI_TIME_BUDGET
+        deadline = time.time() + (GEMINI_SEARCH_TIME_BUDGET if search else GEMINI_TIME_BUDGET)
     timeouts_in_row = 0
     # Gemma models take no tools. When a model or key rejects the tools, the same model is retried
     # at once without them, so a free-tier key (no Search) never knocks the model out of the chain.
-    tools_cfg = [{name: {}} for name in GEMINI_TOOLS] if for_ai else []
+    tools_cfg = [{"google_search": {}}] if search else ([{name: {}} for name in GEMINI_TOOLS] if for_ai else [])
     queue = [
         (m, bool(tools_cfg) and not m.startswith("gemma-") and _GEMINI_TOOLS_BACKOFF.get(key_tag + m, 0) <= now)
         for m in active_models
@@ -960,7 +981,7 @@ def _call_gemini_models(
                     'x-goog-api-key': api_key
                 }
             )
-            with _urlopen(req, timeout=min(20, remaining)) as resp:
+            with _urlopen(req, timeout=min(40 if search else 20, remaining)) as resp:
                 body = json.loads(resp.read().decode('utf-8'))
                 timeouts_in_row = 0
                 candidates = body.get("candidates", [])
@@ -969,20 +990,23 @@ def _call_gemini_models(
                     # Thinking models (e.g. Gemma 4) return their reasoning as separate parts flagged "thought"
                     res_text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
                     if res_text:
-                        return AIText(_trim_incomplete_sentence(res_text), model_name)
+                        res_text = _trim_incomplete_sentence(res_text)
+                        if search:
+                            res_text += _format_grounding_sources(candidates[0])
+                        return AIText(res_text, model_name)
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
                 err_body = e.read().decode('utf-8', errors='ignore')
             except Exception:
                 pass
-            if tools_on and e.code in (400, 403, 429):
+            if tools_on and not search and e.code in (400, 403, 429):
                 logger.warning(f"Gemini API model '{model_name}' rejected tools {GEMINI_TOOLS} (HTTP {e.code}). Retrying without tools; tools skipped for this model for 1 hour. Details: {err_body[:200]}")
                 _GEMINI_TOOLS_BACKOFF[key_tag + model_name] = time.time() + 3600
                 queue.insert(0, (model_name, False))
                 continue
             if key_tag and e.code in (401, 402, 403):
-                logger.warning(f"Gemini /ai key rejected (HTTP {e.code}), e.g. credits depleted. Using the main key for 1 hour. Details: {err_body[:200]}")
+                logger.warning(f"Gemini /google key rejected (HTTP {e.code}), e.g. credits depleted. /google is paused for 1 hour. Details: {err_body[:200]}")
                 _GEMINI_KEY_BACKOFF[key_tag] = time.time() + 3600
                 return None
             if e.code == 429:
@@ -1291,6 +1315,24 @@ def _ask_gemini_ai(
     if res_text and cache_key and "google_search" not in GEMINI_TOOLS:
         _cache_ai(cache_key, res_text)
     return res_text
+
+def _search_available() -> bool:
+    return bool(GEMINI_SEARCH_API_KEY)
+
+def _google_answer(query: str, target_lang: str = "AUTO") -> AIText | None:
+    """Answers a question with Gemini grounded in Google Search (paid key only, never cached)."""
+    query = (query or "").strip()
+    if not query or not _search_available():
+        return None
+    lang_str = (target_lang or "AUTO").strip().upper()
+    lang_instruction = "the language of the question" if lang_str in ("AUTO", "") else lang_str
+    prompt = (
+        f"Search the web and answer the following question in {lang_instruction}, using current information.\n"
+        "Keep the answer as concise as appropriate: a direct, short answer if the question calls for one, otherwise an informative overview of up to 2-3 paragraphs maximum.\n"
+        "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler (such as 'Here is...', 'Sure', etc.). Output the answer directly:\n\n"
+        f"Question:\n{query[:4000]}"
+    )
+    return _call_gemini_api(prompt, max_tokens=4096, temperature=0.3, search=True)
 
 def _extract_url_from_msg_or_payload(payload: str, msg) -> str | None:
     """Extract first HTTP/HTTPS URL from payload or quoted message text."""
@@ -5630,6 +5672,62 @@ def _handle_ai_command(bot, accid, event):
 
     threading.Thread(target=_do_ai_async, daemon=True).start()
 
+def _do_google_query(bot, accid, chat_id, req_msg_id, from_id, query: str):
+    """Processes a /google query in a background thread."""
+    _react(bot, accid, req_msg_id, "⏳")
+    try:
+        lang = database.get_chat_lang(chat_id)
+        answer = _google_answer(query, lang)
+        if not answer:
+            _react(bot, accid, req_msg_id, "❌")
+            _send(bot, accid, chat_id, "❌ Failed to get a Google-backed answer. Please try again later.")
+            return
+        lang_suffix = f" ({lang})" if lang != "AUTO" else ""
+        _send(bot, accid, chat_id, f"🔎 **Google**{lang_suffix}{_ai_model_tag(answer)}:\n\n{answer}")
+        _react(bot, accid, req_msg_id, "☑️")
+        database.add_preview_log(chat_id, from_id, "google_query", "Google Search Query", len(answer), 0)
+    except Exception as e:
+        logger.error(f"Error in /google query: {e}")
+        _react(bot, accid, req_msg_id, "❌")
+        _send(bot, accid, chat_id, "❌ Error generating the answer. Please try again later.")
+
+def _handle_google_command(bot, accid, event):
+    """Processes /google: an AI answer grounded in live Google Search results."""
+    msg = event.msg
+    if _is_duplicate_msg(msg.id, "google"):
+        return
+    if _is_rate_limited(bot, accid, msg.from_id):
+        _react(bot, accid, msg.id, "⏱")
+        return
+    if not _search_available():
+        _send(bot, accid, msg.chat_id,
+              "❌ `/google` is not enabled: `GEMINI_SEARCH_API_KEY` is not configured.")
+        return
+
+    payload = (event.payload or "").strip()
+    if not payload and getattr(msg, "text", None):
+        parts = msg.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            payload = parts[1].strip()
+    quote = getattr(msg, "quote", None) or (msg.get("quote") if isinstance(msg, dict) else None)
+    quote_text = ""
+    if quote:
+        quote_text = quote.get("text", "") if isinstance(quote, dict) else getattr(quote, "text", "")
+        quote_text = (quote_text or "").strip()
+
+    if payload and quote_text:
+        query = f"{payload}\n\nContext (quoted message):\n{quote_text[:2000]}"
+    else:
+        query = payload or quote_text
+    if len(query.strip()) < 2:
+        _send(bot, accid, msg.chat_id,
+              "Usage:\n"
+              "• `/google <question>` — Answer from live Google Search results 🔎\n"
+              "• Reply `/google` to any message to look it up.")
+        return
+
+    threading.Thread(target=_do_google_query, args=(bot, accid, msg.chat_id, msg.id, msg.from_id, query), daemon=True).start()
+
 def _handle_lang_command(bot, accid, event):
     """Processes /lang command to view or set preferred summary language for a chat."""
     msg = event.msg
@@ -5677,6 +5775,17 @@ def ai_command(bot, accid, event):
     if not re.match(r"^/ai(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
         return
     _handle_ai_command(bot, accid, event)
+
+@dc_cli.on(events.NewMessage(pattern=r"(?i)^/google(?:@\w+)?(?:\s|$)", is_bot=None))
+def google_command(bot, accid, event):
+    if _is_bot_blocked(bot, accid, event.msg):
+        return
+    if accid != dc_accid:
+        return
+    text = (event.msg.text or "").strip()
+    if not re.match(r"^/google(?:@\w+)?(?:\s|$)", text, re.IGNORECASE):
+        return
+    _handle_google_command(bot, accid, event)
 
 @dc_cli.on(events.NewMessage(pattern=r"(?i)^/tldr(?:@\w+)?(?:\s|$)", is_bot=None))
 def tldr_command(bot, accid, event):
@@ -5869,6 +5978,7 @@ def get_help_text(bot, accid, from_id):
         f"/archive <url> — Generate full page archive (with JS enabled)\n"
         f"/tldr [url] — Generate AI summary of article, quoted text, or voice message ⚡\n"
         f"/ai [text] — Ask AI a question, transcribe voice, or analyze photo 🤖\n"
+        f"/google <question> — Answer from live Google Search results 🔎\n"
         f"/lang [code] — Set summary language for this chat (e.g. /lang RU) 🌐\n"
         f"/download <url> — Download file directly (PDF, office, text)\n"
         f"/stats — View bot generation statistics\n"

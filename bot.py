@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.26.2"
+VERSION = "2.27.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -106,6 +106,8 @@ _GEMINI_KEY_BACKOFF: dict[str, float] = {}
 _SEARCH_KEY_TAG = "search:"
 # A grounded answer needs a search round, so /google gets more time than the other AI commands
 GEMINI_SEARCH_TIME_BUDGET = 45.0
+# PDF and video requests (up to 14 MB, processed by the model) get a longer budget too
+GEMINI_HEAVY_TIME_BUDGET = 90.0
 _raw_models = os.environ.get("GEMINI_MODELS") or os.environ.get("GEMINI_MODEL", "gemini-4-hydrogen,gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it")
 GEMINI_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/") for m in _raw_models.split(",") if m.strip()]
 if not GEMINI_MODELS:
@@ -605,6 +607,45 @@ def _detect_audio_mime(data: bytes, filename: str = "", declared_mime: str = "")
     return None
 
 MAX_MEDIA_BYTES = 20 * 1024 * 1024  # 20 MB limit
+# PDF and video are sent inline (base64, +33%), and Gemini accepts about 20 MB per request in total
+MAX_DOC_VIDEO_BYTES = 14 * 1024 * 1024
+MEDIA_TOO_LARGE_TEXT = "❌ Media file is too large to process (up to 14 MB for PDF and video, 20 MB for photos and audio)."
+
+# Video types Gemini accepts, by file extension
+_VIDEO_EXT_MIME = {
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/mov", ".webm": "video/webm",
+    ".mpeg": "video/mpeg", ".mpg": "video/mpeg", ".avi": "video/avi", ".3gp": "video/3gpp",
+    ".flv": "video/x-flv", ".wmv": "video/wmv",
+}
+_VIDEO_DECLARED_MIME = {
+    "video/mp4": "video/mp4", "video/quicktime": "video/mov", "video/mov": "video/mov", "video/webm": "video/webm",
+    "video/mpeg": "video/mpeg", "video/avi": "video/avi", "video/x-msvideo": "video/avi",
+    "video/3gpp": "video/3gpp", "video/x-flv": "video/x-flv", "video/x-ms-wmv": "video/wmv", "video/wmv": "video/wmv",
+}
+
+def _detect_pdf_or_video(data: bytes, filename: str = "", declared_mime: str = "") -> tuple[str, str] | None:
+    """Returns (mime, media_type) with media_type 'document' for a PDF or 'video' for a video Gemini accepts, else None.
+    A PDF is recognised by its header. A video needs an explicit signal (declared video/* type or a video file
+    extension), because the byte signature of an MP4 video is the same as an MP4 voice recording."""
+    dm = (declared_mime or "").lower().split(";")[0].strip()
+    ext = os.path.splitext(filename or "")[1].lower()
+    if data and data[:5] == b"%PDF-":
+        return "application/pdf", "document"
+    if dm == "application/pdf" or (ext == ".pdf" and not data):
+        return "application/pdf", "document"
+    if dm.startswith("audio/"):
+        return None
+    if dm in _VIDEO_DECLARED_MIME:
+        return _VIDEO_DECLARED_MIME[dm], "video"
+    if dm.startswith("video/"):
+        return None  # a video type Gemini does not take (for example Matroska)
+    if ext in _VIDEO_EXT_MIME:
+        return _VIDEO_EXT_MIME[ext], "video"
+    return None
+
+def _check_doc_video_size(data: bytes, mtype: str):
+    if mtype in ("document", "video") and len(data) > MAX_DOC_VIDEO_BYTES:
+        raise MediaTooLargeError(f"PDF or video size ({len(data)} bytes) exceeds the 14 MB limit.")
 
 class MediaTooLargeError(Exception):
     """Raised when an audio or image attachment exceeds the 20 MB limit."""
@@ -654,6 +695,10 @@ def _download_and_read_media_file(bot, accid, msg, timeout: float = 30.0) -> tup
             img_mime = _detect_image_mime(data, str(file_path))
             if img_mime:
                 return data, img_mime, "image"
+            dv = _detect_pdf_or_video(data, str(file_path), declared_mime)
+            if dv:
+                _check_doc_video_size(data, dv[1])
+                return data, dv[0], dv[1]
             aud_mime = _detect_audio_mime(data, str(file_path), declared_mime=declared_mime)
             if aud_mime:
                 return data, aud_mime, "audio"
@@ -682,11 +727,12 @@ def _download_and_read_media_file(bot, accid, msg, timeout: float = 30.0) -> tup
     d_state = raw_ds.lower() if isinstance(raw_ds, str) else ""
 
     has_potential_media = (
-        any(t in view_type for t in ("image", "gif", "sticker", "file", "audio", "voice", "2", "3", "4", "5", "40", "50", "51"))
+        any(t in view_type for t in ("image", "gif", "sticker", "file", "audio", "voice", "2", "3", "4", "5", "40", "50", "51", "60"))
         or any(file_name.endswith(ext) for ext in (
             ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic",
-            ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav", ".flac", ".weba", ".oga", ".aiff"
-        ))
+            ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav", ".flac", ".weba", ".oga", ".aiff", ".pdf"
+        ) + tuple(_VIDEO_EXT_MIME))
+        or "video" in view_type
         or file_bytes > 0
         or d_state in ("available", "inprogress")
         or isinstance(file_path, (str, bytes, os.PathLike))
@@ -725,6 +771,10 @@ def _download_and_read_media_file(bot, accid, msg, timeout: float = 30.0) -> tup
                 img_mime = _detect_image_mime(data, str(cur_path))
                 if img_mime:
                     return data, img_mime, "image"
+                dv = _detect_pdf_or_video(data, str(cur_path), cur_dec_mime or declared_mime)
+                if dv:
+                    _check_doc_video_size(data, dv[1])
+                    return data, dv[0], dv[1]
                 aud_mime = _detect_audio_mime(data, str(cur_path), declared_mime=cur_dec_mime or declared_mime)
                 if aud_mime:
                     return data, aud_mime, "audio"
@@ -829,7 +879,7 @@ def _extract_audio_from_msg_or_quote(bot, accid, msg) -> tuple[bytes | None, str
     """Extract audio bytes and mime type from direct message attachment, quoted message, or parent reply."""
     try:
         data, mime, mtype = _extract_media_from_msg_or_quote(bot, accid, msg)
-        if data and mtype == "audio":
+        if data and mtype in ("audio", "video"):
             return data, mime or "audio/ogg"
     except MediaTooLargeError:
         raise
@@ -986,8 +1036,10 @@ def _call_gemini_models(
         else:
             active_models = [m for m in GEMINI_MODELS if not m.startswith("gemma-")]
 
+    # A PDF or video takes Gemini much longer than text, so those requests get a longer budget
+    heavy = bool(target_media_bytes) and target_media_mime.startswith(("video/", "application/pdf"))
     if deadline is None:
-        deadline = time.time() + (GEMINI_SEARCH_TIME_BUDGET if search else GEMINI_TIME_BUDGET)
+        deadline = time.time() + (GEMINI_SEARCH_TIME_BUDGET if search else (GEMINI_HEAVY_TIME_BUDGET if heavy else GEMINI_TIME_BUDGET))
     timeouts_in_row = 0
     # Gemma models take no tools. When a model or key rejects the tools, the same model is retried
     # at once without them, so a free-tier key (no Search) never knocks the model out of the chain.
@@ -1042,7 +1094,7 @@ def _call_gemini_models(
                     'x-goog-api-key': api_key
                 }
             )
-            with _urlopen(req, timeout=min(40 if search else 20, remaining)) as resp:
+            with _urlopen(req, timeout=min(40 if search else (60 if heavy else 20), remaining)) as resp:
                 body = json.loads(resp.read().decode('utf-8'))
                 timeouts_in_row = 0
                 candidates = body.get("candidates", [])
@@ -1341,6 +1393,30 @@ def _ask_gemini_ai(
         else:
             prompt = (
                 f"Analyze the provided image and answer the following question or explain the topic in {lang_instruction}.\n"
+                f"{AI_ANSWER_STYLE}\n"
+                "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler. Output the answer directly:\n\n"
+                f"Question / Request:\n{clean_query}"
+            )
+            if clean_context:
+                prompt += f"\n\nContext:\n{clean_context[:AI_CONTEXT_CHARS // 2]}"
+    elif target_media_type in ("document", "video"):
+        what = "PDF document" if target_media_type == "document" else "video"
+        if not clean_query or len(clean_query) < 2:
+            if target_media_type == "document":
+                task = ("Summarize this document: what it is, its main points, key figures, decisions or action items, and extract the most important details.\n")
+            else:
+                task = ("Describe what happens in this video and summarize anything said in it: the main subject, key events, any visible text, and the main points.\n")
+            prompt = (
+                f"Analyze the provided {what} in {lang_instruction}.\n"
+                f"{task}"
+                f"{AI_ANSWER_STYLE}\n"
+                "Provide a direct, accurate response without meta-commentary, introductory filler, or conversational preamble. Output the answer directly."
+            )
+            if clean_context:
+                prompt += f"\n\nAdditional Context:\n{clean_context[:AI_CONTEXT_CHARS // 2]}"
+        else:
+            prompt = (
+                f"Analyze the provided {what} and answer the following question or explain the topic in {lang_instruction}.\n"
                 f"{AI_ANSWER_STYLE}\n"
                 "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler. Output the answer directly:\n\n"
                 f"Question / Request:\n{clean_query}"
@@ -5540,9 +5616,10 @@ def _do_ai_query(
     target_media_mime = media_mime or (audio_mime if audio_bytes is not None else image_mime) or "image/jpeg"
     target_media_type = media_type or ("audio" if audio_bytes is not None else ("image" if image_bytes is not None else None))
 
-    if target_media_bytes and len(target_media_bytes) > MAX_MEDIA_BYTES:
+    if target_media_bytes and (len(target_media_bytes) > MAX_MEDIA_BYTES or (
+            target_media_type in ("document", "video") and len(target_media_bytes) > MAX_DOC_VIDEO_BYTES)):
         _react(bot, accid, req_msg_id, "❌")
-        _send(bot, accid, chat_id, "❌ Media file is too large to process (maximum 20 MB).")
+        _send(bot, accid, chat_id, MEDIA_TOO_LARGE_TEXT)
         return
 
     _react(bot, accid, req_msg_id, "⏳")
@@ -5589,6 +5666,12 @@ def _do_ai_query(
         elif target_media_type == "audio":
             log_url = "ai_audio"
             log_title = title or "AI Audio Query"
+        elif target_media_type == "document":
+            log_url = "ai_pdf"
+            log_title = title or "AI PDF Query"
+        elif target_media_type == "video":
+            log_url = "ai_video"
+            log_title = title or "AI Video Query"
         else:
             log_url = "ai_query"
             log_title = title or "AI Query"
@@ -5691,7 +5774,7 @@ def _handle_ai_command(bot, accid, event):
                 )
             except MediaTooLargeError:
                 _react(bot, accid, msg.id, "❌")
-                _send(bot, accid, msg.chat_id, "❌ Media file is too large to process (maximum 20 MB).")
+                _send(bot, accid, msg.chat_id, MEDIA_TOO_LARGE_TEXT)
             except Exception as err:
                 logger.error(f"Error in URL handling for /ai: {err}")
                 _do_ai_query(
@@ -5713,7 +5796,7 @@ def _handle_ai_command(bot, accid, event):
             media_bytes, media_mime, media_type = _extract_media_from_msg_or_quote(bot, accid, msg)
         except MediaTooLargeError:
             _react(bot, accid, msg.id, "❌")
-            _send(bot, accid, msg.chat_id, "❌ Media file is too large to process (maximum 20 MB).")
+            _send(bot, accid, msg.chat_id, MEDIA_TOO_LARGE_TEXT)
             return
 
         if payload and quote_text:

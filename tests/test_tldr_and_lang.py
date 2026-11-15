@@ -1082,6 +1082,68 @@ class TestFitDcText(unittest.TestCase):
         self.assertIn("2800", bot._DEFAULT_AI_ANSWER_STYLE)
 
 
+class TestPdfAndVideoMedia(unittest.TestCase):
+    def test_pdf_by_header(self):
+        self.assertEqual(bot._detect_pdf_or_video(b"%PDF-1.7 ...", "x.bin", ""), ("application/pdf", "document"))
+
+    def test_pdf_by_declared_mime(self):
+        self.assertEqual(bot._detect_pdf_or_video(b"zzz", "x", "application/pdf"), ("application/pdf", "document"))
+
+    def test_mp4_video_by_declared_or_extension(self):
+        mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 20
+        self.assertEqual(bot._detect_pdf_or_video(mp4, "clip", "video/mp4"), ("video/mp4", "video"))
+        self.assertEqual(bot._detect_pdf_or_video(mp4, "clip.MOV", ""), ("video/mov", "video"))
+        self.assertEqual(bot._detect_pdf_or_video(mp4, "clip.mp4", ""), ("video/mp4", "video"))
+
+    def test_mp4_voice_recording_stays_audio(self):
+        mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 20
+        self.assertIsNone(bot._detect_pdf_or_video(mp4, "voice.m4a", "audio/mp4"))
+        self.assertIsNone(bot._detect_pdf_or_video(mp4, "voice.m4a", ""))
+        self.assertIsNone(bot._detect_pdf_or_video(mp4, "noname", ""))
+
+    def test_unsupported_video_type_is_ignored(self):
+        self.assertIsNone(bot._detect_pdf_or_video(b"x", "a.mkv", "video/x-matroska"))
+
+    def test_size_limit_applies_to_pdf_and_video_only(self):
+        big = b"0" * (bot.MAX_DOC_VIDEO_BYTES + 1)
+        with self.assertRaises(bot.MediaTooLargeError):
+            bot._check_doc_video_size(big, "video")
+        with self.assertRaises(bot.MediaTooLargeError):
+            bot._check_doc_video_size(big, "document")
+        bot._check_doc_video_size(big, "image")
+        bot._check_doc_video_size(big, "audio")
+
+    @patch("bot._call_gemini_api")
+    @patch.object(bot, "_ai_available", return_value=True)
+    def test_prompts_for_pdf_and_video(self, _avail, mock_call):
+        mock_call.return_value = bot.AIText("ok", "m")
+        bot._ask_gemini_ai("", media_bytes=b"%PDF-1.4", media_mime="application/pdf", media_type="document")
+        self.assertIn("PDF document", mock_call.call_args.args[0])
+        self.assertEqual(mock_call.call_args.kwargs["media_mime"], "application/pdf")
+        bot._ask_gemini_ai("who speaks?", media_bytes=b"vid", media_mime="video/mp4", media_type="video")
+        p = mock_call.call_args.args[0]
+        self.assertIn("video", p)
+        self.assertIn("who speaks?", p)
+
+    @patch("bot._extract_media_from_msg_or_quote", return_value=(b"vid", "video/mp4", "video"))
+    def test_tldr_audio_wrapper_still_takes_video(self, _m):
+        self.assertEqual(bot._extract_audio_from_msg_or_quote(None, 1, MagicMock()), (b"vid", "video/mp4"))
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen", "gemma-4-31b-it"])
+    @patch.object(bot, "GEMINI_API_KEY", "k")
+    @patch("bot._urlopen")
+    def test_video_request_sent_inline_to_multimodal_model_only(self, mock_urlopen, _log):
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps({"candidates": [{"content": {"parts": [{"text": "x"}]}}]}).encode()
+        mock_urlopen.return_value = ok
+        bot._call_gemini_api("describe", media_bytes=b"vid", media_mime="video/mp4")
+        body = json.loads(mock_urlopen.call_args.args[0].data.decode())
+        self.assertEqual(body["contents"][0]["parts"][1]["inline_data"]["mime_type"], "video/mp4")
+        self.assertIn("hydrogen", mock_urlopen.call_args.args[0].full_url)
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

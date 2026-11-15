@@ -31,6 +31,8 @@ services:
       - GEMINI_TIME_BUDGET=${GEMINI_TIME_BUDGET:-30}
       - GEMINI_SEARCH_API_KEY=${GEMINI_SEARCH_API_KEY:-}
       - GEMINI_TOOLS=${GEMINI_TOOLS:-}
+      - AI_CONTEXT_CHARS=${AI_CONTEXT_CHARS:-16000}
+      - AI_MAX_OUTPUT_TOKENS=${AI_MAX_OUTPUT_TOKENS:-4096}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENROUTER_MODELS=${OPENROUTER_MODELS:-}
       - GEMINI_MODELS=${GEMINI_MODELS:-gemini-4-hydrogen,gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it}

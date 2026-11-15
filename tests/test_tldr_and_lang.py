@@ -952,6 +952,35 @@ class TestGoogleSearch(unittest.TestCase):
         mock_urlopen.assert_not_called()
 
 
+class TestAiLimits(unittest.TestCase):
+    @patch.dict(os.environ, {"X_LIM": "48000"})
+    def test_env_int_reads_value(self):
+        self.assertEqual(bot._env_int("X_LIM", 16000, 1000, 200000), 48000)
+
+    @patch.dict(os.environ, {"X_LIM": "99999999"})
+    def test_env_int_clamps(self):
+        self.assertEqual(bot._env_int("X_LIM", 16000, 1000, 200000), 200000)
+
+    @patch.dict(os.environ, {"X_LIM": "lots"})
+    def test_env_int_bad_value_uses_default(self):
+        self.assertEqual(bot._env_int("X_LIM", 16000, 1000, 200000), 16000)
+
+    def test_env_int_unset_uses_default(self):
+        self.assertEqual(bot._env_int("X_LIM_UNSET_FOR_TEST", 4096, 512, 16384), 4096)
+
+    @patch("bot._call_gemini_api")
+    @patch.object(bot, "AI_MAX_OUTPUT_TOKENS", 8000)
+    @patch.object(bot, "AI_CONTEXT_CHARS", 30000)
+    @patch.object(bot, "_ai_available", return_value=True)
+    def test_ask_ai_uses_limits(self, _avail, mock_call):
+        mock_call.return_value = bot.AIText("ok", "m")
+        bot._ask_gemini_ai("question here", context="x" * 40000)
+        self.assertEqual(mock_call.call_args.kwargs["max_tokens"], 8000)
+        prompt = mock_call.call_args.args[0]
+        self.assertIn("x" * 30000, prompt)
+        self.assertNotIn("x" * 30001, prompt)
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.24.0"
+VERSION = "2.25.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -112,6 +112,18 @@ if not GEMINI_MODELS:
     GEMINI_MODELS = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 GEMINI_MODEL = GEMINI_MODELS[0]
 _GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
+
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    """Integer setting from the environment, clamped to [low, high]; the default if unset or not a number."""
+    try:
+        return max(low, min(high, int(os.environ.get(name, "") or default)))
+    except ValueError:
+        return default
+
+# /ai limits: characters of article/quoted text sent as context, and the Gemini output cap
+# (thinking models spend part of it on reasoning, so very low values give empty answers)
+AI_CONTEXT_CHARS = _env_int("AI_CONTEXT_CHARS", 16000, 1000, 200000)
+AI_MAX_OUTPUT_TOKENS = _env_int("AI_MAX_OUTPUT_TOKENS", 4096, 512, 16384)
 
 # Optional built-in Gemini tools for /ai only (all off by default; switch on one at a time)
 _GEMINI_TOOL_NAMES = ("google_search", "url_context", "code_execution")
@@ -1258,7 +1270,7 @@ def _ask_gemini_ai(
                 "Provide a direct, accurate response without meta-commentary, introductory filler, or conversational preamble. Output the answer directly."
             )
             if clean_context:
-                prompt += f"\n\nAdditional Context:\n{clean_context[:8000]}"
+                prompt += f"\n\nAdditional Context:\n{clean_context[:AI_CONTEXT_CHARS // 2]}"
         else:
             prompt = (
                 f"Listen to the provided audio / voice message and answer the following question or explain the topic in {lang_instruction}.\n"
@@ -1267,7 +1279,7 @@ def _ask_gemini_ai(
                 f"Question / Request:\n{clean_query}"
             )
             if clean_context:
-                prompt += f"\n\nContext:\n{clean_context[:8000]}"
+                prompt += f"\n\nContext:\n{clean_context[:AI_CONTEXT_CHARS // 2]}"
     elif target_media_type == "image":
         if not clean_query or len(clean_query) < 2:
             prompt = (
@@ -1276,7 +1288,7 @@ def _ask_gemini_ai(
                 "Provide a direct, accurate response without meta-commentary, introductory filler, or conversational preamble. Output the answer directly."
             )
             if clean_context:
-                prompt += f"\n\nAdditional Context:\n{clean_context[:8000]}"
+                prompt += f"\n\nAdditional Context:\n{clean_context[:AI_CONTEXT_CHARS // 2]}"
         else:
             prompt = (
                 f"Analyze the provided image and answer the following question or explain the topic in {lang_instruction}.\n"
@@ -1285,9 +1297,9 @@ def _ask_gemini_ai(
                 f"Question / Request:\n{clean_query}"
             )
             if clean_context:
-                prompt += f"\n\nContext:\n{clean_context[:8000]}"
+                prompt += f"\n\nContext:\n{clean_context[:AI_CONTEXT_CHARS // 2]}"
     elif clean_context:
-        truncated_ctx = clean_context[:16000]
+        truncated_ctx = clean_context[:AI_CONTEXT_CHARS]
         prompt = (
             f"Answer the following question or explain the topic based on the provided context in {lang_instruction}.\n"
             "Keep the answer as concise as appropriate: if the question calls for a direct, short answer (even a single word, number, or sentence), answer concisely; if it requires detailed explanation, provide an informative summary of up to 2-3 paragraphs maximum.\n"
@@ -1305,7 +1317,7 @@ def _ask_gemini_ai(
 
     res_text = _call_gemini_api(
         prompt,
-        max_tokens=4096,
+        max_tokens=AI_MAX_OUTPUT_TOKENS,
         temperature=0.4,
         media_bytes=target_media_bytes,
         media_mime=target_media_mime,

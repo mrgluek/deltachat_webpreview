@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.25.0"
+VERSION = "2.26.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -124,6 +124,13 @@ def _env_int(name: str, default: int, low: int, high: int) -> int:
 # (thinking models spend part of it on reasoning, so very low values give empty answers)
 AI_CONTEXT_CHARS = _env_int("AI_CONTEXT_CHARS", 16000, 1000, 200000)
 AI_MAX_OUTPUT_TOKENS = _env_int("AI_MAX_OUTPUT_TOKENS", 4096, 512, 16384)
+# How long and how deep /ai and /google answers are; this sentence goes into the prompt as is
+_DEFAULT_AI_ANSWER_STYLE = (
+    "Match the answer to the question. For a simple or factual question, answer directly in a word, a number or one or two sentences, "
+    "with no filler or background nobody asked for. For a complex question, give a reasoned answer: the key considerations "
+    "and steps of the reasoning, then the conclusion, using as much space as it really needs but staying focused."
+)
+AI_ANSWER_STYLE = " ".join((os.environ.get("AI_ANSWER_STYLE", "") or "").split())[:1500] or _DEFAULT_AI_ANSWER_STYLE
 
 # Optional built-in Gemini tools for /ai only (all off by default; switch on one at a time)
 _GEMINI_TOOL_NAMES = ("google_search", "url_context", "code_execution")
@@ -1274,7 +1281,7 @@ def _ask_gemini_ai(
         else:
             prompt = (
                 f"Listen to the provided audio / voice message and answer the following question or explain the topic in {lang_instruction}.\n"
-                "Keep the answer as concise as appropriate: if the question calls for a direct, short answer, answer concisely; if it requires detailed explanation, provide an informative response of up to 2-3 paragraphs maximum.\n"
+                f"{AI_ANSWER_STYLE}\n"
                 "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler. Output the answer directly:\n\n"
                 f"Question / Request:\n{clean_query}"
             )
@@ -1292,7 +1299,7 @@ def _ask_gemini_ai(
         else:
             prompt = (
                 f"Analyze the provided image and answer the following question or explain the topic in {lang_instruction}.\n"
-                "Keep the answer as concise as appropriate: if the question calls for a direct, short answer (even a single word, number, or sentence), answer concisely; if it requires detailed explanation, provide an informative summary of up to 2-3 paragraphs maximum.\n"
+                f"{AI_ANSWER_STYLE}\n"
                 "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler. Output the answer directly:\n\n"
                 f"Question / Request:\n{clean_query}"
             )
@@ -1302,7 +1309,7 @@ def _ask_gemini_ai(
         truncated_ctx = clean_context[:AI_CONTEXT_CHARS]
         prompt = (
             f"Answer the following question or explain the topic based on the provided context in {lang_instruction}.\n"
-            "Keep the answer as concise as appropriate: if the question calls for a direct, short answer (even a single word, number, or sentence), answer concisely; if it requires detailed explanation, provide an informative summary of up to 2-3 paragraphs maximum.\n"
+            f"{AI_ANSWER_STYLE}\n"
             "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler (such as 'Here is...', 'Sure', etc.). Output the answer directly:\n\n"
             f"Context:\n{truncated_ctx}\n\n"
             f"Question / Topic:\n{clean_query}"
@@ -1310,7 +1317,7 @@ def _ask_gemini_ai(
     else:
         prompt = (
             f"Answer the following question or explain the topic in {lang_instruction}.\n"
-            "Keep the answer as concise as appropriate: if the question calls for a direct, short answer (even a single word, number, or sentence), answer concisely; if it requires detailed explanation, provide an informative overview of up to 2-3 paragraphs maximum.\n"
+            f"{AI_ANSWER_STYLE}\n"
             "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler (such as 'Here is...', 'Sure', etc.). Output the answer directly:\n\n"
             f"Question / Topic:\n{clean_query}"
         )
@@ -1340,7 +1347,7 @@ def _google_answer(query: str, target_lang: str = "AUTO") -> AIText | None:
     lang_instruction = "the language of the question" if lang_str in ("AUTO", "") else lang_str
     prompt = (
         f"Search the web and answer the following question in {lang_instruction}, using current information.\n"
-        "Keep the answer as concise as appropriate: a direct, short answer if the question calls for one, otherwise an informative overview of up to 2-3 paragraphs maximum.\n"
+        f"{AI_ANSWER_STYLE}\n"
         "Provide a direct, accurate response without meta-commentary, conversational preamble, or introductory filler (such as 'Here is...', 'Sure', etc.). Output the answer directly:\n\n"
         f"Question:\n{query[:4000]}"
     )

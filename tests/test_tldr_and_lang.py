@@ -981,6 +981,32 @@ class TestAiLimits(unittest.TestCase):
         self.assertNotIn("x" * 30001, prompt)
 
 
+class TestAnswerStyle(unittest.TestCase):
+    @patch("bot._call_gemini_api")
+    @patch.object(bot, "AI_ANSWER_STYLE", "STYLE-MARKER answer like a pirate.")
+    @patch.object(bot, "_ai_available", return_value=True)
+    def test_ai_prompt_uses_style(self, _avail, mock_call):
+        mock_call.return_value = bot.AIText("ok", "m")
+        bot._ask_gemini_ai("why is the sky blue")
+        self.assertIn("STYLE-MARKER", mock_call.call_args.args[0])
+        bot._ask_gemini_ai("why is the sky blue", context="some article")
+        self.assertIn("STYLE-MARKER", mock_call.call_args.args[0])
+
+    @patch("bot._call_gemini_api")
+    @patch.object(bot, "AI_ANSWER_STYLE", "STYLE-MARKER answer like a pirate.")
+    @patch.object(bot, "GEMINI_SEARCH_API_KEY", "paid")
+    def test_google_prompt_uses_style(self, mock_call):
+        mock_call.return_value = bot.AIText("ok", "m")
+        bot._google_answer("latest python?")
+        self.assertIn("STYLE-MARKER", mock_call.call_args.args[0])
+
+    def test_default_has_no_paragraph_cap_and_covers_both_cases(self):
+        d = bot._DEFAULT_AI_ANSWER_STYLE
+        self.assertNotIn("paragraph", d)
+        self.assertIn("simple", d)
+        self.assertIn("complex", d)
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

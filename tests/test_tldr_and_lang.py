@@ -1053,6 +1053,35 @@ class TestGroundingLinks(unittest.TestCase):
         self.assertNotIn("3.", out)
 
 
+class TestFitDcText(unittest.TestCase):
+    def test_short_text_is_unchanged(self):
+        self.assertEqual(bot._fit_dc_text("H:\n\n", "short", "\n\nT"), "H:\n\nshort\n\nT")
+
+    def test_long_text_fits_chars_and_keeps_tail(self):
+        body = "\n\n".join(f"Paragraph {i}. " + "word " * 60 for i in range(30))
+        tail = "\n\nSources:\n1. [a](https://example.org/" + "x" * 150 + ")"
+        out = bot._fit_dc_text("🔎 **Google** (RU):\n\n", body, tail)
+        self.assertLessEqual(len(out), bot.DC_SAFE_CHARS)
+        self.assertTrue(out.endswith(tail))
+        self.assertIn("…\n\nSources:", out)
+        self.assertTrue(out.startswith("🔎 **Google** (RU):\n\nParagraph 0."))
+
+    def test_many_short_lines_fit_line_limit(self):
+        body = "\n".join(f"line {i}" for i in range(100))
+        out = bot._fit_dc_text("H\n", body)
+        self.assertLessEqual(out.count("\n") + 1, bot.DC_SAFE_LINES)
+        self.assertTrue(out.endswith("…"))
+
+    def test_cut_on_sentence_end(self):
+        body = "First sentence here. " * 400
+        out = bot._fit_dc_text("H\n", body)
+        self.assertLessEqual(len(out), bot.DC_SAFE_CHARS)
+        self.assertTrue(out.endswith("here.…"))
+
+    def test_default_style_mentions_length_budget(self):
+        self.assertIn("2800", bot._DEFAULT_AI_ANSWER_STYLE)
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.26.1"
+VERSION = "2.26.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -128,7 +128,8 @@ AI_MAX_OUTPUT_TOKENS = _env_int("AI_MAX_OUTPUT_TOKENS", 4096, 512, 16384)
 _DEFAULT_AI_ANSWER_STYLE = (
     "Match the answer to the question. For a simple or factual question, answer directly in a word, a number or one or two sentences, "
     "with no filler or background nobody asked for. For a complex question, give a reasoned answer: the key considerations "
-    "and steps of the reasoning, then the conclusion, using as much space as it really needs but staying focused."
+    "and steps of the reasoning, then the conclusion, using as much space as it really needs but staying focused. "
+    "The whole answer must stay under about 2800 characters and 30 lines, because longer chat messages get cut off."
 )
 AI_ANSWER_STYLE = " ".join((os.environ.get("AI_ANSWER_STYLE", "") or "").split())[:1500] or _DEFAULT_AI_ANSWER_STYLE
 
@@ -2687,6 +2688,31 @@ def _is_telegram_post_url(url: str) -> bool:
     return False
 
 # ── Message sending helpers with Failover and Stats ──
+
+# Delta Chat shows only the first 3800 characters / 38 lines of a received message and hides the
+# rest behind "Show Full Message" (core: DC_DESIRED_TEXT_LEN / DC_DESIRED_TEXT_LINES). Stay a little below both.
+DC_SAFE_CHARS = 3750
+DC_SAFE_LINES = 36
+
+def _fit_dc_text(head: str, body: str, tail: str = "") -> str:
+    """head + body + tail, with only the body shortened so the whole message fits in what Delta Chat shows
+    without "Show Full Message". The cut falls on a paragraph, line or sentence end and ends with an ellipsis."""
+    def too_big(b: str) -> bool:
+        t = head + b + tail
+        return len(t) > DC_SAFE_CHARS or t.count("\n") + 1 > DC_SAFE_LINES
+    if not too_big(body):
+        return head + body + tail
+    cut = body[:max(0, DC_SAFE_CHARS - len(head) - len(tail) - 2)]
+    while too_big(cut + "…") and "\n" in cut:
+        cut = cut[:cut.rfind("\n")]
+    while too_big(cut + "…") and cut:
+        cut = cut[:-max(1, len(cut) // 50)]
+    for sep in ("\n\n", "\n", ". ", "! ", "? "):
+        i = cut.rfind(sep)
+        if i > len(cut) // 2:
+            cut = cut[:i + (0 if sep.startswith("\n") else 1)]
+            break
+    return head + cut.rstrip() + "…" + tail
 
 def _send(bot, accid, chat_id, text, file=None):
     """Send a message and track transport stats."""
@@ -5547,9 +5573,9 @@ def _do_ai_query(
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         if url:
             clean_title = (title or "Link").replace("[", "(").replace("]", ")")
-            reply = f"🤖 **AI**{lang_suffix}{_ai_model_tag(answer)}:\n\n{answer}\n\n🔗 [{clean_title}]({url})"
+            reply = _fit_dc_text(f"🤖 **AI**{lang_suffix}{_ai_model_tag(answer)}:\n\n", str(answer), f"\n\n🔗 [{clean_title}]({url})")
         else:
-            reply = f"🤖 **AI**{lang_suffix}{_ai_model_tag(answer)}:\n\n{answer}"
+            reply = _fit_dc_text(f"🤖 **AI**{lang_suffix}{_ai_model_tag(answer)}:\n\n", str(answer))
 
         _send(bot, accid, chat_id, reply)
         _react(bot, accid, req_msg_id, "☑️")
@@ -5743,7 +5769,9 @@ def _do_google_query(bot, accid, chat_id, req_msg_id, from_id, query: str):
             _send(bot, accid, chat_id, "❌ Failed to get a Google-backed answer. Please try again later.")
             return
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
-        _send(bot, accid, chat_id, f"🔎 **Google**{lang_suffix}{_ai_model_tag(answer)}:\n\n{answer}")
+        head = f"🔎 **Google**{lang_suffix}{_ai_model_tag(answer)}:\n\n"
+        body, sep, sources = str(answer).partition("\n\nSources:\n")
+        _send(bot, accid, chat_id, _fit_dc_text(head, body, (sep + sources) if sep else ""))
         _react(bot, accid, req_msg_id, "☑️")
         database.add_preview_log(chat_id, from_id, "google_query", "Google Search Query", len(answer), 0)
     except Exception as e:

@@ -908,7 +908,8 @@ class TestGoogleSearch(unittest.TestCase):
     @patch("bot._urlopen")
     def test_search_uses_paid_key_and_only_search_tool(self, mock_urlopen, _log):
         mock_urlopen.return_value = self._grounded()
-        res = bot._google_answer("latest python?", "EN")
+        with patch("bot._resolve_grounding_url", side_effect=lambda u, *a, **k: u):
+            res = bot._google_answer("latest python?", "EN")
         self.assertEqual(self._sent(mock_urlopen.call_args), ("paid", [{"google_search": {}}]))
         self.assertIn("Python 3.15.2 is current.", res)
         # Sources: de-duplicated, brackets in titles neutralised
@@ -1005,6 +1006,51 @@ class TestAnswerStyle(unittest.TestCase):
         self.assertNotIn("paragraph", d)
         self.assertIn("simple", d)
         self.assertIn("complex", d)
+
+
+class TestGroundingLinks(unittest.TestCase):
+    def test_other_hosts_are_not_contacted(self):
+        with patch("urllib.request.OpenerDirector.open") as op:
+            self.assertEqual(bot._resolve_grounding_url("https://evil.example/x"), "https://evil.example/x")
+            self.assertEqual(bot._resolve_grounding_url("http://vertexaisearch.cloud.google.com/a"), "http://vertexaisearch.cloud.google.com/a")
+            op.assert_not_called()
+
+    def test_redirect_location_is_returned(self):
+        import urllib.error
+        from email.message import Message
+        h = Message(); h["Location"] = "https://en.wikipedia.org/wiki/X"
+        err = urllib.error.HTTPError("u", 302, "Found", h, None)
+        uri = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc"
+        with patch("urllib.request.OpenerDirector.open", side_effect=err):
+            self.assertEqual(bot._resolve_grounding_url(uri), "https://en.wikipedia.org/wiki/X")
+
+    def test_failure_keeps_original_link(self):
+        uri = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc"
+        with patch("urllib.request.OpenerDirector.open", side_effect=TimeoutError("t")):
+            self.assertEqual(bot._resolve_grounding_url(uri), uri)
+
+    def test_non_http_location_is_ignored(self):
+        import urllib.error
+        from email.message import Message
+        h = Message(); h["Location"] = "javascript:alert(1)"
+        err = urllib.error.HTTPError("u", 302, "Found", h, None)
+        uri = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc"
+        with patch("urllib.request.OpenerDirector.open", side_effect=err):
+            self.assertEqual(bot._resolve_grounding_url(uri), uri)
+
+    def test_sources_use_real_urls_and_dedupe(self):
+        cand = {"groundingMetadata": {"groundingChunks": [
+            {"web": {"uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/1", "title": "wikipedia.org"}},
+            {"web": {"uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/2", "title": "wiki again"}},
+            {"web": {"uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/3", "title": "rb.ru"}},
+        ]}}
+        real = {"1": "https://en.wikipedia.org/wiki/A", "2": "https://en.wikipedia.org/wiki/A", "3": "https://rb.ru/b"}
+        with patch("bot._resolve_grounding_url", side_effect=lambda u, *a, **k: real[u.rsplit("/", 1)[1]]):
+            out = bot._format_grounding_sources(cand)
+        self.assertIn("1. [wikipedia.org](https://en.wikipedia.org/wiki/A)", out)
+        self.assertIn("2. [rb.ru](https://rb.ru/b)", out)
+        self.assertNotIn("vertexaisearch", out)
+        self.assertNotIn("3.", out)
 
 
 class TestOpenRouterModelChoice(unittest.TestCase):

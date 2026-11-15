@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.26.0"
+VERSION = "2.26.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -899,10 +899,39 @@ def _trim_incomplete_sentence(res_text: str) -> str:
             res_text = res_text[:last_p + 1].strip()
     return res_text
 
+_GROUNDING_REDIRECT_HOST = "vertexaisearch.cloud.google.com"
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Makes urllib return the 3xx answer instead of following it, so its Location header can be read."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+def _resolve_grounding_url(uri: str, timeout: float = 4.0) -> str:
+    """Gemini's grounding links are Google redirects (vertexaisearch.cloud.google.com/grounding-api-redirect/...).
+    Reads the redirect's Location header to get the real page URL; the page itself is never fetched.
+    Only Google's own redirect host is contacted. On any failure the original link is kept."""
+    try:
+        parsed = urllib.parse.urlparse(uri)
+        if parsed.scheme != "https" or (parsed.hostname or "").lower() != _GROUNDING_REDIRECT_HOST:
+            return uri
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            resp = opener.open(urllib.request.Request(uri, headers={"User-Agent": "Mozilla/5.0"}), timeout=timeout)
+            resp.close()
+            return uri
+        except urllib.error.HTTPError as e:
+            target = (e.headers.get("Location") or "").strip()
+            if e.code in (301, 302, 303, 307, 308) and re.match(r"^https?://", target, re.IGNORECASE):
+                return target
+    except Exception as e:
+        logger.info(f"Could not resolve grounding link: {e}")
+    return uri
+
 def _format_grounding_sources(candidate: dict, limit: int = 3) -> str:
-    """Markdown list of the web pages Gemini's Google Search grounding used, or "" when it did not search."""
+    """Markdown list of the web pages Gemini's Google Search grounding used, or "" when it did not search.
+    Redirect links are resolved to the real page URLs (in parallel, a few seconds at most)."""
     chunks = (candidate.get("groundingMetadata") or {}).get("groundingChunks") or []
-    lines = []
+    picked = []
     seen = set()
     for chunk in chunks:
         web = chunk.get("web") or {}
@@ -910,11 +939,23 @@ def _format_grounding_sources(candidate: dict, limit: int = 3) -> str:
         if not uri or uri in seen:
             continue
         seen.add(uri)
-        title = (web.get("title") or "source").replace("[", "(").replace("]", ")")
-        lines.append(f"{len(lines) + 1}. [{title}]({uri})")
-        if len(lines) >= limit:
+        picked.append((web.get("title") or "source", uri))
+        if len(picked) >= limit:
             break
-    return "\n\nSources:\n" + "\n".join(lines) if lines else ""
+    if not picked:
+        return ""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(picked)) as pool:
+        real_urls = list(pool.map(lambda item: _resolve_grounding_url(item[1]), picked))
+    lines = []
+    seen_real = set()
+    for (title, _), url in zip(picked, real_urls):
+        if url in seen_real:
+            continue
+        seen_real.add(url)
+        title = title.replace("[", "(").replace("]", ")")
+        lines.append(f"{len(lines) + 1}. [{title}]({url})")
+    return "\n\nSources:\n" + "\n".join(lines)
 
 def _call_gemini_models(
     prompt: str,

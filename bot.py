@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.27.1"
+VERSION = "2.28.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -134,6 +134,19 @@ _DEFAULT_AI_ANSWER_STYLE = (
     "The whole answer must stay under about 2800 characters and 30 lines, because longer chat messages get cut off."
 )
 AI_ANSWER_STYLE = " ".join((os.environ.get("AI_ANSWER_STYLE", "") or "").split())[:1500] or _DEFAULT_AI_ANSWER_STYLE
+
+# /google cost controls (it runs on the paid key): reasoning depth, answer cache, and usage limits
+_raw_think = (os.environ.get("GEMINI_SEARCH_THINKING", "low") or "").strip().lower()
+GEMINI_SEARCH_THINKING = _raw_think if _raw_think in ("minimal", "low", "medium", "high") else ("low" if _raw_think else "")
+# Models /google tries, in order (empty = the same chain as everything else, minus Gemma which cannot search)
+GEMINI_SEARCH_MODELS = [m.strip().strip("'\"").removeprefix("models/").strip("/")
+                        for m in (os.environ.get("GEMINI_SEARCH_MODELS", "") or "").split(",") if m.strip()]
+GOOGLE_CACHE_MINUTES = _env_int("GOOGLE_CACHE_MINUTES", 60, 0, 1440)
+GOOGLE_DAILY_LIMIT = _env_int("GOOGLE_DAILY_LIMIT", 100, 0, 100000)        # all users together, 0 = no limit
+GOOGLE_USER_DAILY_LIMIT = _env_int("GOOGLE_USER_DAILY_LIMIT", 10, 0, 10000)  # per user (the admin is exempt), 0 = no limit
+_google_cache: dict[str, tuple[float, "AIText"]] = {}
+_google_user_calls: dict[int, list[float]] = {}
+_google_lock = threading.Lock()
 
 # Optional built-in Gemini tools for /ai only (all off by default; switch on one at a time)
 _GEMINI_TOOL_NAMES = ("google_search", "url_context", "code_execution")
@@ -1024,9 +1037,14 @@ def _call_gemini_models(
     search=True is the /google mode: only the google_search tool, a longer time budget, sources appended to the answer."""
     api_key = api_key or GEMINI_API_KEY
     now = time.time()
-    active_models = [m for m in GEMINI_MODELS if _GEMINI_MODEL_COOLDOWNS.get(key_tag + m, 0) <= now]
+    chain = (GEMINI_SEARCH_MODELS or GEMINI_MODELS) if search else GEMINI_MODELS
+    active_models = [m for m in chain if _GEMINI_MODEL_COOLDOWNS.get(key_tag + m, 0) <= now]
     if not active_models:
-        active_models = list(GEMINI_MODELS)
+        active_models = list(chain)
+
+    # Gemma cannot use Google Search: asking it would give an unsearched answer under a "Google" label
+    if search:
+        active_models = [m for m in active_models if not m.startswith("gemma-")]
 
     # When media (image or audio) is present, only query multimodal models (skip text-only Gemma models)
     if target_media_bytes:
@@ -1084,6 +1102,8 @@ def _call_gemini_models(
         }
         if tools_on:
             payload["tools"] = tools_cfg
+        if search and GEMINI_SEARCH_THINKING:
+            payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": GEMINI_SEARCH_THINKING}
         
         try:
             database.log_api_call("gemini")
@@ -1472,6 +1492,48 @@ def _google_answer(query: str, target_lang: str = "AUTO") -> AIText | None:
         f"Question:\n{query[:4000]}"
     )
     return _call_gemini_api(prompt, max_tokens=4096, temperature=0.3, search=True)
+
+def _google_cache_key(query: str, lang: str) -> str:
+    norm = " ".join(query.lower().split())
+    return hashlib.sha256(f"{lang.upper()}|{norm}".encode("utf-8")).hexdigest()[:24]
+
+def _google_cache_get(key: str):
+    if not GOOGLE_CACHE_MINUTES:
+        return None
+    with _google_lock:
+        hit = _google_cache.get(key)
+        if hit and hit[0] > time.time():
+            return hit[1]
+        _google_cache.pop(key, None)
+    return None
+
+def _google_cache_put(key: str, answer):
+    if not GOOGLE_CACHE_MINUTES or not answer:
+        return
+    with _google_lock:
+        if len(_google_cache) >= 200:
+            now = time.time()
+            for k in [k for k, v in _google_cache.items() if v[0] <= now] or [next(iter(_google_cache))]:
+                _google_cache.pop(k, None)
+        _google_cache[key] = (time.time() + GOOGLE_CACHE_MINUTES * 60, answer)
+
+def _google_limit_reached(user_id: int, is_admin: bool) -> str | None:
+    """Returns a user-facing reason when /google may not run now, else records the call for this user and returns None."""
+    now = time.time()
+    if GOOGLE_DAILY_LIMIT and database.count_api_calls_since("google", 86400) >= GOOGLE_DAILY_LIMIT:
+        return "❌ `/google` has reached its daily limit for all users. Please try again tomorrow, or use `/ai` for questions that do not need live search."
+    if GOOGLE_USER_DAILY_LIMIT and not is_admin:
+        with _google_lock:
+            calls = [t for t in _google_user_calls.get(user_id, []) if t > now - 86400]
+            if len(calls) >= GOOGLE_USER_DAILY_LIMIT:
+                _google_user_calls[user_id] = calls
+                return f"❌ You have used your {GOOGLE_USER_DAILY_LIMIT} `/google` searches for today. Please try again tomorrow, or use `/ai`."
+            calls.append(now)
+            _google_user_calls[user_id] = calls
+            if len(_google_user_calls) > 2000:
+                for uid in [u for u, c in _google_user_calls.items() if not c or c[-1] <= now - 86400]:
+                    _google_user_calls.pop(uid, None)
+    return None
 
 def _extract_url_from_msg_or_payload(payload: str, msg) -> str | None:
     """Extract first HTTP/HTTPS URL from payload or quoted message text."""
@@ -5845,10 +5907,22 @@ def _handle_ai_command(bot, accid, event):
 
 def _do_google_query(bot, accid, chat_id, req_msg_id, from_id, query: str):
     """Processes a /google query in a background thread."""
-    _react(bot, accid, req_msg_id, "⏳")
     try:
         lang = database.get_chat_lang(chat_id)
-        answer = _google_answer(query, lang)
+        cache_key = _google_cache_key(query, lang)
+        answer = _google_cache_get(cache_key)
+        if answer:
+            logger.info("Returning cached /google answer")
+        else:
+            reason = _google_limit_reached(from_id, _is_dc_admin(bot, accid, from_id))
+            if reason:
+                _react(bot, accid, req_msg_id, "⏱")
+                _send(bot, accid, chat_id, reason)
+                return
+            _react(bot, accid, req_msg_id, "⏳")
+            database.log_api_call("google")
+            answer = _google_answer(query, lang)
+            _google_cache_put(cache_key, answer)
         if not answer:
             _react(bot, accid, req_msg_id, "❌")
             _send(bot, accid, chat_id, "❌ Failed to get a Google-backed answer. Please try again later.")

@@ -1163,6 +1163,107 @@ class TestToolsSkippedForPdfAndVideo(unittest.TestCase):
         self.assertIn("tools", json.loads(mock_urlopen.call_args.args[0].data.decode()))
 
 
+class TestGoogleCostControls(unittest.TestCase):
+    def setUp(self):
+        bot._google_cache.clear()
+        bot._google_user_calls.clear()
+        bot._GEMINI_MODEL_COOLDOWNS.clear()
+        bot._GEMINI_KEY_BACKOFF.clear()
+        bot._GEMINI_TOOLS_BACKOFF.clear()
+
+    @staticmethod
+    def _grounded():
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps({"candidates": [{"content": {"parts": [{"text": "A"}]}}]}).encode()
+        return ok
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_SEARCH_THINKING", "medium")
+    @patch.object(bot, "GEMINI_SEARCH_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_SEARCH_MODELS", [])
+    @patch.object(bot, "GEMINI_MODELS", ["gemma-4-31b-it", "gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "free")
+    @patch("bot._urlopen")
+    def test_thinking_level_and_no_gemma(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._grounded()
+        bot._google_answer("q?")
+        self.assertEqual(mock_urlopen.call_count, 1)
+        req = mock_urlopen.call_args.args[0]
+        self.assertIn("gemini-4-hydrogen", req.full_url)
+        body = json.loads(req.data.decode())
+        self.assertEqual(body["generationConfig"]["thinkingConfig"], {"thinkingLevel": "medium"})
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_SEARCH_THINKING", "")
+    @patch.object(bot, "GEMINI_SEARCH_API_KEY", "paid")
+    @patch.object(bot, "GEMINI_SEARCH_MODELS", ["gemini-3.8-flash"])
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "free")
+    @patch("bot._urlopen")
+    def test_search_models_override_and_empty_thinking(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._grounded()
+        bot._google_answer("q?")
+        req = mock_urlopen.call_args.args[0]
+        self.assertIn("gemini-3.8-flash", req.full_url)
+        self.assertNotIn("thinkingConfig", json.loads(req.data.decode())["generationConfig"])
+
+    @patch.object(bot, "GOOGLE_CACHE_MINUTES", 60)
+    def test_cache_normalises_and_expires(self):
+        k1 = bot._google_cache_key("  What IS  new? ", "ru")
+        self.assertEqual(k1, bot._google_cache_key("what is new?", "RU"))
+        self.assertNotEqual(k1, bot._google_cache_key("what is new?", "EN"))
+        bot._google_cache_put(k1, bot.AIText("ans", "m"))
+        self.assertEqual(bot._google_cache_get(k1), "ans")
+        with patch("bot.time.time", return_value=bot.time.time() + 3601):
+            self.assertIsNone(bot._google_cache_get(k1))
+
+    @patch.object(bot, "GOOGLE_CACHE_MINUTES", 0)
+    def test_cache_off(self):
+        bot._google_cache_put("k", bot.AIText("ans", "m"))
+        self.assertIsNone(bot._google_cache_get("k"))
+
+    @patch.object(bot, "GOOGLE_DAILY_LIMIT", 0)
+    @patch.object(bot, "GOOGLE_USER_DAILY_LIMIT", 2)
+    def test_per_user_limit_and_admin_exempt(self):
+        self.assertIsNone(bot._google_limit_reached(7, False))
+        self.assertIsNone(bot._google_limit_reached(7, False))
+        self.assertIn("2", bot._google_limit_reached(7, False))
+        self.assertIsNone(bot._google_limit_reached(8, False))  # other user unaffected
+        for _ in range(5):
+            self.assertIsNone(bot._google_limit_reached(9, True))  # admin exempt
+
+    @patch.object(bot, "GOOGLE_USER_DAILY_LIMIT", 0)
+    @patch.object(bot, "GOOGLE_DAILY_LIMIT", 3)
+    def test_global_limit_uses_db_count(self):
+        with patch("bot.database.count_api_calls_since", return_value=2):
+            self.assertIsNone(bot._google_limit_reached(1, False))
+        with patch("bot.database.count_api_calls_since", return_value=3):
+            self.assertIn("daily limit", bot._google_limit_reached(1, False))
+
+    def test_db_counts_calls_in_window(self):
+        db_path = os.path.join(tempfile.gettempdir(), "test_google_count.db")
+        old = database.DB_PATH
+        database.DB_PATH = db_path
+        try:
+            database.init_db()
+            database.log_api_call("google")
+            database.log_api_call("google")
+            database.log_api_call("gemini")
+            self.assertEqual(database.count_api_calls_since("google", 86400), 2)
+            conn = database._connect()
+            conn.execute("INSERT INTO api_log (service, created_at) VALUES ('google', 1000)")  # long ago
+            conn.commit()
+            conn.close()
+            self.assertEqual(database.count_api_calls_since("google", 86400), 2)
+        finally:
+            database.DB_PATH = old
+            for suf in ("", "-wal", "-shm"):
+                if os.path.exists(db_path + suf):
+                    os.remove(db_path + suf)
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

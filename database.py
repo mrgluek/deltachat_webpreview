@@ -414,6 +414,20 @@ def log_api_call(service: str):
         finally:
             conn.close()
 
+def count_api_calls_since(service: str, seconds: int) -> int:
+    """Number of logged API calls for a service in the last `seconds` seconds."""
+    with _lock:
+        conn = _connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM api_log WHERE service = ? AND created_at >= CAST(strftime('%s','now') AS INTEGER) - ?",
+                (service, int(seconds))
+            )
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
 def get_api_stats() -> dict:
     with _lock:
         conn = _connect()

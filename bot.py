@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.21.0"
+VERSION = "2.22.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -105,6 +105,18 @@ if not GEMINI_MODELS:
     GEMINI_MODELS = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 GEMINI_MODEL = GEMINI_MODELS[0]
 _GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
+
+# Optional built-in Gemini tools for /ai only (all off by default; switch on one at a time)
+_GEMINI_TOOL_NAMES = ("google_search", "url_context", "code_execution")
+GEMINI_TOOLS = []
+for _t in (os.environ.get("GEMINI_TOOLS", "") or "").split(","):
+    _t = _t.strip().strip("'\"").lower()
+    if _t in _GEMINI_TOOL_NAMES and _t not in GEMINI_TOOLS:
+        GEMINI_TOOLS.append(_t)
+    elif _t:
+        logging.getLogger("webpreview_bot").warning(f"Ignoring unknown GEMINI_TOOLS entry '{_t}' (allowed: {', '.join(_GEMINI_TOOL_NAMES)})")
+# model -> time until which tools are skipped for it (the model or the API key rejected them)
+_GEMINI_TOOLS_BACKOFF: dict[str, float] = {}
 
 # Total seconds the whole Gemini chain may spend before handing over to OpenRouter
 GEMINI_TIME_BUDGET = float(os.environ.get("GEMINI_TIME_BUDGET", "30") or 30)
@@ -827,6 +839,7 @@ def _call_gemini_api(
     image_mime: str = "image/jpeg",
     media_bytes: bytes | None = None,
     media_mime: str | None = None,
+    use_tools: bool = False,
 ) -> AIText | None:
     """Invokes Google Gemini API with multi-model fallback, rate-limit cooldowns, and API logging.
     Falls back to OpenRouter (OPENROUTER_MODELS) when every Gemini model fails."""
@@ -837,7 +850,7 @@ def _call_gemini_api(
         return None
 
     if GEMINI_API_KEY:
-        res_text = _call_gemini_models(prompt, max_tokens, temperature, target_media_bytes, target_media_mime)
+        res_text = _call_gemini_models(prompt, max_tokens, temperature, target_media_bytes, target_media_mime, use_tools)
         if res_text:
             return res_text
     if OPENROUTER_API_KEY:
@@ -857,6 +870,7 @@ def _call_gemini_models(
     temperature: float,
     target_media_bytes: bytes | None,
     target_media_mime: str,
+    use_tools: bool = False,
 ) -> str | None:
 
     now = time.time()
@@ -874,7 +888,15 @@ def _call_gemini_models(
 
     deadline = time.time() + GEMINI_TIME_BUDGET
     timeouts_in_row = 0
-    for model_name in active_models:
+    # Gemma models take no tools. When a model or key rejects the tools, the same model is retried
+    # at once without them, so a free-tier key (no Search) never knocks the model out of the chain.
+    tools_cfg = [{name: {}} for name in GEMINI_TOOLS] if use_tools else []
+    queue = [
+        (m, bool(tools_cfg) and not m.startswith("gemma-") and _GEMINI_TOOLS_BACKOFF.get(m, 0) <= now)
+        for m in active_models
+    ]
+    while queue:
+        model_name, tools_on = queue.pop(0)
         remaining = deadline - time.time()
         if remaining < 3:
             logger.warning(f"Gemini time budget ({GEMINI_TIME_BUDGET:.0f}s) exhausted before '{model_name}', giving up on Gemini.")
@@ -905,6 +927,8 @@ def _call_gemini_models(
                 "maxOutputTokens": max_tokens
             }
         }
+        if tools_on:
+            payload["tools"] = tools_cfg
         
         try:
             database.log_api_call("gemini")
@@ -933,6 +957,11 @@ def _call_gemini_models(
                 err_body = e.read().decode('utf-8', errors='ignore')
             except Exception:
                 pass
+            if tools_on and e.code in (400, 403, 429):
+                logger.warning(f"Gemini API model '{model_name}' rejected tools {GEMINI_TOOLS} (HTTP {e.code}). Retrying without tools; tools skipped for this model for 1 hour. Details: {err_body[:200]}")
+                _GEMINI_TOOLS_BACKOFF[model_name] = time.time() + 3600
+                queue.insert(0, (model_name, False))
+                continue
             if e.code == 429:
                 logger.warning(f"Gemini API model '{model_name}' rate limited (HTTP 429). Placing on 1-hour cooldown and falling back...")
                 _GEMINI_MODEL_COOLDOWNS[model_name] = time.time() + 3600
@@ -1233,8 +1262,10 @@ def _ask_gemini_ai(
         temperature=0.4,
         media_bytes=target_media_bytes,
         media_mime=target_media_mime,
+        use_tools=True,
     )
-    if res_text and cache_key:
+    # Search answers go stale, so they are not cached for 24h
+    if res_text and cache_key and "google_search" not in GEMINI_TOOLS:
         _cache_ai(cache_key, res_text)
     return res_text
 

@@ -797,6 +797,83 @@ class TestGeminiChainLimits(unittest.TestCase):
         mock_urlopen.assert_not_called()
 
 
+class TestGeminiTools(unittest.TestCase):
+    """GEMINI_TOOLS adds built-in tools to /ai requests only, and never costs a model its place in the chain."""
+
+    def setUp(self):
+        bot._GEMINI_MODEL_COOLDOWNS.clear()
+        bot._GEMINI_TOOLS_BACKOFF.clear()
+
+    @staticmethod
+    def _ok(text="answer"):
+        ok = MagicMock()
+        ok.__enter__.return_value.read.return_value = json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": text}]}}]}).encode()
+        return ok
+
+    @staticmethod
+    def _tools_sent(call):
+        return json.loads(call.args[0].data.decode()).get("tools")
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_TOOLS", ["code_execution", "url_context"])
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_tools_only_when_requested(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._ok()
+        bot._call_gemini_api("hi")
+        self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
+        bot._call_gemini_api("hi", use_tools=True)
+        self.assertEqual(self._tools_sent(mock_urlopen.call_args), [{"code_execution": {}}, {"url_context": {}}])
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_TOOLS", [])
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_off_by_default(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._ok()
+        bot._call_gemini_api("hi", use_tools=True)
+        self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_TOOLS", ["code_execution"])
+    @patch.object(bot, "GEMINI_MODELS", ["gemma-4-31b-it"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_gemma_gets_no_tools(self, mock_urlopen, _log):
+        mock_urlopen.return_value = self._ok()
+        bot._call_gemini_api("hi", use_tools=True)
+        self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
+
+    @patch("bot.database.log_api_call")
+    @patch.object(bot, "OPENROUTER_API_KEY", "")
+    @patch.object(bot, "GEMINI_TOOLS", ["google_search"])
+    @patch.object(bot, "GEMINI_MODELS", ["gemini-4-hydrogen"])
+    @patch.object(bot, "GEMINI_API_KEY", "g_key")
+    @patch("bot._urlopen")
+    def test_rejected_tools_retry_same_model_without_tools(self, mock_urlopen, _log):
+        import urllib.error
+        quota = urllib.error.HTTPError("u", 429, "quota", {}, None)
+        mock_urlopen.side_effect = [quota, self._ok("plain")]
+        res = bot._call_gemini_api("hi", use_tools=True)
+        self.assertEqual(res, "plain")
+        self.assertEqual(res.model, "gemini-4-hydrogen")
+        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertIsNotNone(self._tools_sent(mock_urlopen.call_args_list[0]))
+        self.assertIsNone(self._tools_sent(mock_urlopen.call_args_list[1]))
+        # The model is not put on the 1-hour rate-limit cooldown, only its tools are skipped
+        self.assertNotIn("gemini-4-hydrogen", bot._GEMINI_MODEL_COOLDOWNS)
+        mock_urlopen.side_effect = None
+        mock_urlopen.return_value = self._ok("plain again")
+        bot._call_gemini_api("hi", use_tools=True)
+        self.assertIsNone(self._tools_sent(mock_urlopen.call_args))
+
+
 class TestOpenRouterModelChoice(unittest.TestCase):
     @staticmethod
     def _resp(body):

@@ -58,7 +58,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.29.0"
+VERSION = "2.30.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -3808,6 +3808,177 @@ def _fetch_instagram_og_data(url: str) -> tuple[str | None, str | None, str | No
 
     return None, None, None
 
+# --- Google Maps links: render a real map (OpenStreetMap tiles) ---------------
+MAP_PREVIEW_SCHEME = "osmmap:"
+OSM_USER_AGENT = "DeltaChatWebPreviewBot/1.0 (+https://github.com/gluek/deltachat_webpreview)"
+_MAPS_SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
+
+
+def _is_google_maps_url(url: str) -> bool:
+    """Return True for Google Maps place/search links, including maps.app.goo.gl short links."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path or ""
+        if host == "maps.app.goo.gl":
+            return True
+        if host in ("goo.gl", "www.goo.gl"):
+            return path.startswith("/maps")
+        if re.fullmatch(r"maps\.google\.[a-z.]+", host):
+            return True
+        if re.fullmatch(r"(www\.)?google\.[a-z.]+", host):
+            return path.startswith("/maps")
+    except Exception:
+        pass
+    return False
+
+
+def _parse_google_maps_url(url: str) -> tuple[float | None, float | None, int, str | None]:
+    """
+    Extract (lat, lon, zoom, place_name) from a resolved Google Maps URL.
+    lat/lon are None when the URL carries only a name or address.
+    """
+    parsed = urllib.parse.urlparse(url)
+    path = urllib.parse.unquote(parsed.path)
+    query = urllib.parse.parse_qs(parsed.query)
+    zoom = 15
+    lat = lon = None
+    name = None
+
+    pm = re.search(r"/maps/(?:place|search)/([^/@]+)", path)
+    if pm:
+        name = pm.group(1).replace("+", " ").strip() or None
+
+    m = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", url)
+    if m:
+        lat, lon = float(m.group(1)), float(m.group(2))
+    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)(?:,(\d+(?:\.\d+)?)z)?", path)
+    if m:
+        if lat is None:
+            lat, lon = float(m.group(1)), float(m.group(2))
+        if m.group(3):
+            zoom = int(float(m.group(3)))
+
+    if lat is None:
+        for key in ("q", "query", "ll", "destination", "center"):
+            for val in query.get(key, []):
+                cm = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*", val)
+                if cm:
+                    lat, lon = float(cm.group(1)), float(cm.group(2))
+                    break
+                if not name and key in ("q", "query"):
+                    name = val.strip() or None
+            if lat is not None:
+                break
+    if "z" in query and query["z"] and query["z"][0].isdigit():
+        zoom = int(query["z"][0])
+
+    if lat is not None and not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        lat = lon = None
+    return lat, lon, max(3, min(zoom, 18)), name
+
+
+def _geocode_place(name: str) -> tuple[float, float] | None:
+    """Look up a place name or address on Nominatim. Tries the full text, then without the leading place name."""
+    candidates = [name]
+    if "," in name:
+        candidates.append(name.split(",", 1)[1].strip())
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            api = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+                {"q": cand, "format": "json", "limit": 1}
+            )
+            req = urllib.request.Request(api, headers={"User-Agent": OSM_USER_AGENT})
+            with _urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read(64 * 1024).decode("utf-8", "replace"))
+            if data:
+                return float(data[0]["lat"]), float(data[0]["lon"])
+        except Exception as e:
+            logger.warning(f"Nominatim lookup failed for {cand!r}: {e}")
+    return None
+
+
+def _fetch_google_maps_og_data(url: str) -> tuple[str | None, str | None, str | None]:
+    """
+    Resolve a Google Maps link to coordinates and return (title, pseudo image URL, markdown).
+    The pseudo URL "osmmap:lat,lon,zoom" is rendered by _render_map_image().
+    """
+    try:
+        final_url = url
+        if (urllib.parse.urlparse(url).hostname or "").lower() in _MAPS_SHORT_HOSTS:
+            req = urllib.request.Request(url, headers={"User-Agent": STANDARD_USER_AGENT})
+            with _urlopen(req, timeout=10) as resp:
+                final_url = resp.geturl()
+        lat, lon, zoom, name = _parse_google_maps_url(final_url)
+        if lat is None and name:
+            coords = _geocode_place(name)
+            if coords:
+                lat, lon = coords
+        if lat is None:
+            return None, None, None
+        title = f"Google Maps: {name}" if name else f"Google Maps: {lat:.5f}, {lon:.5f}"
+        pseudo = f"{MAP_PREVIEW_SCHEME}{lat:.6f},{lon:.6f},{zoom}"
+        md = f"# {title}\n\nCoordinates: {lat:.5f}, {lon:.5f}"
+        return title, pseudo, md
+    except Exception as e:
+        logger.warning(f"Google Maps preview failed for {url}: {e}")
+        return None, None, None
+
+
+def _render_map_image(spec: str, urlhash: str) -> str | None:
+    """Render "lat,lon,zoom" into a WebP map with a marker from OpenStreetMap tiles. Returns the file path."""
+    try:
+        import io
+        import math
+        from PIL import Image, ImageDraw
+        lat_s, lon_s, zoom_s = spec.split(",")
+        lat, lon, zoom = float(lat_s), float(lon_s), int(zoom_s)
+        n = 2 ** zoom
+        lat_r = math.radians(max(-85.05, min(85.05, lat)))
+        px = (lon + 180.0) / 360.0 * n * 256
+        py = (1.0 - math.asinh(math.tan(lat_r)) / math.pi) / 2.0 * n * 256
+        out_w, out_h = 768, 512
+        left, top = px - out_w / 2, py - out_h / 2
+        tx0, ty0 = int(left // 256), int(top // 256)
+        tx1, ty1 = int((left + out_w) // 256), int((top + out_h) // 256)
+        canvas = Image.new("RGB", ((tx1 - tx0 + 1) * 256, (ty1 - ty0 + 1) * 256), (230, 230, 230))
+        got_tile = False
+        for tx in range(tx0, tx1 + 1):
+            for ty in range(ty0, ty1 + 1):
+                if ty < 0 or ty >= n:
+                    continue
+                tile_url = f"https://tile.openstreetmap.org/{zoom}/{tx % n}/{ty}.png"
+                try:
+                    req = urllib.request.Request(tile_url, headers={"User-Agent": OSM_USER_AGENT})
+                    with _urlopen(req, timeout=8) as resp:
+                        tile = Image.open(io.BytesIO(resp.read(512 * 1024))).convert("RGB")
+                    canvas.paste(tile, ((tx - tx0) * 256, (ty - ty0) * 256))
+                    got_tile = True
+                except Exception as e:
+                    logger.warning(f"Map tile fetch failed {tile_url}: {e}")
+        if not got_tile:
+            return None
+        ox, oy = int(left - tx0 * 256), int(top - ty0 * 256)
+        img = canvas.crop((ox, oy, ox + out_w, oy + out_h))
+        draw = ImageDraw.Draw(img)
+        cx, cy = out_w // 2, out_h // 2
+        draw.polygon([(cx, cy), (cx - 11, cy - 26), (cx + 11, cy - 26)], fill=(214, 40, 40), outline=(255, 255, 255))
+        draw.ellipse([cx - 14, cy - 44, cx + 14, cy - 16], fill=(214, 40, 40), outline=(255, 255, 255), width=3)
+        draw.ellipse([cx - 5, cy - 35, cx + 5, cy - 25], fill=(255, 255, 255))
+        text = "© OpenStreetMap contributors"
+        tw = draw.textlength(text)
+        draw.rectangle([out_w - tw - 10, out_h - 18, out_w, out_h], fill=(255, 255, 255))
+        draw.text((out_w - tw - 5, out_h - 15), text, fill=(60, 60, 60))
+        cached_path = os.path.join(CACHE_DIR, f"og_{urlhash}.webp")
+        _save_image_as_webp(img, cached_path, max_dim=800, quality=80)
+        return cached_path
+    except Exception as e:
+        logger.warning(f"Map rendering failed for {spec!r}: {e}")
+        return None
+
+
 def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, str | None]:
     """
     Fetches the URL and extracts og:title (or fallback title) and og:image URL.
@@ -3837,6 +4008,16 @@ def _get_og_preview_data(url: str) -> tuple[str, str | None, bool, str | None, s
         logger.warning(f"Instagram early-return failed for {url}: {_ig_err}")
     # ---------------------------------------------------------------------
 
+
+    # --- Google Maps links: real map from OpenStreetMap tiles -------------
+    try:
+        if _is_google_maps_url(url):
+            gm_title, gm_image, gm_md = _fetch_google_maps_og_data(url)
+            if gm_title:
+                return gm_title, gm_image, False, None, gm_md
+    except Exception as _gm_err:
+        logger.warning(f"Google Maps early-return failed for {url}: {_gm_err}")
+    # ---------------------------------------------------------------------
 
     def parse_html(html_content: str) -> tuple[str | None, str | None]:
         # 1. Extract title
@@ -4070,6 +4251,9 @@ def _download_cached_image(image_url: str, urlhash: str) -> str | None:
     Downloads an image URL and saves it in the persistent cache directory.
     Returns absolute path of the cached file, or None if failed.
     """
+    if image_url and image_url.startswith(MAP_PREVIEW_SCHEME):
+        return _render_map_image(image_url[len(MAP_PREVIEW_SCHEME):], urlhash)
+
     if not _is_valid_image_url(image_url):
         logger.info(f"Skipping invalid or non-fetchable image URL for preview: {image_url}")
         return None

@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.30.0] - 2026-11-18
+
+### Added
+- **Real Map for Google Maps Links**: links to Google Maps (`maps.app.goo.gl`, `goo.gl/maps`, `google.*/maps`, `maps.google.*`) now get a preview with a map of the place and a marker, instead of Google's generic Europe map. The place is taken from the coordinates in the link or, if there are none, looked up by name on OpenStreetMap Nominatim. The map is drawn from OpenStreetMap tiles (with attribution) and cached like other preview images.
+
 ## [2.29.0] - 2026-11-15
 
 ### Added

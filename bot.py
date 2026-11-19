@@ -60,7 +60,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.32.1"
+VERSION = "2.32.2"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -7095,19 +7095,52 @@ def _check_downvotes(bot, accid, msg_id: int, by_contact: dict):
           f"To block the domain:\n/preview_exclude {domain}")
 
 
+_SAVE_LABELS = {
+    "karakeep": ("💾", "Saved to KaraKeep!", "KaraKeep failed", "KaraKeep"),
+    "archive": ("🏛️", "Saved to Web Archive!", "Web Archive failed", "Archive"),
+}
+_save_results: dict[int, dict[str, bool]] = {}
+_save_results_lock = threading.Lock()
+
+
+def _save_reaction_text(results: dict[str, bool]) -> str:
+    """One reaction text for all saves on a message (the bot has a single reaction slot per message)."""
+    if len(results) == 1:
+        key, ok = next(iter(results.items()))
+        icon, done, failed, _ = _SAVE_LABELS[key]
+        return f"{icon} {done}" if ok else f"❌ {failed}"
+    parts = []
+    for key, ok in results.items():
+        icon, _, _, short = _SAVE_LABELS[key]
+        parts.append(f"{icon if ok else '❌'} {short}")
+    return " · ".join(parts)
+
+
+def _react_save_result(bot, accid, msg_id, key: str, ok: bool):
+    with _save_results_lock:
+        results = _save_results.setdefault(msg_id, {})
+        results.pop(key, None)
+        results[key] = ok
+        if len(_save_results) > 2000:
+            for k in list(_save_results)[:1000]:
+                _save_results.pop(k, None)
+        text = _save_reaction_text(results)
+    _react(bot, accid, msg_id, text)
+
+
 def _do_reaction_karakeep(bot, accid, chat_id, msg_id, contact_id, url: str):
     """Reaction-triggered save: the answer is the bot's own reaction, no message."""
     ok, result = _save_to_karakeep(url)
     if not ok:
         logger.warning(f"KaraKeep save by reaction failed for {url}: {result}")
-    _react(bot, accid, msg_id, "☑️ Saved to KaraKeep!" if ok else "❌ KaraKeep failed")
+    _react_save_result(bot, accid, msg_id, "karakeep", ok)
 
 
 def _do_reaction_archive(bot, accid, chat_id, msg_id, contact_id, url: str):
     ok, result = _save_to_web_archive(url)
     if not ok:
         logger.warning(f"Web Archive save by reaction failed for {url}: {result}")
-    _react(bot, accid, msg_id, "🏛️ Saved to Web Archive!" if ok else "❌ Web Archive failed")
+    _react_save_result(bot, accid, msg_id, "archive", ok)
 
 
 def _handle_reaction(bot, accid, chat_id: int, msg_id: int, contact_id: int, action: str):

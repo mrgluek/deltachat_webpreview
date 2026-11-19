@@ -30,6 +30,7 @@ class TestReactionActions(unittest.TestCase):
 
 class TestReactionHandling(unittest.TestCase):
     def setUp(self):
+        bot._save_results.clear()
         self._old_db = database.DB_PATH
         database.DB_PATH = "test_reactions.db"
         database.init_db()
@@ -75,7 +76,7 @@ class TestReactionHandling(unittest.TestCase):
     @patch("bot._save_to_karakeep", return_value=(True, "id1"))
     def test_karakeep_reacts_without_message(self, _):
         bot._do_reaction_karakeep(self.bot, 1, 3, 10, 7, "https://example.com/")
-        self.bot.rpc.send_reaction.assert_called_with(1, 10, ["☑️ Saved to KaraKeep!"])
+        self.bot.rpc.send_reaction.assert_called_with(1, 10, ["💾 Saved to KaraKeep!"])
         self.bot.rpc.send_msg.assert_not_called()
 
     def test_count_downvotes_any_skin_tone(self):
@@ -99,6 +100,16 @@ class TestReactionHandling(unittest.TestCase):
     def test_downvotes_ignore_untracked_messages(self, _):
         bot._check_downvotes(self.bot, 1, 99, {str(i): ["👎"] for i in range(10, 20)})
         self.bot.rpc.send_msg.assert_not_called()
+
+
+    def test_save_reactions_combine(self):
+        bot._save_results.clear()
+        bot._react_save_result(self.bot, 1, 40, "karakeep", True)
+        self.bot.rpc.send_reaction.assert_called_with(1, 40, ["💾 Saved to KaraKeep!"])
+        bot._react_save_result(self.bot, 1, 40, "archive", True)
+        self.bot.rpc.send_reaction.assert_called_with(1, 40, ["💾 KaraKeep · 🏛️ Archive"])
+        bot._react_save_result(self.bot, 1, 40, "archive", False)
+        self.bot.rpc.send_reaction.assert_called_with(1, 40, ["💾 KaraKeep · ❌ Archive"])
 
 
 if __name__ == "__main__":

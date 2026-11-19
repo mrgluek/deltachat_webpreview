@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.32.2] - 2026-11-19
+
+### Changed
+- When several people save the same message (💾 KaraKeep, 🏛️ Web Archive), the bot's single reaction now combines the results, e.g. “💾 KaraKeep · 🏛️ Archive”, instead of the last one overwriting the others. The KaraKeep reaction uses 💾.
+
 ## [2.32.1] - 2026-11-19
 
 ### Changed

@@ -154,8 +154,43 @@ def init_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_cache_log_created_at ON cache_log(created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_cache_log_type ON cache_log(cache_type)')
 
+        # Messages the bot sent as answers (to delete them or re-run them by emoji reaction)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bot_msgs (
+                msg_id INTEGER PRIMARY KEY,
+                chat_id INTEGER,
+                requester_id INTEGER,
+                url TEXT,
+                created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_bot_msgs_created_at ON bot_msgs(created_at)')
+
         conn.commit()
         conn.close()
+
+def add_bot_msg(msg_id: int, chat_id: int, requester_id: int, url: str | None = None):
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO bot_msgs (msg_id, chat_id, requester_id, url) VALUES (?, ?, ?, ?)",
+                (msg_id, chat_id, requester_id, url),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+def get_bot_msg(msg_id: int) -> dict | None:
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT chat_id, requester_id, url FROM bot_msgs WHERE msg_id = ?", (msg_id,)
+            ).fetchone()
+            return {"chat_id": row[0], "requester_id": row[1], "url": row[2]} if row else None
+        finally:
+            conn.close()
 
 def set_config(key: str, value: str):
     with _lock:
@@ -377,6 +412,8 @@ def cleanup_old_records(retention_days: int = 30) -> dict[str, int]:
             cleaned["api_log"] = cursor.rowcount
             cursor.execute("DELETE FROM cache_log WHERE created_at < ?", (cutoff,))
             cleaned["cache_log"] = cursor.rowcount
+            cursor.execute("DELETE FROM bot_msgs WHERE created_at < ?", (cutoff,))
+            cleaned["bot_msgs"] = cursor.rowcount
             # Cost history is tiny and the monthly search quota needs it, so it is kept for 400 days
             cursor.execute("DELETE FROM google_usage WHERE created_at < ?", (now - 400 * 86400,))
             cleaned["google_usage"] = cursor.rowcount

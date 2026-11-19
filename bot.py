@@ -18,6 +18,8 @@ import ipaddress
 import socket
 
 from deltachat2 import events, MsgData
+from deltachat2 import EventType
+from deltachat2.events import RawEvent
 from deltabot_cli import BotCli
 
 import database
@@ -2926,15 +2928,19 @@ def _fit_dc_text(head: str, body: str, tail: str = "") -> str:
             break
     return head + cut.rstrip() + "…" + tail
 
-def _send(bot, accid, chat_id, text, file=None):
-    """Send a message and track transport stats."""
+def _send(bot, accid, chat_id, text, file=None, requester=None, url=None):
+    """Send a message. With `requester`, remember it so a reaction can delete or re-run it."""
     msg_data = MsgData(text=text)
     if file:
         msg_data.file = file
         
     try:
         msg_id = bot.rpc.send_msg(accid, chat_id, msg_data)
-        
+        if requester is not None and msg_id:
+            try:
+                database.add_bot_msg(msg_id, chat_id, requester, url)
+            except Exception as e:
+                logger.warning(f"Failed to track bot message {msg_id}: {e}")
         return msg_id
     except Exception as e:
         logger.error(f"Failed to send message to chat {chat_id}: {e}")
@@ -4524,7 +4530,7 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
             _react(bot, accid, req_msg_id, "⏳")
             
             caption = f"📝 {title}\n\n🔗 {url}"
-            _send(bot, accid, chat_id, caption, file=filepath)
+            _send(bot, accid, chat_id, caption, file=filepath, requester=from_id, url=url)
             _react(bot, accid, req_msg_id, "☑️")
             database.add_preview_log(chat_id, from_id, url, title, filesize, False)
             return
@@ -4588,7 +4594,7 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
         caption = f"📝 {filename}\n\n🔗 {url}"
         
         # Send attachment
-        _send(bot, accid, chat_id, caption, file=cache_path)
+        _send(bot, accid, chat_id, caption, file=cache_path, requester=from_id, url=url)
         _react(bot, accid, req_msg_id, "☑️")
         
         # Store log stats
@@ -4736,7 +4742,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             
             jina_md = cached_og.get("jina_markdown") if cached_og else None
             caption = _format_preview_caption(title, url, mode, chat_id, jina_markdown=jina_md)
-            _send(bot, accid, chat_id, caption, file=filepath)
+            _send(bot, accid, chat_id, caption, file=filepath, requester=from_id, url=url)
             _react(bot, accid, req_msg_id, "☑️")
             database.add_preview_log(chat_id, from_id, url, title, filesize, 1 if mode == "archive" else 0)
             return
@@ -4897,7 +4903,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         caption = _format_preview_caption(title, url, mode, chat_id, jina_markdown=jina_md)
         
         # 7. Send attachment
-        _send(bot, accid, chat_id, caption, file=cache_path)
+        _send(bot, accid, chat_id, caption, file=cache_path, requester=from_id, url=url)
         _react(bot, accid, req_msg_id, "☑️")
         
         # 8. Store log stats
@@ -5734,7 +5740,7 @@ def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         reply = f"⚡ **TL;DR**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}\n\n🔗 [{clean_title}]({url})"
         
-        _send(bot, accid, chat_id, reply)
+        _send(bot, accid, chat_id, reply, requester=from_id, url=url)
         _react(bot, accid, req_msg_id, "☑️")
         database.add_preview_log(chat_id, from_id, url, title or "TL;DR", len(summary), 0)
     except Exception as e:
@@ -5767,7 +5773,7 @@ def _do_tldr_text(bot, accid, chat_id, req_msg_id, from_id, text: str):
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         reply = f"⚡ **TL;DR**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}"
 
-        _send(bot, accid, chat_id, reply)
+        _send(bot, accid, chat_id, reply, requester=from_id)
         _react(bot, accid, req_msg_id, "☑️")
         database.add_preview_log(chat_id, from_id, "text_message", "Quoted Message", len(summary), 0)
     except Exception as e:
@@ -5823,7 +5829,7 @@ def _do_tldr_audio(
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         reply = f"⚡ **TL;DR (Audio)**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}"
 
-        _send(bot, accid, chat_id, reply)
+        _send(bot, accid, chat_id, reply, requester=from_id)
         _react(bot, accid, req_msg_id, "☑️")
         database.add_preview_log(chat_id, from_id, "voice_message", "Voice/Audio Summary", len(summary), 0)
     except Exception as e:
@@ -7016,6 +7022,119 @@ def invidious_list_command(bot, accid, event):
         _send(bot, accid, msg.chat_id, "❌ Failed to list Invidious domains. Check server logs for details.")
 
 # ── General Event Listener ──
+
+# ── Emoji reactions ──
+# 🗑 deletes a bot answer; 💾 KaraKeep; 🏛 Web Archive; ⚡ TL;DR; 🖥 preview; 📦 WebXDC.
+_REACTION_ACTIONS = {
+    "🗑": "delete",
+    "💾": "karakeep",
+    "🏛": "archive",
+    "⚡": "tldr",
+    "🖥": "preview",
+    "📦": "webxdc",
+}
+_seen_reactions: dict[tuple[int, int], frozenset] = {}
+_seen_reactions_lock = threading.Lock()
+
+
+def _norm_reaction(emoji: str) -> str:
+    return (emoji or "").replace("\ufe0f", "").strip()
+
+
+def _new_reaction_actions(msg_id: int, contact_id: int, emojis) -> list[str]:
+    """Return the actions for reactions added since the last event (so removing and re-adding works)."""
+    current = frozenset(_norm_reaction(e) for e in emojis)
+    with _seen_reactions_lock:
+        previous = _seen_reactions.get((msg_id, contact_id), frozenset())
+        if current:
+            _seen_reactions[(msg_id, contact_id)] = current
+        else:
+            _seen_reactions.pop((msg_id, contact_id), None)
+        if len(_seen_reactions) > 2000:
+            for k in list(_seen_reactions)[:1000]:
+                _seen_reactions.pop(k, None)
+    return [_REACTION_ACTIONS[e] for e in sorted(current - previous) if e in _REACTION_ACTIONS]
+
+
+def _do_reaction_karakeep(bot, accid, chat_id, msg_id, contact_id, url: str):
+    """Reaction-triggered save: the answer is the bot's own reaction, no message."""
+    ok, result = _save_to_karakeep(url)
+    if not ok:
+        logger.warning(f"KaraKeep save by reaction failed for {url}: {result}")
+    _react(bot, accid, msg_id, "☑️" if ok else "❌")
+
+
+def _do_reaction_archive(bot, accid, chat_id, msg_id, contact_id, url: str):
+    ok, result = _save_to_web_archive(url)
+    if not ok:
+        logger.warning(f"Web Archive save by reaction failed for {url}: {result}")
+    _react(bot, accid, msg_id, "🏛️" if ok else "❌")
+
+
+def _handle_reaction(bot, accid, chat_id: int, msg_id: int, contact_id: int, action: str):
+    msg = bot.rpc.get_message(accid, msg_id)
+    tracked = database.get_bot_msg(msg_id)
+    is_admin = _is_dc_admin(bot, accid, contact_id)
+
+    if action == "delete":
+        if msg.from_id != DC_CONTACT_ID_SELF:
+            return
+        if not (is_admin or (tracked and tracked["requester_id"] == contact_id)):
+            return
+        bot.rpc.delete_messages_for_all(accid, [msg_id])
+        return
+
+    url = (tracked or {}).get("url")
+    if not url:
+        text = msg.text or ""
+        m = re.search(r'(https?://[^\s<>"]+)', text)
+        if m:
+            url = _clean_url_params(_strip_url_trailing_junk(m.group(1)))
+    if not url:
+        return
+    if _is_internal_or_invalid_url(url):
+        _react(bot, accid, msg_id, "❌")
+        return
+    if database.is_excluded(url):
+        _react(bot, accid, msg_id, "⚠️")
+        return
+
+    if action == "karakeep":
+        if not (is_admin and _karakeep_enabled()):
+            return
+        worker, args = _do_reaction_karakeep, (bot, accid, chat_id, msg_id, contact_id, url)
+    else:
+        if _is_rate_limited(bot, accid, contact_id):
+            _react(bot, accid, msg_id, "⏱")
+            return
+        if action == "archive":
+            worker, args = _do_reaction_archive, (bot, accid, chat_id, msg_id, contact_id, url)
+        elif action == "tldr":
+            worker, args = _do_tldr, (bot, accid, chat_id, msg_id, contact_id, url)
+        else:
+            mode = "webxdc" if action == "webxdc" else "readability"
+            worker, args = _do_preview, (bot, accid, chat_id, msg_id, contact_id, url, mode)
+    threading.Thread(target=worker, args=args, daemon=True).start()
+
+
+@dc_cli.on(RawEvent(EventType.REACTIONS_CHANGED))
+def on_reactions_changed(bot, accid, event):
+    if accid != dc_accid or event.contact_id == DC_CONTACT_ID_SELF:
+        return
+    try:
+        reactions = bot.rpc.get_message_reactions(accid, event.msg_id)
+        if isinstance(reactions, dict):
+            by_contact = reactions.get("reactions_by_contact") or {}
+        else:
+            by_contact = (getattr(reactions, "reactions_by_contact", None) or {}) if reactions else {}
+        emojis = by_contact.get(event.contact_id)
+        if emojis is None:
+            emojis = by_contact.get(str(event.contact_id), [])
+        for action in _new_reaction_actions(event.msg_id, event.contact_id, emojis):
+            _handle_reaction(bot, accid, event.chat_id, event.msg_id, event.contact_id, action)
+    except Exception as e:
+        logger.error(f"Error handling reaction on message {event.msg_id}: {e}")
+
 
 @dc_cli.on(events.NewMessage(is_bot=None))
 def on_new_message(bot, accid, event):

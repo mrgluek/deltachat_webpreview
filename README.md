@@ -118,6 +118,7 @@ The bot can be configured using environment variables in `docker-compose.yml` or
 - `/lang [code]` — Set preferred summary language for current chat (e.g. `/lang AUTO` (default), `/lang RU`, `/lang EN`, `/lang DE`).
 - `/download <url>` — Download file directly and send as attachment (supported for PDF, office documents, text files).
 - `/keep <url>` — Asynchronously save webpage to [KaraKeep](https://karakeep.app/) (admin private notification), [Web Archive](https://web.archive.org/) (120s timeout), [Archive.today](https://archive.today/) (multi-mirror with optional proxy), and [Ghostarchive](https://ghostarchive.org/). Also supports dynamic `/keep_[hash]` links.
+- **Emoji reactions** — react to a message with a link: ⚡ TL;DR, 🖥️ preview, 📦 WebXDC, 🏛️ Web Archive (bot answers with a 🏛️ reaction), 💾 KaraKeep (admin only, bot answers with ☑️). React 🗑️ to a bot answer to delete it (the requester or the admin).
 - `/stats` — Show generation counters, total traffic size, and disk space (disk space is admin-only).
 - `/source` — Show primary and backup source code links 🔌.
 - `/donate` — Support project development ❤️.

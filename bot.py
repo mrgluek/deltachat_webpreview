@@ -60,7 +60,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.32.0"
+VERSION = "2.32.1"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -2928,7 +2928,7 @@ def _fit_dc_text(head: str, body: str, tail: str = "") -> str:
             break
     return head + cut.rstrip() + "…" + tail
 
-def _send(bot, accid, chat_id, text, file=None, requester=None, url=None):
+def _send(bot, accid, chat_id, text, file=None, requester=None, url=None, req_msg_id=None):
     """Send a message. With `requester`, remember it so a reaction can delete or re-run it."""
     msg_data = MsgData(text=text)
     if file:
@@ -2938,7 +2938,7 @@ def _send(bot, accid, chat_id, text, file=None, requester=None, url=None):
         msg_id = bot.rpc.send_msg(accid, chat_id, msg_data)
         if requester is not None and msg_id:
             try:
-                database.add_bot_msg(msg_id, chat_id, requester, url)
+                database.add_bot_msg(msg_id, chat_id, requester, url, req_msg_id)
             except Exception as e:
                 logger.warning(f"Failed to track bot message {msg_id}: {e}")
         return msg_id
@@ -4538,7 +4538,7 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
             _react(bot, accid, req_msg_id, "⏳")
             
             caption = f"📝 {title}\n\n🔗 {url}"
-            _send(bot, accid, chat_id, caption, file=filepath, requester=from_id, url=url)
+            _send(bot, accid, chat_id, caption, file=filepath, requester=from_id, url=url, req_msg_id=req_msg_id)
             _react(bot, accid, req_msg_id, "☑️")
             database.add_preview_log(chat_id, from_id, url, title, filesize, False)
             return
@@ -4602,7 +4602,7 @@ def _do_download(bot, accid, chat_id, req_msg_id, from_id, url: str):
         caption = f"📝 {filename}\n\n🔗 {url}"
         
         # Send attachment
-        _send(bot, accid, chat_id, caption, file=cache_path, requester=from_id, url=url)
+        _send(bot, accid, chat_id, caption, file=cache_path, requester=from_id, url=url, req_msg_id=req_msg_id)
         _react(bot, accid, req_msg_id, "☑️")
         
         # Store log stats
@@ -4750,7 +4750,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
             
             jina_md = cached_og.get("jina_markdown") if cached_og else None
             caption = _format_preview_caption(title, url, mode, chat_id, jina_markdown=jina_md)
-            _send(bot, accid, chat_id, caption, file=filepath, requester=from_id, url=url)
+            _send(bot, accid, chat_id, caption, file=filepath, requester=from_id, url=url, req_msg_id=req_msg_id)
             _react(bot, accid, req_msg_id, "☑️")
             database.add_preview_log(chat_id, from_id, url, title, filesize, 1 if mode == "archive" else 0)
             return
@@ -4911,7 +4911,7 @@ def _do_preview(bot, accid, chat_id, req_msg_id, from_id, url: str, mode: str):
         caption = _format_preview_caption(title, url, mode, chat_id, jina_markdown=jina_md)
         
         # 7. Send attachment
-        _send(bot, accid, chat_id, caption, file=cache_path, requester=from_id, url=url)
+        _send(bot, accid, chat_id, caption, file=cache_path, requester=from_id, url=url, req_msg_id=req_msg_id)
         _react(bot, accid, req_msg_id, "☑️")
         
         # 8. Store log stats
@@ -5748,7 +5748,7 @@ def _do_tldr(bot, accid, chat_id, req_msg_id, from_id, url: str):
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         reply = f"⚡ **TL;DR**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}\n\n🔗 [{clean_title}]({url})"
         
-        _send(bot, accid, chat_id, reply, requester=from_id, url=url)
+        _send(bot, accid, chat_id, reply, requester=from_id, url=url, req_msg_id=req_msg_id)
         _react(bot, accid, req_msg_id, "☑️")
         database.add_preview_log(chat_id, from_id, url, title or "TL;DR", len(summary), 0)
     except Exception as e:
@@ -5781,7 +5781,7 @@ def _do_tldr_text(bot, accid, chat_id, req_msg_id, from_id, text: str):
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         reply = f"⚡ **TL;DR**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}"
 
-        _send(bot, accid, chat_id, reply, requester=from_id)
+        _send(bot, accid, chat_id, reply, requester=from_id, req_msg_id=req_msg_id)
         _react(bot, accid, req_msg_id, "☑️")
         database.add_preview_log(chat_id, from_id, "text_message", "Quoted Message", len(summary), 0)
     except Exception as e:
@@ -5837,7 +5837,7 @@ def _do_tldr_audio(
         lang_suffix = f" ({lang})" if lang != "AUTO" else ""
         reply = f"⚡ **TL;DR (Audio)**{lang_suffix}{_ai_model_tag(summary)}:\n\n{summary}"
 
-        _send(bot, accid, chat_id, reply, requester=from_id)
+        _send(bot, accid, chat_id, reply, requester=from_id, req_msg_id=req_msg_id)
         _react(bot, accid, req_msg_id, "☑️")
         database.add_preview_log(chat_id, from_id, "voice_message", "Voice/Audio Summary", len(summary), 0)
     except Exception as e:
@@ -7078,13 +7078,13 @@ def _count_downvotes(by_contact: dict) -> int:
 
 
 def _check_downvotes(bot, accid, msg_id: int, by_contact: dict):
-    """More than DOWNVOTE_THRESHOLD 👎 on a bot answer: tell the admin the domain, once per message."""
+    """At least DOWNVOTE_THRESHOLD 👎 on a bot answer: tell the admin the domain, once per message."""
     tracked = database.get_bot_msg(msg_id)
     url = (tracked or {}).get("url")
     if not url:
         return
     votes = _count_downvotes(by_contact)
-    if votes <= DOWNVOTE_THRESHOLD or _is_duplicate_msg(msg_id, "downvote"):
+    if votes < DOWNVOTE_THRESHOLD or _is_duplicate_msg(msg_id, "downvote"):
         return
     domain = urllib.parse.urlparse(url).hostname or url
     admin_chat = _get_admin_chat_id()
@@ -7121,6 +7121,8 @@ def _handle_reaction(bot, accid, chat_id: int, msg_id: int, contact_id: int, act
         if not (is_admin or (tracked and tracked["requester_id"] == contact_id)):
             return
         bot.rpc.delete_messages_for_all(accid, [msg_id])
+        if tracked and tracked.get("req_msg_id"):
+            _react(bot, accid, tracked["req_msg_id"], "🗑️ Deleted by user request")
         return
 
     url = (tracked or {}).get("url")

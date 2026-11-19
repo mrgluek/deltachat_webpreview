@@ -44,17 +44,18 @@ class TestReactionHandling(unittest.TestCase):
     def test_bot_msg_tracking(self):
         database.add_bot_msg(10, 3, 7, "https://example.com/")
         self.assertEqual(database.get_bot_msg(10),
-                         {"chat_id": 3, "requester_id": 7, "url": "https://example.com/"})
+                         {"chat_id": 3, "requester_id": 7, "url": "https://example.com/", "req_msg_id": None})
         self.assertIsNone(database.get_bot_msg(11))
 
     @patch("bot._is_dc_admin", return_value=False)
     def test_delete_only_by_requester(self, _):
-        database.add_bot_msg(10, 3, 7, None)
+        database.add_bot_msg(10, 3, 7, None, 5)
         self.bot.rpc.get_message.return_value = MagicMock(from_id=bot.DC_CONTACT_ID_SELF)
         bot._handle_reaction(self.bot, 1, 3, 10, 8, "delete")
         self.bot.rpc.delete_messages_for_all.assert_not_called()
         bot._handle_reaction(self.bot, 1, 3, 10, 7, "delete")
         self.bot.rpc.delete_messages_for_all.assert_called_once_with(1, [10])
+        self.bot.rpc.send_reaction.assert_called_with(1, 5, ["🗑️ Deleted by user request"])
 
     @patch("bot._is_dc_admin", return_value=False)
     def test_delete_ignores_foreign_messages(self, _):
@@ -84,10 +85,10 @@ class TestReactionHandling(unittest.TestCase):
     @patch("bot._get_admin_chat_id", return_value=77)
     def test_downvotes_notify_admin_once_over_threshold(self, _):
         database.add_bot_msg(20, 3, 7, "https://bad.example.com/page")
-        by = {str(i): ["👎"] for i in range(10, 13)}
+        by = {str(i): ["👎"] for i in range(10, 12)}
         bot._check_downvotes(self.bot, 1, 20, by)
         self.bot.rpc.send_msg.assert_not_called()
-        by["13"] = ["👎🏽"]
+        by["12"] = ["👎🏽"]
         bot._check_downvotes(self.bot, 1, 20, by)
         bot._check_downvotes(self.bot, 1, 20, by)
         self.assertEqual(self.bot.rpc.send_msg.call_count, 1)

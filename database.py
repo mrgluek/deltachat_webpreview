@@ -164,18 +164,22 @@ def init_db():
                 created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER))
             )
         ''')
+        try:
+            cursor.execute("ALTER TABLE bot_msgs ADD COLUMN req_msg_id INTEGER")
+        except sqlite3.OperationalError:
+            pass
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_bot_msgs_created_at ON bot_msgs(created_at)')
 
         conn.commit()
         conn.close()
 
-def add_bot_msg(msg_id: int, chat_id: int, requester_id: int, url: str | None = None):
+def add_bot_msg(msg_id: int, chat_id: int, requester_id: int, url: str | None = None, req_msg_id: int | None = None):
     with _lock:
         conn = _connect()
         try:
             conn.execute(
-                "INSERT OR REPLACE INTO bot_msgs (msg_id, chat_id, requester_id, url) VALUES (?, ?, ?, ?)",
-                (msg_id, chat_id, requester_id, url),
+                "INSERT OR REPLACE INTO bot_msgs (msg_id, chat_id, requester_id, url, req_msg_id) VALUES (?, ?, ?, ?, ?)",
+                (msg_id, chat_id, requester_id, url, req_msg_id),
             )
             conn.commit()
         finally:
@@ -186,9 +190,9 @@ def get_bot_msg(msg_id: int) -> dict | None:
         conn = _connect()
         try:
             row = conn.execute(
-                "SELECT chat_id, requester_id, url FROM bot_msgs WHERE msg_id = ?", (msg_id,)
+                "SELECT chat_id, requester_id, url, req_msg_id FROM bot_msgs WHERE msg_id = ?", (msg_id,)
             ).fetchone()
-            return {"chat_id": row[0], "requester_id": row[1], "url": row[2]} if row else None
+            return {"chat_id": row[0], "requester_id": row[1], "url": row[2], "req_msg_id": row[3]} if row else None
         finally:
             conn.close()
 

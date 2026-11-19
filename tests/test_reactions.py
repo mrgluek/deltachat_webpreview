@@ -68,13 +68,13 @@ class TestReactionHandling(unittest.TestCase):
     @patch("bot._is_internal_or_invalid_url", return_value=False)
     def test_archive_reacts_without_message(self, *_):
         bot._do_reaction_archive(self.bot, 1, 3, 10, 7, "https://example.com/")
-        self.bot.rpc.send_reaction.assert_called_with(1, 10, ["🏛️"])
+        self.bot.rpc.send_reaction.assert_called_with(1, 10, ["🏛️ Saved to Web Archive!"])
         self.bot.rpc.send_msg.assert_not_called()
 
     @patch("bot._save_to_karakeep", return_value=(True, "id1"))
     def test_karakeep_reacts_without_message(self, _):
         bot._do_reaction_karakeep(self.bot, 1, 3, 10, 7, "https://example.com/")
-        self.bot.rpc.send_reaction.assert_called_with(1, 10, ["☑️"])
+        self.bot.rpc.send_reaction.assert_called_with(1, 10, ["☑️ Saved to KaraKeep!"])
         self.bot.rpc.send_msg.assert_not_called()
 
     def test_count_downvotes_any_skin_tone(self):

@@ -13,8 +13,8 @@ All notable changes to the Delta Chat WebPreview Bot will be documented in this 
 - **Emoji Reactions**: react to a message instead of typing a command.
   - 🗑️ on a bot answer (preview, TL;DR, download) deletes it for everyone; only the person who asked for it, or the bot admin, can do this.
   - ⚡ runs `/tldr`, 🖥️ runs `/preview`, 📦 runs `/webxdc` for the first link in the reacted message.
-  - 🏛️ saves the link to the Web Archive; the bot answers with a 🏛️ reaction (❌ on failure) and sends no message.
-  - 💾 saves the link to KaraKeep (admin only, when KaraKeep is configured); the bot answers with a ☑️ reaction (❌ on failure).
+  - 🏛️ saves the link to the Web Archive; the bot answers with the reaction “🏛️ Saved to Web Archive!” (❌ on failure) and sends no message.
+  - 💾 saves the link to KaraKeep (admin only, when KaraKeep is configured); the bot answers with the reaction “☑️ Saved to KaraKeep!” (❌ on failure).
   - Same rate limit and exclusion rules as the commands.
 
 ## [2.30.0] - 2026-11-18

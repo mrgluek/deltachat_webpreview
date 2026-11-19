@@ -7100,14 +7100,14 @@ def _do_reaction_karakeep(bot, accid, chat_id, msg_id, contact_id, url: str):
     ok, result = _save_to_karakeep(url)
     if not ok:
         logger.warning(f"KaraKeep save by reaction failed for {url}: {result}")
-    _react(bot, accid, msg_id, "☑️" if ok else "❌")
+    _react(bot, accid, msg_id, "☑️ Saved to KaraKeep!" if ok else "❌ KaraKeep failed")
 
 
 def _do_reaction_archive(bot, accid, chat_id, msg_id, contact_id, url: str):
     ok, result = _save_to_web_archive(url)
     if not ok:
         logger.warning(f"Web Archive save by reaction failed for {url}: {result}")
-    _react(bot, accid, msg_id, "🏛️" if ok else "❌")
+    _react(bot, accid, msg_id, "🏛️ Saved to Web Archive!" if ok else "❌ Web Archive failed")
 
 
 def _handle_reaction(bot, accid, chat_id: int, msg_id: int, contact_id: int, action: str):

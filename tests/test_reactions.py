@@ -77,6 +77,28 @@ class TestReactionHandling(unittest.TestCase):
         self.bot.rpc.send_reaction.assert_called_with(1, 10, ["☑️"])
         self.bot.rpc.send_msg.assert_not_called()
 
+    def test_count_downvotes_any_skin_tone(self):
+        by = {"1": ["👎"], "5": ["👎🏻"], "6": ["👎🏿"], "7": ["👍"], "8": ["👎️"]}
+        self.assertEqual(bot._count_downvotes(by), 3)
+
+    @patch("bot._get_admin_chat_id", return_value=77)
+    def test_downvotes_notify_admin_once_over_threshold(self, _):
+        database.add_bot_msg(20, 3, 7, "https://bad.example.com/page")
+        by = {str(i): ["👎"] for i in range(10, 13)}
+        bot._check_downvotes(self.bot, 1, 20, by)
+        self.bot.rpc.send_msg.assert_not_called()
+        by["13"] = ["👎🏽"]
+        bot._check_downvotes(self.bot, 1, 20, by)
+        bot._check_downvotes(self.bot, 1, 20, by)
+        self.assertEqual(self.bot.rpc.send_msg.call_count, 1)
+        self.assertIn("/preview_exclude bad.example.com",
+                      self.bot.rpc.send_msg.call_args[0][2].text)
+
+    @patch("bot._get_admin_chat_id", return_value=77)
+    def test_downvotes_ignore_untracked_messages(self, _):
+        bot._check_downvotes(self.bot, 1, 99, {str(i): ["👎"] for i in range(10, 20)})
+        self.bot.rpc.send_msg.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

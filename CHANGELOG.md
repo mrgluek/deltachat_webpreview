@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.32.0] - 2026-11-19
+
+### Added
+- **Downvotes Report Bad Previews**: when more than 3 people react 👎 (any skin tone) to a bot answer for a link, the bot privately sends the administrator the link and a ready `/preview_exclude <domain>` command. It is sent once per message. The number is set with `DOWNVOTE_THRESHOLD` (default 3).
+
 ## [2.31.0] - 2026-11-19
 
 ### Added

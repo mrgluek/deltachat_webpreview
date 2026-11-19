@@ -60,7 +60,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.31.0"
+VERSION = "2.32.0"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -3258,6 +3258,29 @@ def _parse_jina_response(text: str) -> tuple[str | None, str | None, str | None,
 
     return title, image_url, markdown_content, warning
 
+def _get_admin_chat_id() -> int | None:
+    """Private chat with the bot administrator, or None if there is no admin or it cannot be reached."""
+    if dc_bot_instance is None or dc_accid is None:
+        return None
+    admin_email = database.get_config("admin_dc_email")
+    admin_fp = database.get_admin_fingerprint()
+    if not admin_email and not admin_fp:
+        return None
+
+    # get_contact_ids lists key contacts. create_contact would make a keyless
+    # contact with an unencrypted chat, which chatmail relays refuse, so it is
+    # only the last resort for an admin known by address alone.
+    contact_id = next((
+        cid for cid in dc_bot_instance.rpc.get_contact_ids(dc_accid, 0, None if admin_fp else admin_email)
+        if _is_dc_admin(dc_bot_instance, dc_accid, cid)
+    ), None)
+    if not contact_id and not admin_fp:
+        contact_id = dc_bot_instance.rpc.create_contact(dc_accid, admin_email, None)
+    if not contact_id or contact_id <= 9:
+        return None
+    return dc_bot_instance.rpc.create_chat_by_contact_id(dc_accid, contact_id)
+
+
 def _notify_jina_balance(balance: int | float | None = None):
     """Warn privately about low balance, or exhaustion when balance is unknown."""
     if dc_bot_instance is None or dc_accid is None:
@@ -3272,24 +3295,9 @@ def _notify_jina_balance(balance: int | float | None = None):
             if last_sent and now - float(last_sent) < JINA_BALANCE_ALERT_INTERVAL:
                 return
 
-            admin_email = database.get_config("admin_dc_email")
-            admin_fp = database.get_admin_fingerprint()
-            if not admin_email and not admin_fp:
+            chat_id = _get_admin_chat_id()
+            if not chat_id:
                 return
-
-            # get_contact_ids lists key contacts. create_contact would make a keyless
-            # contact with an unencrypted chat, which chatmail relays refuse, so it is
-            # only the last resort for an admin known by address alone.
-            contact_id = next((
-                cid for cid in dc_bot_instance.rpc.get_contact_ids(dc_accid, 0, None if admin_fp else admin_email)
-                if _is_dc_admin(dc_bot_instance, dc_accid, cid)
-            ), None)
-            if not contact_id and not admin_fp:
-                contact_id = dc_bot_instance.rpc.create_contact(dc_accid, admin_email, None)
-            if not contact_id or contact_id <= 9:
-                return
-
-            chat_id = dc_bot_instance.rpc.create_chat_by_contact_id(dc_accid, contact_id)
             if low_balance:
                 warning = (
                     f"⚠️ Jina AI token balance is low: {balance:,.0f} tokens "
@@ -7033,6 +7041,8 @@ _REACTION_ACTIONS = {
     "🖥": "preview",
     "📦": "webxdc",
 }
+DOWNVOTE_THRESHOLD = _env_int("DOWNVOTE_THRESHOLD", 3, 1, 100)
+_DOWNVOTE_EMOJI = "👎"
 _seen_reactions: dict[tuple[int, int], frozenset] = {}
 _seen_reactions_lock = threading.Lock()
 
@@ -7054,6 +7064,35 @@ def _new_reaction_actions(msg_id: int, contact_id: int, emojis) -> list[str]:
             for k in list(_seen_reactions)[:1000]:
                 _seen_reactions.pop(k, None)
     return [_REACTION_ACTIONS[e] for e in sorted(current - previous) if e in _REACTION_ACTIONS]
+
+
+def _count_downvotes(by_contact: dict) -> int:
+    """Number of distinct contacts (not the bot) who reacted with 👎 in any skin tone."""
+    n = 0
+    for cid, emojis in by_contact.items():
+        if str(cid) == str(DC_CONTACT_ID_SELF):
+            continue
+        if any(_norm_reaction(e).startswith(_DOWNVOTE_EMOJI) for e in emojis or []):
+            n += 1
+    return n
+
+
+def _check_downvotes(bot, accid, msg_id: int, by_contact: dict):
+    """More than DOWNVOTE_THRESHOLD 👎 on a bot answer: tell the admin the domain, once per message."""
+    tracked = database.get_bot_msg(msg_id)
+    url = (tracked or {}).get("url")
+    if not url:
+        return
+    votes = _count_downvotes(by_contact)
+    if votes <= DOWNVOTE_THRESHOLD or _is_duplicate_msg(msg_id, "downvote"):
+        return
+    domain = urllib.parse.urlparse(url).hostname or url
+    admin_chat = _get_admin_chat_id()
+    if not admin_chat:
+        return
+    _send(bot, accid, admin_chat,
+          f"👎 {votes} downvotes on a bot answer for this link:\n🔗 {url}\n\n"
+          f"To block the domain:\n/preview_exclude {domain}")
 
 
 def _do_reaction_karakeep(bot, accid, chat_id, msg_id, contact_id, url: str):
@@ -7130,6 +7169,7 @@ def on_reactions_changed(bot, accid, event):
         emojis = by_contact.get(event.contact_id)
         if emojis is None:
             emojis = by_contact.get(str(event.contact_id), [])
+        _check_downvotes(bot, accid, event.msg_id, by_contact)
         for action in _new_reaction_actions(event.msg_id, event.contact_id, emojis):
             _handle_reaction(bot, accid, event.chat_id, event.msg_id, event.contact_id, action)
     except Exception as e:

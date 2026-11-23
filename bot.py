@@ -60,7 +60,7 @@ CACHE_DIR = os.path.join("data", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_MAX_AGE = 86400  # 24 hours
  
-VERSION = "2.32.2"
+VERSION = "2.32.3"
 STANDARD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
 BOT_USER_AGENT = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)"
 NON_MOZILLA_USER_AGENT = "AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15 deltachat-webpreview/1.0"
@@ -4423,7 +4423,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                         f"💾 /download_{urlhash}"
                     )
                     database.log_cache_event("og", True)
-                    _send(bot, accid, chat_id, caption)
+                    _send(bot, accid, chat_id, caption, requester=from_id, url=url)
                     return
                   # Verify that if there is a cached image path, the file still exists on disk.
                   # If cached_image_path is missing for an Instagram URL, treat as cache miss to re-attempt image fetch.
@@ -4439,9 +4439,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                     )
 
                     if cached_image_path:
-                        _send(bot, accid, chat_id, caption, file=cached_image_path)
+                        _send(bot, accid, chat_id, caption, file=cached_image_path, requester=from_id, url=url)
                     else:
-                        _send(bot, accid, chat_id, caption)
+                        _send(bot, accid, chat_id, caption, requester=from_id, url=url)
                     return
         
         # 4. Cache Miss - Fetch OG tags or file info
@@ -4462,7 +4462,7 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
                 f"📝 [{title}]({url})\n\n"
                 f"💾 /download_{urlhash}"
             )
-            _send(bot, accid, chat_id, caption)
+            _send(bot, accid, chat_id, caption, requester=from_id, url=url)
             return
  
         title, image_url, is_invidious, warning, jina_markdown = _get_og_preview_data(url)
@@ -4503,9 +4503,9 @@ def _do_group_link_preview(bot, accid, chat_id, from_id, url: str):
         
         # 8. Send to group
         if img_cache_path and os.path.exists(img_cache_path):
-            _send(bot, accid, chat_id, caption, file=img_cache_path)
+            _send(bot, accid, chat_id, caption, file=img_cache_path, requester=from_id, url=url)
         else:
-            _send(bot, accid, chat_id, caption)
+            _send(bot, accid, chat_id, caption, requester=from_id, url=url)
             
     except Exception as e:
         logger.error(f"Error in _do_group_link_preview: {e}")

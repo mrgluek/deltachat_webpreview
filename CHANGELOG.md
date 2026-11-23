@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [2.32.3] - 2026-11-20
+
+### Fixed
+- Link preview cards posted in group chats were not tracked, so 👎 reactions never reached the administrator and 🗑️ could not delete them. They are now tracked like other answers.
+
 ## [2.32.2] - 2026-11-19
 
 ### Changed

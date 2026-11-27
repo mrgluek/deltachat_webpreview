@@ -2,7 +2,7 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
-## [Unreleased]
+## [2.32.5] - 2026-11-27
 
 ### Security
 - lxml is now pinned `>=6.1.0,<7.0.0` (was `<6`) and `lxml-html-clean>=0.4.5,<0.5.0` is listed explicitly, fixing PYSEC-2026-87 and PYSEC-2026-2614. No code changes were needed. One difference: a page with an unclosed `<title>` tag now gets the rest of the document as its title (HTML5 parsing, same as browsers).

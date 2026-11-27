@@ -2,6 +2,11 @@
 
 All notable changes to the Delta Chat WebPreview Bot will be documented in this file.
 
+## [Unreleased]
+
+### Security
+- Pillow is now pinned `>=13.0.0,<14.0.0` (was `>=10.4.0,<11.0.0`). 10.4.0 has many published vulnerabilities; the fixes are in 12.x and 13.0.0. No code changes were needed: the image paths (WebP conversion, animated GIF, resize, square icon, map overlay) give byte-identical output on 10.4.0 and 13.0.0. Pillow 13 needs Python 3.11 or newer.
+
 ## [2.32.4] - 2026-11-23
 
 ### Fixed

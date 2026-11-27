@@ -1289,6 +1289,7 @@ def _call_openrouter_api(
                 headers={
                     'Content-Type': 'application/json',
                     'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+                    'HTTP-Referer': 'https://github.com/mrgluek/deltachat_webpreview',
                     'X-Title': 'Delta Chat WebPreview Bot',
                 }
             )

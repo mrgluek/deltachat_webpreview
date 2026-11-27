@@ -651,6 +651,8 @@ class TestOpenRouterFallback(unittest.TestCase):
         self.assertIn("openrouter.ai", req.full_url)
         self.assertEqual(json.loads(req.data)["model"], "openrouter/free")
         self.assertEqual(req.get_header("Authorization"), "Bearer or_key")
+        self.assertEqual(req.get_header("Http-referer"), "https://github.com/mrgluek/deltachat_webpreview")
+        self.assertEqual(req.get_header("X-title"), "Delta Chat WebPreview Bot")
 
     @patch("bot.database.log_api_call")
     @patch.object(bot, "OPENROUTER_API_KEY", "")

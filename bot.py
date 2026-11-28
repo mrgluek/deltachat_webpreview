@@ -305,6 +305,35 @@ def _clean_url_params(url: str) -> str:
         return url
 
 
+_USERINFO_IN_TEXT_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)[^\s/?#]*@")
+
+
+def redact_url(url) -> str:
+    """Return url with any user:password@ replaced by ***@, safe for logging.
+
+    Keeps scheme, host, port, path. Never returns the raw userinfo, even for
+    unparsable input (falls back to regex scrubbing, then a fixed placeholder).
+    """
+    text = str(url) if url is not None else ""
+    if "@" not in text:
+        return text
+    try:
+        if _USERINFO_IN_TEXT_RE.search(text):
+            return _USERINFO_IN_TEXT_RE.sub(r"\1***@", text)
+        # userinfo without a scheme, or anything odd: mask everything before the last @
+        return "***@" + text.rsplit("@", 1)[1]
+    except Exception:
+        return "<redacted-url>"
+
+
+def redact_text(text) -> str:
+    """Scrub scheme://user:pass@ occurrences from free text (e.g. exception messages)."""
+    try:
+        return _USERINFO_IN_TEXT_RE.sub(r"\1***@", str(text))
+    except Exception:
+        return "<redacted>"
+
+
 def _should_use_proxy(url: str) -> bool:
     """Return True if the URL should be routed through the proxy."""
     if not PROXY_URL:
@@ -454,13 +483,13 @@ def _urlopen(req_or_url, timeout=None):
     # Jina AI Reader requests
     if domain == "r.jina.ai":
         if JINA_PROXY_URL:
-            logger.info(f"Routing Jina request for {url} through Jina proxy: {JINA_PROXY_URL}")
+            logger.info(f"Routing Jina request for {url} through Jina proxy: {redact_url(JINA_PROXY_URL)}")
             proxy_handler = urllib.request.ProxyHandler({'http': JINA_PROXY_URL, 'https': JINA_PROXY_URL})
             opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
             try:
                 return opener.open(req_or_url, timeout=timeout)
             except Exception as e:
-                logger.warning(f"Jina proxy {JINA_PROXY_URL} failed for {url}: {e}. Retrying direct connection...")
+                logger.warning(f"Jina proxy {redact_url(JINA_PROXY_URL)} failed for {url}: {redact_text(e)}. Retrying direct connection...")
                 return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
         else:
             return urllib.request.urlopen(req_or_url, timeout=timeout)
@@ -486,13 +515,13 @@ def _urlopen(req_or_url, timeout=None):
                 is_ig = True
 
         if is_ig:
-            logger.info(f"Routing Instagram request for {url} through Instagram proxy: {INSTAGRAM_PROXY_URL}")
+            logger.info(f"Routing Instagram request for {url} through Instagram proxy: {redact_url(INSTAGRAM_PROXY_URL)}")
             proxy_handler = urllib.request.ProxyHandler({'http': INSTAGRAM_PROXY_URL, 'https': INSTAGRAM_PROXY_URL})
             opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
             try:
                 return opener.open(req_or_url, timeout=timeout)
             except Exception as e:
-                logger.warning(f"Instagram proxy {INSTAGRAM_PROXY_URL} failed for {url}: {e}. Retrying direct connection...")
+                logger.warning(f"Instagram proxy {redact_url(INSTAGRAM_PROXY_URL)} failed for {url}: {redact_text(e)}. Retrying direct connection...")
                 return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
 
     # Archive.today and Ghostarchive requests
@@ -500,24 +529,24 @@ def _urlopen(req_or_url, timeout=None):
     if any(domain == d or domain.endswith("." + d) for d in archive_domains):
         proxy = ARCHIVE_TODAY_PROXY_URL or PROXY_URL
         if proxy:
-            logger.info(f"Routing archive request for {url} through proxy: {proxy}")
+            logger.info(f"Routing archive request for {url} through proxy: {redact_url(proxy)}")
             proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
             opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
             try:
                 return opener.open(req_or_url, timeout=timeout)
             except Exception as e:
-                logger.warning(f"Archive proxy {proxy} failed for {url}: {e}. Retrying direct connection...")
+                logger.warning(f"Archive proxy {redact_url(proxy)} failed for {url}: {redact_text(e)}. Retrying direct connection...")
                 return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
 
     # Standard requests matching PROXY_DOMAINS
     if _should_use_proxy(url):
-        logger.info(f"Routing request for {url} through proxy: {PROXY_URL}")
+        logger.info(f"Routing request for {url} through proxy: {redact_url(PROXY_URL)}")
         proxy_handler = urllib.request.ProxyHandler({'http': PROXY_URL, 'https': PROXY_URL})
         opener = urllib.request.build_opener(proxy_handler, SafeRedirectHandler)
         try:
             return opener.open(req_or_url, timeout=timeout)
         except Exception as e:
-            logger.warning(f"Proxy {PROXY_URL} failed for {url}: {e}. Retrying direct connection...")
+            logger.warning(f"Proxy {redact_url(PROXY_URL)} failed for {url}: {redact_text(e)}. Retrying direct connection...")
             return urllib.request.urlopen(_copy_req(req_or_url), timeout=timeout)
 
     return urllib.request.urlopen(req_or_url, timeout=timeout)
@@ -3089,13 +3118,13 @@ async def _run_monolith_process(cmd: list, url: str | None = None) -> tuple[int 
                 env["https_proxy"] = JINA_PROXY_URL
                 env["HTTP_PROXY"] = JINA_PROXY_URL
                 env["HTTPS_PROXY"] = JINA_PROXY_URL
-                logger.info(f"Routing monolith subprocess for Jina URL {url} through Jina proxy: {JINA_PROXY_URL}")
+                logger.info(f"Routing monolith subprocess for Jina URL {url} through Jina proxy: {redact_url(JINA_PROXY_URL)}")
         elif _should_use_proxy(url):
             env["http_proxy"] = PROXY_URL
             env["https_proxy"] = PROXY_URL
             env["HTTP_PROXY"] = PROXY_URL
             env["HTTPS_PROXY"] = PROXY_URL
-            logger.info(f"Routing monolith subprocess for {url} through proxy: {PROXY_URL}")
+            logger.info(f"Routing monolith subprocess for {url} through proxy: {redact_url(PROXY_URL)}")
     proc: asyncio.subprocess.Process | None = None
     returncode: int = -99  # Default return code for exception
     try:
@@ -3376,7 +3405,7 @@ def _fetch_from_jina(url: str, return_html: bool = False) -> tuple[str | None, s
         if JINA_API_KEY:
             req.add_header('Authorization', f'Bearer {JINA_API_KEY}')
         if _should_use_proxy(url):
-            logger.info(f"Adding X-Proxy-Url header for Jina crawl request to {url}: {PROXY_URL}")
+            logger.info(f"Adding X-Proxy-Url header for Jina crawl request to {url}: {redact_url(PROXY_URL)}")
             req.add_header('X-Proxy-Url', PROXY_URL)
         with _urlopen(req, timeout=15) as response:
             text_bytes = response.read(1024 * 1024) # Read up to 1MB of content
